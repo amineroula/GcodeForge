@@ -2,7 +2,11 @@
 
 Notes taken from reading the original app (`index.html`, ~6800 lines, plus
 `editor-controls-v48.js`, `viewport-tools.js`, `viewport-performance.js`,
-`viewport-runtime-guards.js`, `export-verification-v481.js`).
+`viewport-runtime-guards.js`, `export-verification-v481.js`), and from the
+product vision in [VISION.md](VISION.md). Every milestone below should trace
+back to something in VISION.md — that file is the source of truth for *why*,
+this file is the *how* for the C++ port. GcodeForge targets the desktop
+("Studio") side only — no touch/iPad UI, no Cloudflare/PWA layer.
 
 ## What the original does
 
@@ -61,16 +65,50 @@ Notes taken from reading the original app (`index.html`, ~6800 lines, plus
 6. **Line renderer** — upload paths as a `GL_LINES` vertex buffer, color by
    the active color mode (object/type/layer/group/speed), one shader.
 7. **ImGui editor UI** — object list (reorder, visibility toggle, link
-   toggle between adjacent objects), transform panel (X/Y/Z/rotZ/flip),
-   per-object layer table (click row → select that layer's print paths),
-   selection-group manager (create/apply/delete), speed panel (exact or
-   percent, applied to: manual selection / visible geometry / layer-table
-   click / selection group — all four funnel through one apply function),
-   color mode picker — functional equivalent of the HTML control panel.
+   toggle between adjacent objects), transform panel (X/Y/Z/rotZ/flip, plus
+   quick ±50mm nudge buttons per axis), per-object layer table (click row →
+   select that layer's print paths), selection-group manager
+   (create/apply/delete), speed panel (exact or percent, applied to: manual
+   selection / visible geometry / layer-table click / selection group — all
+   four funnel through one apply function), color mode picker — functional
+   equivalent of the HTML control panel. Selection supports replace/add/
+   subtract modes (click = replace, shift-click = add, ctrl-click = subtract).
 8. **Animation playback** — advance a `t` along the concatenated path length,
-   draw a print-head marker, mirrors the JS `stepAnimation` loop.
-9. **SRC export + verification** — re-serialize edited paths to `.src`,
-   port `export-verification-v481.js`'s round-trip check.
+   draw a print-head marker, mirrors the JS `stepAnimation` loop. Includes
+   manual step forward/back and a configurable **Next Path by N** control to
+   jump N path segments at a time when reviewing long programs.
+9. **SRC export + verification** — re-serialize edited paths to `.src`, port
+   `export-verification-v481.js`'s round-trip check with its core design
+   principle preserved: **structural/coordinate corruption is a hard failure
+   that blocks export; small speed-verification numeric drift is a warning
+   that still exports**, with a warning comment written into the generated
+   SRC as an audit trail. Getting this distinction wrong in either direction
+   (too strict → blocks good exports; too loose → ships corrupted programs)
+   defeats the point of the feature.
+10. **Object linking + Bake Links to Travels** — `objectLinks` generates a
+    procedural travel connecting one object's end point to the next object's
+    start point; this must be *cached*, not recomputed every frame (the
+    original hit a real perf bug here — recalculating link geometry on every
+    draw call). "Bake Links to Travels" converts an approved procedural link
+    into permanent, editable `Path` data on the object, after which it's no
+    different from any other travel move.
+11. **Viewport LOD / adaptive rendering** — the "game-style" performance
+    system: distance-based simplification, off-screen frustum culling,
+    omitting screen-space-tiny segments, batching draw calls instead of one
+    draw per segment. Needed once real SRC files (tens/hundreds of thousands
+    of segments) are loaded — GL_LINES alone (milestone 6) will not scale to
+    that without this. Selected/active geometry stays full detail regardless
+    of distance.
+12. **Project save/load format** — serialize objects, transforms, speed
+    overrides, links, baked travels, and selection state to a project file
+    (JSON is the natural choice) distinct from the SRC export, so editing
+    sessions aren't lost and don't require re-deriving state from a plain SRC
+    re-import.
+
+Deferred / not in scope for GcodeForge (belongs to the web/PWA version, not
+the desktop port): touch/iPad navigation vs. selection modes, freeform lasso
+selection, Cloudflare Pages deployment. BedForge (Blender-based bed/process
+analysis) is a separate, related project — not part of this repo.
 
 Each milestone gets its own commit and a short writeup in `docs/LOG.md`
 explaining the C++/OpenGL concepts introduced.
