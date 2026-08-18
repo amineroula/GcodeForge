@@ -8,6 +8,23 @@ back to something in VISION.md — that file is the source of truth for *why*,
 this file is the *how* for the C++ port. GcodeForge targets the desktop
 ("Studio") side only — no touch/iPad UI, no Cloudflare/PWA layer.
 
+## Architecture
+
+`src/` follows the pipeline in [EVOLUTION.md](EVOLUTION.md) §17 — GCode
+Editor is architecturally a compiler, and the module boundaries should match:
+
+- `parser/` — text → structured path model. No rendering/editing knowledge.
+- `model/` — pure data (`Path`, `SceneObject`, `Transform`, links). No
+  knowledge of parsing or rendering.
+- `editor/` — mutates the model: transform, link, modify. (milestones 3, 7, 10)
+- `validator/` — checks the model before export, two-tier severity: hard
+  failures (missing/invalid coordinates, broken structure, unexpected path
+  counts, NaN/Infinity, corrupted motion commands) vs. warnings (speed
+  rounding, formatting, small numeric tolerance). (milestone 9)
+- `compiler/` — serializes the model back to SRC.
+- `render/` + `ui/` — camera, line renderer, LOD, ImGui panels. These
+  *observe* the model; they don't own it.
+
 ## What the original does
 
 - Loads G-code (`.gcode`/`.nc`) and KUKA `.src` files, parses them into a
