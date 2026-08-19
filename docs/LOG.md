@@ -415,3 +415,74 @@ pure-logic changes worth new automated tests -- they're rendering/input/
 visual fixes verified by building, running, and re-checking the geometry
 sanity numbers, which were unaffected). Screenshots from the desk PC
 confirmed the underlying bugs before each fix was written.
+
+## Post-milestone-7 batch 3 — a self-inflicted regression, a real ImGui gotcha, bed save/load, and a move gizmo
+
+More feedback from testing, including one bug in the PREVIOUS fix.
+
+**Geometry-mode selection still invisible -- because the fix from batch 2
+was never actually being triggered.** Batch 2 made `GeometryRenderer` bake
+`selectionHighlightColor()` into the mesh, which was the right diagnosis
+-- but the code that decides WHEN to rebuild that mesh only checked
+`sceneDirty` (structural changes), not `selectionDirty` (pure selection
+changes), because `selectionDirty` was deliberately kept cheap (highlight-
+overlay-only) as a performance fix from the same batch. Selecting a path
+while already in Geometry mode set `selectionDirty` but never touched
+`sceneDirty`, so the newly-baked color never made it to the GPU until
+something else happened to trigger a full rebuild. Fixed: `selectionDirty`
+now also rebuilds `GeometryRenderer` specifically when Geometry mode is
+active (Lines mode still stays cheap, since it never needed the bake in
+the first place). A reminder that "fix the root cause" and "wire the fix
+into every place that needs to run it" are two different steps.
+
+**Pan direction: only the vertical axis was still backwards.** flipped
+just the `up` term's sign a second time, left the horizontal term as
+batch 2 left it.
+
+**Objects panel: Delete wasn't deleting anything -- a real Dear ImGui
+gotcha.** The Name cell's `Selectable` used
+`ImGuiSelectableFlags_SpanAllColumns`, which extends its hit-test region
+across the ENTIRE row, including the Color/Reorder/Link/Delete cells drawn
+AFTER it. That silently intercepted clicks meant for those later widgets
+-- clicking Delete just re-triggered row selection instead. This is a
+documented Dear ImGui table interaction, not a one-off mistake. Fixed by
+dropping `SpanAllColumns` (the row is no longer clickable everywhere to
+select the object, only on the name text itself -- a fair trade for the
+other buttons actually working). Also moved the Visible checkbox to the
+leftmost column per feedback, matching how most 3D-tool outliners put
+visibility first.
+
+**Bed save/load (`io/BedIO`):** a small plain-text `key value`-per-line
+format, deliberately NOT the general project format (that's milestone 12).
+`ui/FileDialog` gained `showSaveBedDialog`/`showOpenBedDialog`
+(`GetSaveFileNameW`/`GetOpenFileNameW`), wired to new Save/Load buttons in
+the Bed panel.
+
+**Move gizmo (`editor/Gizmo` + `render/GizmoRenderer`):** the active
+object always shows red/green/blue arrows at its pivot; dragging one
+translates the object along that axis. The core math is the standard
+"closest point between two 3D lines" technique -- `unprojectRay()` turns
+the 2D cursor into a 3D ray, `closestPointOnAxisToRay()` finds where that
+ray comes closest to the axis line (a ray generally never exactly touches
+a 1D line in 3D, so this is the well-defined thing to solve for instead).
+Because the axis direction is unit length, the returned parametric
+distance IS the translation amount directly -- no extra unit conversion.
+The one subtlety worth remembering: the axis's reference point must be
+captured ONCE at drag start and held fixed for the whole drag, never
+recomputed from the very value being dragged -- doing that would make each
+frame's distance relative to a different basis point, so deltas between
+frames would be comparing incompatible numbers. Gizmo-vs-selection input
+priority: a click is tested against the three arrows (screen-space
+point-to-segment, same technique as path picking) BEFORE falling through
+to click/marquee path selection, so grabbing an arrow never accidentally
+also selects a path underneath it.
+
+**Verified:** added 20 more checks (54 total, up from 34): `testBedIO()`
+(save/load round-trips every field exactly; loading a missing file
+returns false rather than silently leaving garbage) and `testGizmoMath()`
+(a hand-derived orthographic-projection case: a ray through a known screen
+column travels along Z only and its closest point on the world X-axis
+lands at exactly the expected world-space X; a ray parallel to the axis
+correctly reports "no unique closest point" instead of returning nonsense;
+axis picking finds the near arrow and correctly finds nothing when the
+point isn't near any of them). All pass. Full app builds and runs cleanly.

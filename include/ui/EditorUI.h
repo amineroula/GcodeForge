@@ -40,6 +40,11 @@ public:
     bool openFileRequested() const { return openFileRequested_; }
     void clearOpenFileRequest() { openFileRequested_ = false; }
 
+    bool saveBedRequested() const { return saveBedRequested_; }
+    void clearSaveBedRequest() { saveBedRequested_ = false; }
+    bool loadBedRequested() const { return loadBedRequested_; }
+    void clearLoadBedRequest() { loadBedRequested_ = false; }
+
     // Set once, right after construction, if main.cpp successfully loaded
     // a bold font (see main.cpp's font setup). Section labels use it when
     // set; when null, they just render in the regular font -- the app
@@ -61,6 +66,8 @@ private:
     void drawStatsPanel(const Scene& scene, RenderMode mode, size_t renderedPrimitiveCount);
 
     bool openFileRequested_ = false;
+    bool saveBedRequested_ = false;
+    bool loadBedRequested_ = false;
 
     double speedExact_ = 0.040;
     double speedPercent_ = 10.0;

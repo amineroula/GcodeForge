@@ -164,13 +164,18 @@ void EditorUI::drawBedPanel(BedSettings& bed, bool& bedDirty) {
         bed = BedSettings{};
         bedDirty = true;
     }
+
+    ImGui::Spacing();
+    if (ImGui::Button("Save Bed...")) saveBedRequested_ = true;
+    ImGui::SameLine();
+    if (ImGui::Button("Load Bed...")) loadBedRequested_ = true;
 }
 
 void EditorUI::drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dirty) {
     sectionLabel("Objects");
     if (ImGui::BeginTable("objects", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders)) {
+        ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthFixed, 50.0f);
         ImGui::TableSetupColumn("Name");
-        ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthFixed, 55.0f);
         ImGui::TableSetupColumn("Color", ImGuiTableColumnFlags_WidthFixed, 40.0f);
         ImGui::TableSetupColumn("Reorder", ImGuiTableColumnFlags_WidthFixed, 55.0f);
         ImGui::TableSetupColumn("Link->next", ImGuiTableColumnFlags_WidthFixed, 75.0f);
@@ -185,17 +190,25 @@ void EditorUI::drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dir
             ImGui::PushID(object.id);
 
             ImGui::TableNextColumn();
-            bool isActive = (scene.activeObjectId == object.id);
-            if (ImGui::Selectable(object.name.c_str(), isActive, ImGuiSelectableFlags_SpanAllColumns)) {
-                scene.activeObjectId = object.id; // not undoable -- active object is a UI cursor, not scene data
-            }
-
-            ImGui::TableNextColumn();
             bool visible = object.visible;
             if (ImGui::Checkbox("##visible", &visible)) {
                 undoStack.snapshotBeforeChange(scene);
                 object.visible = visible;
                 dirty = true;
+            }
+
+            ImGui::TableNextColumn();
+            bool isActive = (scene.activeObjectId == object.id);
+            // NOT ImGuiSelectableFlags_SpanAllColumns: it extends this
+            // Selectable's hit-test across every column in the row,
+            // INCLUDING the Delete button and checkboxes drawn after it --
+            // which was silently swallowing clicks meant for those
+            // widgets (a known Dear ImGui table gotcha). A plain
+            // Selectable confined to its own column trades "click
+            // anywhere in the row to select" for "the other buttons in
+            // this row actually work."
+            if (ImGui::Selectable(object.name.c_str(), isActive)) {
+                scene.activeObjectId = object.id; // not undoable -- active object is a UI cursor, not scene data
             }
 
             ImGui::TableNextColumn();

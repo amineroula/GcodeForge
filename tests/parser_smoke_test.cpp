@@ -9,6 +9,8 @@
 #include "editor/SpeedEditing.h"
 #include "editor/UndoStack.h"
 #include "editor/Picking.h"
+#include "io/BedIO.h"
+#include "editor/Gizmo.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstdio>
@@ -231,6 +233,73 @@ void testPicking() {
           "Picking: rectangle select finds only the path whose midpoint falls inside it");
 }
 
+// Save then load a BedSettings and check every field round-trips exactly.
+void testBedIO() {
+    BedSettings original;
+    original.widthMm = 1234.5f;
+    original.depthMm = 678.0f;
+    original.originXMm = -50.0f;
+    original.originYMm = 25.5f;
+    original.originZMm = 3.0f;
+    original.gridSpacingMm = 42.0f;
+    original.showGrid = false;
+
+    const std::string path = "bed_io_test_tmp.bed";
+    check(saveBedSettings(path, original), "BedIO: save succeeds");
+
+    BedSettings loaded;
+    check(loadBedSettings(path, loaded), "BedIO: load succeeds");
+
+    checkNear(loaded.widthMm, original.widthMm, "BedIO: width round-trips");
+    checkNear(loaded.depthMm, original.depthMm, "BedIO: depth round-trips");
+    checkNear(loaded.originXMm, original.originXMm, "BedIO: originX round-trips");
+    checkNear(loaded.originYMm, original.originYMm, "BedIO: originY round-trips");
+    checkNear(loaded.originZMm, original.originZMm, "BedIO: originZ round-trips");
+    checkNear(loaded.gridSpacingMm, original.gridSpacingMm, "BedIO: gridSpacing round-trips");
+    check(loaded.showGrid == original.showGrid, "BedIO: showGrid round-trips");
+
+    std::remove(path.c_str());
+
+    BedSettings missing;
+    check(!loadBedSettings("this_file_does_not_exist.bed", missing), "BedIO: loading a missing file returns false");
+}
+
+// Gizmo drag math: an orthographic projection with world X in [-100,100]
+// mapping to screen X in [0,200] means a ray through screen x=150 passes
+// through world x=50 for every point along its length (it travels along Z
+// only, at fixed X). The closest point on the world X-axis to that ray
+// should therefore land at exactly t=50, regardless of the ray's Z range.
+void testGizmoMath() {
+    glm::mat4 projection = glm::ortho(-100.0f, 100.0f, -100.0f, 100.0f, -100.0f, 100.0f);
+
+    Ray ray = unprojectRay(projection, glm::vec2(150.0f, 100.0f), 200.0f, 200.0f);
+    checkNear(ray.direction.x, 0.0, "Gizmo: ray through screen center-ish column travels along Z (x component ~0)");
+    checkNear(ray.direction.y, 0.0, "Gizmo: same ray has no Y component");
+
+    auto t = closestPointOnAxisToRay(glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f), ray);
+    check(t.has_value(), "Gizmo: closest point exists for a non-parallel ray/axis pair");
+    if (t) checkNear(*t, 50.0, "Gizmo: closest point on the X-axis lands at world x=50, matching the ray's fixed X");
+
+    // A ray parallel to the axis it's being tested against has no unique
+    // closest point -- must report that honestly instead of returning a
+    // nonsense value.
+    Ray parallelRay{glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(1.0f, 0.0f, 0.0f)};
+    auto none = closestPointOnAxisToRay(glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f), parallelRay);
+    check(!none.has_value(), "Gizmo: a ray parallel to the axis correctly returns no unique closest point");
+
+    // Axis picking: three segments meeting at screen origin, pick should
+    // find whichever one the point is actually near.
+    std::vector<GizmoAxisScreenSegment> segments = {
+        {GizmoAxis::X, glm::vec2(0, 0), glm::vec2(100, 0)},
+        {GizmoAxis::Y, glm::vec2(0, 0), glm::vec2(0, 100)},
+        {GizmoAxis::Z, glm::vec2(0, 0), glm::vec2(50, 50)},
+    };
+    auto hitX = pickGizmoAxis(segments, glm::vec2(50, 2), 10.0f);
+    check(hitX.has_value() && *hitX == GizmoAxis::X, "Gizmo: point near the X arrow picks GizmoAxis::X");
+    auto hitNone = pickGizmoAxis(segments, glm::vec2(200, 200), 10.0f);
+    check(!hitNone.has_value(), "Gizmo: a point far from every arrow picks nothing");
+}
+
 } // namespace
 
 int main() {
@@ -239,6 +308,8 @@ int main() {
     testEditorLogic();
     testUndoStack();
     testPicking();
+    testBedIO();
+    testGizmoMath();
 
     if (g_failures == 0) {
         std::printf("\nAll checks passed.\n");

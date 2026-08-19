@@ -64,11 +64,15 @@ void Camera::pan(float dxPixels, float dyPixels) {
     float halfHeight = kBaseHalfExtentMm / zoomFactor_;
     float worldPerPixel = (halfHeight * 2.0f) / viewportHeight_ * kPanSensitivity;
 
-    // Sign convention: dragging right/up should feel like grabbing the
-    // scene and dragging it with the cursor (the content follows the
-    // hand), so the target moves the SAME direction as the cursor delta.
+    // Sign convention: dragging should feel like grabbing the scene and
+    // moving it with the cursor. Horizontal: cursor dx and target's
+    // "right" move together. Vertical: cursor dy is screen-space (grows
+    // DOWNWARD), while `up` is world-space (grows upward) -- same sign on
+    // both terms is what makes a downward drag move the content downward
+    // on screen, matching the horizontal case's feel once that axis flip
+    // is accounted for.
     target_ += right * (dxPixels * worldPerPixel);
-    target_ -= up * (dyPixels * worldPerPixel);
+    target_ += up * (dyPixels * worldPerPixel);
 }
 
 void Camera::zoom(float delta) {

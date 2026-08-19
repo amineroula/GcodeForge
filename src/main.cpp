@@ -4,11 +4,14 @@
 //
 // Viewport controls are Maya-style: Alt+left-drag orbits, Alt+middle-drag
 // pans, Alt+right-drag (or plain scroll, no Alt needed) zooms/dollies.
-// Plain (no Alt) left-click selects the nearest path; plain left-drag
-// marquee-selects everything inside the dragged rectangle. Shift adds to
-// the selection, Ctrl subtracts. Keys 1/2/3/4 jump to Top/Front/Right/Iso
-// views, key G toggles the reference grid, Ctrl+Z/Ctrl+Y undo/redo. Mouse/
-// keys are ignored by the viewport whenever ImGui wants them.
+// The active object always shows a move gizmo (red/green/blue arrows at
+// its pivot) -- clicking and dragging an arrow takes priority over path
+// selection, so plain click/drag only selects paths when it DOESN'T land
+// on an arrow. Plain click-drag elsewhere marquee-selects everything
+// inside the dragged rectangle. Shift adds to the selection, Ctrl
+// subtracts. Keys 1/2/3/4 jump to Top/Front/Right/Iso views, key G toggles
+// the reference grid, Ctrl+Z/Ctrl+Y undo/redo. Mouse/keys are ignored by
+// the viewport whenever ImGui wants them.
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
@@ -17,14 +20,17 @@
 #include <cstdio>
 #include <string>
 #include <map>
+#include <optional>
 
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
 
+#include "editor/Gizmo.h"
 #include "editor/Picking.h"
 #include "editor/Selection.h"
 #include "editor/UndoStack.h"
+#include "io/BedIO.h"
 #include "io/FileIO.h"
 #include "model/Scene.h"
 #include "parser/SrcParser.h"
@@ -32,6 +38,7 @@
 #include "render/BedSettings.h"
 #include "render/Camera.h"
 #include "render/GeometryRenderer.h"
+#include "render/GizmoRenderer.h"
 #include "render/GridRenderer.h"
 #include "render/PathColorizer.h"
 #include "render/RenderSettings.h"
@@ -212,6 +219,7 @@ int main() {
     SceneRenderer sceneRenderer;
     GeometryRenderer geometryRenderer;
     SelectionHighlightRenderer selectionHighlight;
+    GizmoRenderer gizmoRenderer;
     Scene scene;
     EditorUI editorUi;
     editorUi.setBoldFont(boldFont);
@@ -274,6 +282,16 @@ int main() {
     bool ctrlZWasDown = false;
     bool ctrlYWasDown = false;
 
+    // Move-gizmo drag state. axisOrigin/StartValue/StartT are all captured
+    // ONCE at drag start and held fixed for the whole drag -- see the
+    // comment on closestPointOnAxisToRay in editor/Gizmo.h for why a fixed
+    // reference point is required, not a per-frame recomputed one.
+    std::optional<GizmoAxis> gizmoDragAxis;
+    glm::vec3 gizmoDragAxisOrigin(0.0f);
+    float gizmoDragStartT = 0.0f;
+    double gizmoDragStartValue = 0.0;
+    constexpr float kGizmoPickRadiusPixels = 10.0f;
+
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
@@ -296,6 +314,24 @@ int main() {
             if (auto path = showOpenSrcDialog(window)) {
                 loadFileIntoScene(*path, scene);
                 sceneDirty = true;
+            }
+        }
+        if (editorUi.saveBedRequested()) {
+            editorUi.clearSaveBedRequest();
+            if (auto path = showSaveBedDialog(window)) {
+                if (!saveBedSettings(*path, bedSettings)) {
+                    std::fprintf(stderr, "Could not save bed settings to: %s\n", path->c_str());
+                }
+            }
+        }
+        if (editorUi.loadBedRequested()) {
+            editorUi.clearLoadBedRequest();
+            if (auto path = showOpenBedDialog(window)) {
+                if (loadBedSettings(*path, bedSettings)) {
+                    bedDirty = true;
+                } else {
+                    std::fprintf(stderr, "Could not load bed settings from: %s\n", path->c_str());
+                }
             }
         }
 
@@ -336,44 +372,95 @@ int main() {
                 camera.zoom(static_cast<float>(-dy) * 0.05f); // drag down = zoom out, matching Maya's Alt+RMB dolly
             }
             isDraggingMarquee = false; // Alt is for camera nav -- never leave a marquee armed while it's held
+            gizmoDragAxis.reset(); // and never leave a gizmo drag armed either
         } else if (viewportInputActive) {
-            // Plain (no Alt) left button: click-select or marquee-select.
+            glm::vec2 current(static_cast<float>(cursorX), static_cast<float>(cursorY));
+            SceneObject* active = scene.activeObject();
+
+            // The move gizmo takes priority over path selection: if the
+            // click lands on an arrow, drag the object; only fall through
+            // to click/marquee-select when it doesn't.
             if (leftPressed && !leftWasPressed) {
-                mouseDownPos = glm::vec2(static_cast<float>(cursorX), static_cast<float>(cursorY));
-                isDraggingMarquee = false;
-            } else if (leftPressed && leftWasPressed) {
-                glm::vec2 current(static_cast<float>(cursorX), static_cast<float>(cursorY));
-                if (glm::length(current - mouseDownPos) > kDragThresholdPixels) isDraggingMarquee = true;
-            } else if (!leftPressed && leftWasPressed) {
-                ScreenProjector projector{viewProj, static_cast<float>(width), static_cast<float>(height)};
-                SelectionCompose compose = currentSelectionCompose();
-                glm::vec2 current(static_cast<float>(cursorX), static_cast<float>(cursorY));
-
-                if (isDraggingMarquee) {
-                    glm::vec2 rectMin(std::min(mouseDownPos.x, current.x), std::min(mouseDownPos.y, current.y));
-                    glm::vec2 rectMax(std::max(mouseDownPos.x, current.x), std::max(mouseDownPos.y, current.y));
-                    std::vector<PathRef> hits = pickPathsInRect(scene, projector, rectMin, rectMax);
-
-                    std::map<int, std::vector<int>> byObject;
-                    for (const auto& hit : hits) byObject[hit.objectId].push_back(hit.pathNumber);
-                    if (compose == SelectionCompose::Replace && hits.empty()) clearAllSelections(scene);
-                    for (auto& [objectId, pathNumbers] : byObject) {
-                        if (SceneObject* object = scene.findObject(objectId)) {
-                            applySelectionCompose(object->selectedPaths, pathNumbers, compose);
+                bool gizmoHit = false;
+                if (active) {
+                    glm::vec3 origin(active->transform.x, active->transform.y, active->transform.z);
+                    ScreenProjector projector{viewProj, static_cast<float>(width), static_cast<float>(height)};
+                    std::vector<GizmoAxisScreenSegment> segments;
+                    for (GizmoAxis axis : {GizmoAxis::X, GizmoAxis::Y, GizmoAxis::Z}) {
+                        glm::vec3 tip = origin + gizmoAxisDirection(axis) * GizmoRenderer::kAxisLengthMm;
+                        auto originScreen = projector.project(origin);
+                        auto tipScreen = projector.project(tip);
+                        if (originScreen && tipScreen) {
+                            segments.push_back({axis, glm::vec2(*originScreen), glm::vec2(*tipScreen)});
                         }
                     }
-                } else {
-                    auto hit = pickNearestPath(scene, projector, current, kClickPickRadiusPixels);
-                    if (hit) {
-                        scene.activeObjectId = hit->objectId;
-                        if (SceneObject* object = scene.findObject(hit->objectId)) {
-                            applySelectionCompose(object->selectedPaths, {hit->pathNumber}, compose);
+                    if (auto axisHit = pickGizmoAxis(segments, current, kGizmoPickRadiusPixels)) {
+                        Ray ray = unprojectRay(viewProj, current, static_cast<float>(width), static_cast<float>(height));
+                        glm::vec3 axisDir = gizmoAxisDirection(*axisHit);
+                        if (auto t = closestPointOnAxisToRay(origin, axisDir, ray)) {
+                            gizmoDragAxis = axisHit;
+                            gizmoDragAxisOrigin = origin;
+                            gizmoDragStartT = *t;
+                            gizmoDragStartValue = (*axisHit == GizmoAxis::X) ? active->transform.x
+                                                 : (*axisHit == GizmoAxis::Y) ? active->transform.y
+                                                                               : active->transform.z;
+                            undoStack.beginContinuousEdit(scene);
+                            gizmoHit = true;
                         }
-                    } else if (compose == SelectionCompose::Replace) {
-                        clearAllSelections(scene);
                     }
                 }
-                selectionDirty = true;
+                if (!gizmoHit) {
+                    mouseDownPos = current;
+                    isDraggingMarquee = false;
+                }
+            } else if (leftPressed && leftWasPressed) {
+                if (gizmoDragAxis && active) {
+                    Ray ray = unprojectRay(viewProj, current, static_cast<float>(width), static_cast<float>(height));
+                    glm::vec3 axisDir = gizmoAxisDirection(*gizmoDragAxis);
+                    if (auto t = closestPointOnAxisToRay(gizmoDragAxisOrigin, axisDir, ray)) {
+                        double newValue = gizmoDragStartValue + (*t - gizmoDragStartT);
+                        if (*gizmoDragAxis == GizmoAxis::X) active->transform.x = newValue;
+                        else if (*gizmoDragAxis == GizmoAxis::Y) active->transform.y = newValue;
+                        else active->transform.z = newValue;
+                        sceneDirty = true;
+                    }
+                } else if (glm::length(current - mouseDownPos) > kDragThresholdPixels) {
+                    isDraggingMarquee = true;
+                }
+            } else if (!leftPressed && leftWasPressed) {
+                if (gizmoDragAxis) {
+                    undoStack.commitContinuousEdit();
+                    gizmoDragAxis.reset();
+                } else {
+                    ScreenProjector projector{viewProj, static_cast<float>(width), static_cast<float>(height)};
+                    SelectionCompose compose = currentSelectionCompose();
+
+                    if (isDraggingMarquee) {
+                        glm::vec2 rectMin(std::min(mouseDownPos.x, current.x), std::min(mouseDownPos.y, current.y));
+                        glm::vec2 rectMax(std::max(mouseDownPos.x, current.x), std::max(mouseDownPos.y, current.y));
+                        std::vector<PathRef> hits = pickPathsInRect(scene, projector, rectMin, rectMax);
+
+                        std::map<int, std::vector<int>> byObject;
+                        for (const auto& hit : hits) byObject[hit.objectId].push_back(hit.pathNumber);
+                        if (compose == SelectionCompose::Replace && hits.empty()) clearAllSelections(scene);
+                        for (auto& [objectId, pathNumbers] : byObject) {
+                            if (SceneObject* object = scene.findObject(objectId)) {
+                                applySelectionCompose(object->selectedPaths, pathNumbers, compose);
+                            }
+                        }
+                    } else {
+                        auto hit = pickNearestPath(scene, projector, current, kClickPickRadiusPixels);
+                        if (hit) {
+                            scene.activeObjectId = hit->objectId;
+                            if (SceneObject* object = scene.findObject(hit->objectId)) {
+                                applySelectionCompose(object->selectedPaths, {hit->pathNumber}, compose);
+                            }
+                        } else if (compose == SelectionCompose::Replace) {
+                            clearAllSelections(scene);
+                        }
+                    }
+                    selectionDirty = true;
+                }
                 isDraggingMarquee = false; // drag is over -- must reset, or a later Alt+LMB orbit re-triggers the overlay (see note above)
             }
         }
@@ -404,6 +491,18 @@ int main() {
         }
         if (selectionDirty) {
             selectionHighlight.rebuild(scene);
+            // GeometryRenderer bakes selectionHighlightColor() directly
+            // into its mesh vertex colors (the separate overlay above
+            // can't show through solid bead geometry -- see
+            // SelectionHighlightRenderer.h). That means a PURE selection
+            // change, with no structural change, still needs to re-upload
+            // the mesh when Geometry mode is active, or the just-selected
+            // path never actually turns green until something else
+            // happens to trigger a full rebuild. Lines mode doesn't pay
+            // this cost -- it relies entirely on the (cheap) overlay.
+            if (renderSettings.mode == RenderMode::Geometry) {
+                geometryRenderer.rebuild(scene, colorMode, renderSettings.beadWidthMm, renderSettings.beadHeightMm);
+            }
         }
         if (bedDirty) {
             grid.rebuild(bedSettings);
@@ -420,6 +519,12 @@ int main() {
                 geometryRenderer.draw(viewProj, lightDir);
             }
             selectionHighlight.draw(viewProj);
+
+            if (SceneObject* active = scene.activeObject()) {
+                glm::vec3 origin(active->transform.x, active->transform.y, active->transform.z);
+                gizmoRenderer.rebuild(origin); // cheap (3 arrows) -- rebuilding every frame is fine
+                gizmoRenderer.draw(viewProj);
+            }
         }
 
         // Marquee rectangle overlay, drawn in screen space on top of everything.
