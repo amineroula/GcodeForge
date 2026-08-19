@@ -68,3 +68,40 @@ derivation exactly: Top → forward ≈ (0, 0, -1) straight down; Front →
 forward = (0,-1,0); Right → forward = (1,0,0); Iso → forward ≈ normalized
 (1,-1,-1), the standard isometric direction. Build succeeded, executable ran
 without hitting the shader compile/link error paths.
+
+## Milestone 3 — Scene data model
+
+**What:** `include/model/` — `Path`, `Layer`, `Transform`, `SelectionGroup`,
+`SceneObject`, `Scene`. Pure data, zero dependency on GL/GLFW/ImGui.
+
+**Key decision:** `SceneObject::selectedPaths` is the *only* selection
+mechanism, matching what reading the original's code turned up earlier
+(layer-table clicks, "select visible," and selection groups all populate
+this one `std::set<int>` rather than being four separate systems).
+
+## Milestone 4 & 5 — G-code and KUKA SRC parsers
+
+**What happened before writing any code:** grepped the original for any
+G-code (`.gcode`, G0/G1/G2/G3) handling and found none — despite "G-code" in
+the product name and repo description, every parsing function that exists
+is KUKA SRC-specific (`motionRe`, `coordRe`, `$VEL.CP`, `LIN`/`PTP`/`CIRC`/
+`SPL`). So the milestone order flipped in practice: `SrcParser` is a direct,
+regex-for-regex port of the original's `parseObject()` — same travel-marker
+handling (`;TRAVEL START`/`;TRAVEL END` comments), same layer-detection rule
+(new layer when a print move's Z differs from the previous print move's Z by
+more than `1e-5`), same "path.from = previous path's `to`, or itself if it's
+the very first path" rule. `GcodeParser` is NOT a port of anything — it's a
+standard G0/G1/G2/G3 implementation with documented assumptions (G0=travel,
+G1/G2/G3=print, no E-axis tracking, I/J arcs only) since there's no original
+behavior to match.
+
+**Testing:** added `gcode_core`, a static library containing only
+`model/`, `parser/`, and `io/` — no OpenGL dependency at all — specifically
+so the parsers could be unit-tested without a graphics context. Wrote
+`tests/parser_smoke_test.cpp`: hand-traced a realistic SRC snippet
+(travel-wrapped approach move, then a 5-path print across 2 layers) line by
+line on paper first, encoded the expected path count/types/layers/speeds as
+assertions, then ran the actual parser against it. All 19 checks passed on
+the first run — meaningful because it means the hand-derivation of "what
+the original's algorithm should produce" and the C++ port's actual behavior
+agree, not just that the code compiles.

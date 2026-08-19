@@ -55,13 +55,30 @@ target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/
 target_link_libraries(imgui PUBLIC glfw libglew_static)
 target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_LOADER_GLEW GLEW_STATIC)
 
-file(GLOB_RECURSE GCODE_CPP_SOURCES CONFIGURE_DEPENDS src/*.cpp)
+# gcode_core: model + parser + io. Pure logic, no OpenGL/GLFW/ImGui
+# dependency at all -- this is what makes it possible to unit-test the
+# parser without spinning up a graphics context (see docs/PLAN.md's
+# architecture section).
+file(GLOB_RECURSE GCODE_CORE_SOURCES CONFIGURE_DEPENDS
+    src/model/*.cpp src/parser/*.cpp src/io/*.cpp)
+add_library(gcode_core STATIC ${GCODE_CORE_SOURCES})
+target_include_directories(gcode_core PUBLIC include)
+target_link_libraries(gcode_core PUBLIC glm::glm)
 
-add_executable(gcode_editor ${GCODE_CPP_SOURCES})
+file(GLOB_RECURSE GCODE_APP_SOURCES CONFIGURE_DEPENDS
+    src/render/*.cpp src/ui/*.cpp src/main.cpp)
+
+add_executable(gcode_editor ${GCODE_APP_SOURCES})
 target_include_directories(gcode_editor PRIVATE include)
-target_link_libraries(gcode_editor PRIVATE glfw libglew_static glm::glm imgui)
+target_link_libraries(gcode_editor PRIVATE gcode_core glfw libglew_static imgui)
 target_compile_definitions(gcode_editor PRIVATE GLEW_STATIC)
+
+enable_testing()
+add_executable(parser_smoke_test tests/parser_smoke_test.cpp)
+target_link_libraries(parser_smoke_test PRIVATE gcode_core)
+add_test(NAME parser_smoke_test COMMAND parser_smoke_test)
 
 if(MSVC)
     target_compile_options(gcode_editor PRIVATE /W4)
+    target_compile_options(gcode_core PRIVATE /W4)
 endif()
