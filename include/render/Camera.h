@@ -14,6 +14,10 @@
 // stable even when looking straight down or straight up — the classic bug
 // in naive orbit cameras is that fixed-up lookAt() breaks (produces NaN)
 // exactly at the "top" view, which is usually the first view someone wants.
+//
+// Input is Maya-style: Alt+LMB orbits, Alt+MMB pans, Alt+RMB (or plain
+// scroll) dollies/zooms. That's handled in main.cpp's input polling; this
+// class just exposes orbit()/pan()/zoom() as raw operations.
 class Camera {
 public:
     Camera();
@@ -24,11 +28,21 @@ public:
     // Mouse-drag pan (moves the look-at target, not just the camera).
     void pan(float dxPixels, float dyPixels);
 
-    // Mouse-wheel zoom. Positive = zoom in.
-    void zoom(float scrollDelta);
+    // Zoom/dolly. Positive = zoom in. Drives both the orbit distance (used
+    // by perspective) and the view half-extent (used by orthographic), via
+    // the same zoomFactor_, so switching projection mid-session doesn't
+    // reset how "zoomed in" the view feels.
+    void zoom(float delta);
 
     enum class Preset { Top, Front, Right, Iso };
     void setPreset(Preset preset);
+
+    enum class Projection { Perspective, Orthographic };
+    void setProjection(Projection projection) { projection_ = projection; }
+    Projection projection() const { return projection_; }
+    void toggleProjection() {
+        projection_ = (projection_ == Projection::Perspective) ? Projection::Orthographic : Projection::Perspective;
+    }
 
     glm::mat4 viewMatrix() const;
     glm::mat4 projectionMatrix(float viewportWidth, float viewportHeight) const;
@@ -41,12 +55,13 @@ public:
 
 private:
     glm::quat orientation() const;
+    float currentDistance() const; // orbit radius, shrinks/grows with zoomFactor_
 
     glm::vec3 target_;   // world-space point the camera orbits around / looks at
-    float yaw_;           // radians, spin around world +Z
-    float pitch_;         // radians, tilt around the camera's local +X
-    float zoomFactor_;     // >1 = zoomed in, <1 = zoomed out
-    float distance_;      // fixed orbit radius (only matters for near/far, not framing — we're orthographic)
+    float yaw_;          // radians, spin around world +Z
+    float pitch_;        // radians, tilt around the camera's local +X
+    float zoomFactor_;   // >1 = zoomed in, <1 = zoomed out
     float viewportWidth_;
     float viewportHeight_;
+    Projection projection_ = Projection::Perspective; // Maya's default camera is perspective
 };

@@ -2,10 +2,14 @@
 // transform, layers, selection groups, speed editing, and color mode, plus
 // File > Open for real SRC/G-code files.
 //
-// Viewport controls: left-drag orbit, right-drag pan, scroll to zoom,
-// keys 1/2/3/4 jump to Top/Front/Right/Iso views, key G toggles the
-// reference grid. Mouse/keys are ignored by the viewport whenever ImGui
-// wants them (typing in a field, clicking a panel).
+// Viewport controls are Maya-style: Alt+left-drag orbits, Alt+middle-drag
+// pans, Alt+right-drag (or plain scroll, no Alt needed) zooms/dollies.
+// Requiring Alt keeps plain clicks free for future path-picking (deferred,
+// see docs/LOG.md milestone 7) instead of always moving the camera.
+// Keys 1/2/3/4 jump to Top/Front/Right/Iso views (also available as
+// buttons in the View panel), key G toggles the reference grid. Mouse/keys
+// are ignored by the viewport whenever ImGui wants them (typing in a
+// field, clicking a panel).
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
@@ -177,7 +181,7 @@ int main() {
         ImGui::NewFrame();
 
         bool sceneDirty = false;
-        editorUi.draw(scene, colorMode, sceneRenderer.lineCount(), sceneDirty);
+        editorUi.draw(scene, colorMode, camera, sceneRenderer.lineCount(), sceneDirty);
 
         if (editorUi.openFileRequested()) {
             editorUi.clearOpenFileRequest();
@@ -194,11 +198,15 @@ int main() {
         g_lastCursorX = cursorX;
         g_lastCursorY = cursorY;
 
-        if (!ImGui::GetIO().WantCaptureMouse) {
+        bool altHeld = glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
+                       glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
+        if (altHeld && !ImGui::GetIO().WantCaptureMouse) {
             if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
                 camera.orbit(static_cast<float>(dx), static_cast<float>(dy));
-            } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
+            } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS) {
                 camera.pan(static_cast<float>(dx), static_cast<float>(dy));
+            } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
+                camera.zoom(static_cast<float>(-dy) * 0.05f); // drag down = zoom out, matching Maya's Alt+RMB dolly
             }
         }
 

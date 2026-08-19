@@ -32,13 +32,15 @@ const char* colorModeLabel(ColorMode mode) {
 
 } // namespace
 
-void EditorUI::draw(Scene& scene, ColorMode& colorMode, size_t renderedLineCount, bool& sceneDirty) {
+void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, size_t renderedLineCount, bool& sceneDirty) {
     drawMenuBar();
 
     ImGui::SetNextWindowPos(ImVec2(12, 32), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(360, 640), ImGuiCond_FirstUseEver);
     ImGui::Begin("Editor");
 
+    drawViewPanel(camera);
+    ImGui::Separator();
     drawObjectListPanel(scene, sceneDirty);
 
     SceneObject* active = scene.activeObject();
@@ -73,6 +75,25 @@ void EditorUI::drawMenuBar() {
         }
         ImGui::EndMainMenuBar();
     }
+}
+
+void EditorUI::drawViewPanel(Camera& camera) {
+    ImGui::Text("View");
+
+    bool isPerspective = (camera.projection() == Camera::Projection::Perspective);
+    if (ImGui::RadioButton("Perspective", isPerspective)) camera.setProjection(Camera::Projection::Perspective);
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Orthographic", !isPerspective)) camera.setProjection(Camera::Projection::Orthographic);
+
+    if (ImGui::Button("Top")) camera.setPreset(Camera::Preset::Top);
+    ImGui::SameLine();
+    if (ImGui::Button("Front")) camera.setPreset(Camera::Preset::Front);
+    ImGui::SameLine();
+    if (ImGui::Button("Right")) camera.setPreset(Camera::Preset::Right);
+    ImGui::SameLine();
+    if (ImGui::Button("Iso")) camera.setPreset(Camera::Preset::Iso);
+
+    ImGui::TextDisabled("Alt+drag: LMB orbit / MMB pan / RMB zoom. Scroll also zooms.");
 }
 
 void EditorUI::drawObjectListPanel(Scene& scene, bool& dirty) {

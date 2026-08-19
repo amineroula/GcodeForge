@@ -1,25 +1,30 @@
 #pragma once
 
 #include "model/Scene.h"
+#include "render/Camera.h"
 #include "render/PathColorizer.h"
 
-// All ImGui panels: menu bar, object list, transform, layer table,
-// selection groups, speed editing, color mode picker. Owns only UI input
-// state (text buffers, pending values) -- actual scene mutation goes
-// through editor/Selection.h and editor/SpeedEditing.h so the same logic
-// stays testable without ImGui in the loop (see tests/parser_smoke_test.cpp).
+// All ImGui panels: menu bar, view/projection controls, object list,
+// transform, layer table, selection groups, speed editing, color mode
+// picker. Owns only UI input state (text buffers, pending values) -- actual
+// scene mutation goes through editor/Selection.h and editor/SpeedEditing.h
+// so the same logic stays testable without ImGui in the loop (see
+// tests/parser_smoke_test.cpp).
 class EditorUI {
 public:
     // Draws every panel for the current frame. Sets `sceneDirty` to true if
     // anything changed that requires SceneRenderer::rebuild() (transform
-    // edit, visibility toggle, color mode change, etc).
-    void draw(Scene& scene, ColorMode& colorMode, size_t renderedLineCount, bool& sceneDirty);
+    // edit, visibility toggle, color mode change, etc). Camera changes
+    // (view presets, projection toggle) don't need a scene rebuild -- they
+    // only affect the matrices main.cpp already recomputes every frame.
+    void draw(Scene& scene, ColorMode& colorMode, Camera& camera, size_t renderedLineCount, bool& sceneDirty);
 
     bool openFileRequested() const { return openFileRequested_; }
     void clearOpenFileRequest() { openFileRequested_ = false; }
 
 private:
     void drawMenuBar();
+    void drawViewPanel(Camera& camera);
     void drawObjectListPanel(Scene& scene, bool& dirty);
     void drawTransformPanel(SceneObject& object, bool& dirty);
     void drawLayerTablePanel(SceneObject& object, bool& dirty);

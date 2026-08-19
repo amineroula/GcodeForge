@@ -10,11 +10,14 @@ namespace {
 const glm::vec3 kBaseForward(0.0f, -1.0f, 0.0f);
 const glm::vec3 kBaseUp(0.0f, 0.0f, 1.0f);
 
-constexpr float kBaseHalfExtentMm = 400.0f; // world half-width visible at zoomFactor_ == 1
+constexpr float kBaseHalfExtentMm = 400.0f; // ortho world half-width visible at zoomFactor_ == 1
+constexpr float kBaseDistanceMm = 2000.0f;  // perspective orbit radius at zoomFactor_ == 1
 constexpr float kOrbitSensitivity = 0.007f;
+constexpr float kPanSensitivity = 1.0f;     // extra multiplier on top of the per-pixel world scale
 constexpr float kMinZoom = 0.02f;
 constexpr float kMaxZoom = 50.0f;
 constexpr float kPitchLimitDeg = 89.5f; // stop just short of the pole; math wouldn't break, but the UX gets disorienting there
+constexpr float kFovYDegrees = 45.0f;
 }
 
 Camera::Camera()
@@ -22,7 +25,6 @@ Camera::Camera()
       yaw_(glm::radians(45.0f)),
       pitch_(glm::radians(35.264f)), // classic isometric tilt (atan(1/sqrt(2)))
       zoomFactor_(1.0f),
-      distance_(2000.0f),
       viewportWidth_(1280.0f),
       viewportHeight_(800.0f) {}
 
@@ -35,6 +37,10 @@ glm::quat Camera::orientation() const {
     glm::quat qYaw = glm::angleAxis(yaw_, glm::vec3(0.0f, 0.0f, 1.0f));
     glm::quat qPitch = glm::angleAxis(pitch_, glm::vec3(1.0f, 0.0f, 0.0f));
     return qYaw * qPitch;
+}
+
+float Camera::currentDistance() const {
+    return kBaseDistanceMm / zoomFactor_;
 }
 
 void Camera::orbit(float dxPixels, float dyPixels) {
@@ -51,16 +57,19 @@ void Camera::pan(float dxPixels, float dyPixels) {
 
     // Convert a pixel delta to a world-space delta so panning tracks the
     // cursor 1:1 regardless of zoom level: at 2x zoom, the same pixel drag
-    // should move the target half as far in world units.
+    // should move the target half as far in world units. Uses the ortho
+    // half-extent as the "world units per pixel" reference even in
+    // perspective mode -- close enough for a pan gesture, and keeps pan
+    // speed consistent when switching projections.
     float halfHeight = kBaseHalfExtentMm / zoomFactor_;
-    float worldPerPixel = (halfHeight * 2.0f) / viewportHeight_;
+    float worldPerPixel = (halfHeight * 2.0f) / viewportHeight_ * kPanSensitivity;
 
     target_ -= right * (dxPixels * worldPerPixel);
     target_ += up * (dyPixels * worldPerPixel);
 }
 
-void Camera::zoom(float scrollDelta) {
-    zoomFactor_ *= std::pow(1.1f, scrollDelta);
+void Camera::zoom(float delta) {
+    zoomFactor_ *= std::pow(1.1f, delta);
     zoomFactor_ = std::clamp(zoomFactor_, kMinZoom, kMaxZoom);
 }
 
@@ -91,25 +100,30 @@ glm::vec3 Camera::forwardVector() const {
 }
 
 glm::vec3 Camera::eyePosition() const {
-    return target_ - forwardVector() * distance_;
+    return target_ - forwardVector() * currentDistance();
 }
 
 glm::mat4 Camera::viewMatrix() const {
     glm::quat q = orientation();
     glm::vec3 forward = q * kBaseForward;
     glm::vec3 up = q * kBaseUp; // derived from the SAME rotation as forward, so it's always valid, even at the poles
-    glm::vec3 eye = target_ - forward * distance_;
+    glm::vec3 eye = target_ - forward * currentDistance();
     return glm::lookAt(eye, target_, up);
 }
 
 glm::mat4 Camera::projectionMatrix(float viewportWidth, float viewportHeight) const {
-    // Orthographic, matching the original app: for inspecting toolpaths,
-    // parallel lines staying parallel (no perspective foreshortening)
-    // matters more than a "cinematic" look.
     float aspect = viewportWidth / viewportHeight;
+
+    if (projection_ == Projection::Perspective) {
+        return glm::perspective(glm::radians(kFovYDegrees), aspect, 1.0f, 200000.0f);
+    }
+
+    // Orthographic: for inspecting toolpaths, parallel lines staying
+    // parallel (no perspective foreshortening) matters more than a
+    // "cinematic" look -- this is why CAD/CAM tools default to it.
     float halfHeight = kBaseHalfExtentMm / zoomFactor_;
     float halfWidth = halfHeight * aspect;
-    return glm::ortho(-halfWidth, halfWidth, -halfHeight, halfHeight, -10000.0f, 10000.0f);
+    return glm::ortho(-halfWidth, halfWidth, -halfHeight, halfHeight, -200000.0f, 200000.0f);
 }
 
 void Camera::setViewportSize(float width, float height) {

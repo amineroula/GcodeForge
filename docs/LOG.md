@@ -173,3 +173,38 @@ clicking individually.
 **Verified:** clean build, app launches, loads the sample file through the
 full UI-driven path (not just the hardcoded startup load from milestone 6),
 and the parser/editor logic test suite still passes after the refactor.
+
+## Post-milestone-7 fixes — packaging path bug, Maya-style navigation
+
+Two changes made after testing the first packaged build on the desk PC:
+
+**Startup sample path bug:** the sample chair loaded fine from the dev
+build but showed an empty scene in the distributed zip -- the path was
+baked in at compile time as an absolute path on the dev machine
+(`ASSETS_DIR`), which obviously doesn't exist once the app is copied
+elsewhere. Added `executableDirectory()` (`io/FileIO`, using
+`GetModuleFileNameW`) so the app looks for `assets/` next to its own
+`.exe` first, falling back to the compile-time dev path only if that's not
+found. Verified by copying the built exe+assets to an unrelated temp
+directory and confirming the console printed the portable path, not the
+fallback -- confirming it wasn't accidentally working only because the dev
+path still happened to exist on the test machine too.
+
+**Maya-style navigation + projection toggle:** the original camera used
+plain left-drag=orbit, right-drag=pan, which felt wrong to someone used to
+Maya's convention and also stomps on future viewport click-to-select
+(milestone 7's documented gap) since a plain click would always move the
+camera. Changed to Alt+LMB=orbit, Alt+MMB=pan, Alt+RMB (or plain
+scroll)=zoom -- now a plain click in the viewport does nothing to the
+camera, which is exactly the room needed for path picking later.
+
+Also added `Camera::Projection` (Perspective/Orthographic, toggleable) --
+previously the camera was ortho-only. Both projections share the same
+`zoomFactor_`: it drives the ortho half-extent as before, and now also
+drives `currentDistance()` (the perspective orbit radius), so scrolling
+zooms consistently regardless of which projection is active, and switching
+projection mid-session doesn't reset how "zoomed in" the view feels.
+`EditorUI` gained a View panel: Perspective/Orthographic radio buttons and
+Top/Front/Right/Iso buttons, so the view presets aren't keyboard-only
+anymore. Verified: clean build, app runs, existing test suite (27 checks,
+untouched by this change) still passes.
