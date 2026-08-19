@@ -143,7 +143,15 @@ int main() {
     ColorMode colorMode = ColorMode::Layer;
 
     {
-        std::string samplePath = std::string(ASSETS_DIR) + "/samples/sample_chair.src";
+        // Try the sample next to the .exe first (matches how it's packaged
+        // for distribution -- assets/ sits alongside gcode_editor.exe),
+        // then fall back to the dev-build path (assets/ lives in the repo,
+        // not next to build/Debug/gcode_editor.exe, when running locally
+        // straight out of CMake's build tree).
+        std::string portablePath = executableDirectory() + "/assets/samples/sample_chair.src";
+        std::vector<std::string> lines = readLinesFromFile(portablePath);
+        std::string samplePath = lines.empty() ? std::string(ASSETS_DIR) + "/samples/sample_chair.src" : portablePath;
+
         loadFileIntoScene(samplePath, scene);
         sceneRenderer.rebuild(scene, colorMode);
     }
