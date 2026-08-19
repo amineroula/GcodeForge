@@ -28,6 +28,9 @@ Run `build/Debug/gcode_editor.exe` (or `build/gcode_editor` depending on generat
 
 ## Status
 
-Milestone 2 of 12 complete: window + OpenGL context boot, and a quaternion-based
-orbit camera (mouse orbit/pan/zoom, Top/Front/Right/Iso presets) looking at a
-reference grid. See [docs/LOG.md](docs/LOG.md) for the how/why of each step.
+Milestones 1-7 of 12 complete: window/GL boot, orbit camera, scene data
+model, G-code + KUKA SRC parsers, a real colored line renderer, and an
+ImGui editor (object list, transform, layer table, selection groups, speed
+editing, color mode picker, File > Open for real files). See
+[docs/LOG.md](docs/LOG.md) for the how/why of each step and
+[docs/PLAN.md](docs/PLAN.md) for what's left (8-12).

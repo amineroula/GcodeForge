@@ -5,6 +5,8 @@
 
 #include "parser/SrcParser.h"
 #include "parser/GcodeParser.h"
+#include "editor/Selection.h"
+#include "editor/SpeedEditing.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -98,11 +100,56 @@ void testGcodeParser() {
     }
 }
 
+// Selection compose (replace/add/subtract) and speed application
+// (exact/reduce/increase, PTP skip) against a small hand-built object --
+// no file parsing involved, this exercises editor/ in isolation.
+void testEditorLogic() {
+    SceneObject object;
+    object.paths.push_back(Path{1, {0,0,0}, {1,0,0}, PathType::Print, 1, "LIN", 0.040, std::nullopt, 0});
+    object.paths.push_back(Path{2, {1,0,0}, {2,0,0}, PathType::Print, 1, "LIN", 0.040, std::nullopt, 1});
+    object.paths.push_back(Path{3, {2,0,0}, {3,0,0}, PathType::Print, 2, "LIN", 0.040, std::nullopt, 2});
+    object.paths.push_back(Path{4, {3,0,0}, {4,0,0}, PathType::Travel, -1, "PTP", 0.100, std::nullopt, 3});
+
+    // Selection compose.
+    applySelectionCompose(object.selectedPaths, {1, 2}, SelectionCompose::Replace);
+    check(object.selectedPaths.size() == 2, "Selection: replace sets {1,2}");
+
+    applySelectionCompose(object.selectedPaths, {3}, SelectionCompose::Add);
+    check(object.selectedPaths.count(1) && object.selectedPaths.count(2) && object.selectedPaths.count(3),
+          "Selection: add unions in {3}");
+
+    applySelectionCompose(object.selectedPaths, {2}, SelectionCompose::Subtract);
+    check(!object.selectedPaths.count(2) && object.selectedPaths.size() == 2,
+          "Selection: subtract removes {2}, leaves {1,3}");
+
+    // Layer-table click selects all print paths on that layer.
+    std::vector<int> layer1Paths = pathNumbersForLayer(object, 1);
+    check(layer1Paths.size() == 2 && layer1Paths[0] == 1 && layer1Paths[1] == 2,
+          "Selection: layer 1 has paths {1,2}");
+
+    // Speed: exact sets an absolute value.
+    SpeedApplyResult exactResult = applySpeedToPaths(object, {1}, SpeedApplyMode::Exact, 0.025);
+    check(exactResult.appliedCount == 1, "Speed: exact applies to 1 path");
+    check(object.paths[0].speedOverride.has_value() && std::abs(*object.paths[0].speedOverride - 0.025) < 1e-9,
+          "Speed: path 1 override is exactly 0.025");
+
+    // Speed: reduce compounds on the CURRENT effective speed (the override
+    // just set), not the originally parsed speed.
+    applySpeedToPaths(object, {1}, SpeedApplyMode::Reduce, 20.0); // 0.025 * 0.8 = 0.020
+    checkNear(*object.paths[0].speedOverride, 0.020, "Speed: reduce 20% compounds on the prior override (0.025 -> 0.020)");
+
+    // Speed: PTP paths are skipped, not overridden.
+    SpeedApplyResult ptpResult = applySpeedToPaths(object, {4}, SpeedApplyMode::Exact, 0.5);
+    check(ptpResult.appliedCount == 0 && ptpResult.skippedPtpCount == 1, "Speed: PTP path is skipped, not overridden");
+    check(!object.paths[3].speedOverride.has_value(), "Speed: PTP path has no override after being skipped");
+}
+
 } // namespace
 
 int main() {
     testSrcParser();
     testGcodeParser();
+    testEditorLogic();
 
     if (g_failures == 0) {
         std::printf("\nAll checks passed.\n");

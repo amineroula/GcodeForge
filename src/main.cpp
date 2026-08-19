@@ -1,47 +1,39 @@
-// Step 3: load a real SRC file into the scene model and render it as
-// colored 3D lines. This is the first milestone where the app actually
-// shows a toolpath instead of placeholder scaffolding.
+// Step 4: a real (if minimal) editor -- ImGui panels for objects,
+// transform, layers, selection groups, speed editing, and color mode, plus
+// File > Open for real SRC/G-code files.
 //
-// Controls: left-drag orbit, right-drag pan, scroll to zoom,
-// keys 1/2/3/4 jump to Top/Front/Right/Iso views, key C cycles color mode,
-// key G toggles the reference grid.
+// Viewport controls: left-drag orbit, right-drag pan, scroll to zoom,
+// keys 1/2/3/4 jump to Top/Front/Right/Iso views, key G toggles the
+// reference grid. Mouse/keys are ignored by the viewport whenever ImGui
+// wants them (typing in a field, clicking a panel).
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
-#define GLM_ENABLE_EXPERIMENTAL
-#include <glm/gtx/string_cast.hpp>
 #include <cstdio>
 #include <string>
+
+#include <imgui.h>
+#include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_opengl3.h>
 
 #include "io/FileIO.h"
 #include "model/Scene.h"
 #include "parser/SrcParser.h"
+#include "parser/GcodeParser.h"
 #include "render/Camera.h"
 #include "render/GridRenderer.h"
 #include "render/PathColorizer.h"
 #include "render/SceneRenderer.h"
+#include "ui/EditorUI.h"
+#include "ui/FileDialog.h"
 
 namespace {
 
 Camera* g_camera = nullptr;
 double g_lastCursorX = 0.0;
 double g_lastCursorY = 0.0;
-
-ColorMode g_colorMode = ColorMode::Layer;
-bool g_colorModeDirty = false;
 bool g_showGrid = true;
-
-const char* colorModeName(ColorMode mode) {
-    switch (mode) {
-        case ColorMode::Object: return "Object";
-        case ColorMode::Type: return "Type";
-        case ColorMode::Layer: return "Layer";
-        case ColorMode::Group: return "Group";
-        case ColorMode::Speed: return "Speed";
-    }
-    return "?";
-}
 
 void onGlfwError(int code, const char* description) {
     std::fprintf(stderr, "GLFW error %d: %s\n", code, description);
@@ -55,28 +47,51 @@ void onFramebufferResize(GLFWwindow*, int width, int height) {
 }
 
 void onScroll(GLFWwindow*, double, double yOffset) {
-    if (g_camera) {
-        g_camera->zoom(static_cast<float>(yOffset));
-    }
+    if (ImGui::GetIO().WantCaptureMouse) return;
+    if (g_camera) g_camera->zoom(static_cast<float>(yOffset));
 }
 
 void onKey(GLFWwindow*, int key, int, int action, int) {
     if (action != GLFW_PRESS) return;
+    if (ImGui::GetIO().WantCaptureKeyboard) return;
     switch (key) {
         case GLFW_KEY_1: if (g_camera) g_camera->setPreset(Camera::Preset::Top); break;
         case GLFW_KEY_2: if (g_camera) g_camera->setPreset(Camera::Preset::Front); break;
         case GLFW_KEY_3: if (g_camera) g_camera->setPreset(Camera::Preset::Right); break;
         case GLFW_KEY_4: if (g_camera) g_camera->setPreset(Camera::Preset::Iso); break;
-        case GLFW_KEY_C: {
-            int next = (static_cast<int>(g_colorMode) + 1) % 5;
-            g_colorMode = static_cast<ColorMode>(next);
-            g_colorModeDirty = true;
-            std::printf("Color mode: %s\n", colorModeName(g_colorMode));
-            break;
-        }
         case GLFW_KEY_G: g_showGrid = !g_showGrid; break;
         default: break;
     }
+}
+
+std::string fileStem(const std::string& path) {
+    size_t slash = path.find_last_of("/\\");
+    size_t start = (slash == std::string::npos) ? 0 : slash + 1;
+    size_t dot = path.find_last_of('.');
+    size_t end = (dot == std::string::npos || dot < start) ? path.size() : dot;
+    return path.substr(start, end - start);
+}
+
+std::string fileExtensionLower(const std::string& path) {
+    size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos) return "";
+    std::string ext = path.substr(dot + 1);
+    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext;
+}
+
+void loadFileIntoScene(const std::string& path, Scene& scene) {
+    std::vector<std::string> lines = readLinesFromFile(path);
+    if (lines.empty()) {
+        std::fprintf(stderr, "Could not read file (or it's empty): %s\n", path.c_str());
+        return;
+    }
+    std::string name = fileStem(path);
+    std::string ext = fileExtensionLower(path);
+    SceneObject object = (ext == "gcode" || ext == "nc") ? parseGcode(name, lines) : parseSrc(name, lines);
+    std::printf("Loaded %s (%s): %zu paths, %zu layers\n",
+                object.name.c_str(), path.c_str(), object.paths.size(), object.layers.size());
+    scene.addObject(std::move(object));
 }
 
 } // namespace
@@ -112,27 +127,25 @@ int main() {
     std::printf("OpenGL renderer: %s\n", glGetString(GL_RENDERER));
     std::printf("OpenGL version:  %s\n", glGetString(GL_VERSION));
 
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init("#version 330");
+
     Camera camera;
     g_camera = &camera;
 
     GridRenderer grid;
     SceneRenderer sceneRenderer;
     Scene scene;
+    EditorUI editorUi;
+    ColorMode colorMode = ColorMode::Layer;
 
     {
         std::string samplePath = std::string(ASSETS_DIR) + "/samples/sample_chair.src";
-        std::vector<std::string> lines = readLinesFromFile(samplePath);
-        if (lines.empty()) {
-            std::fprintf(stderr, "Could not read sample file: %s\n", samplePath.c_str());
-        } else {
-            SceneObject object = parseSrc("Chair_01", lines);
-            std::printf("Loaded %s: %zu paths, %zu layers\n",
-                        object.name.c_str(), object.paths.size(), object.layers.size());
-            scene.addObject(std::move(object));
-            sceneRenderer.rebuild(scene, g_colorMode);
-            std::printf("Uploaded %zu line segments to the GPU. Color mode: %s\n",
-                        sceneRenderer.lineCount(), colorModeName(g_colorMode));
-        }
+        loadFileIntoScene(samplePath, scene);
+        sceneRenderer.rebuild(scene, colorMode);
     }
 
     int fbWidth = 0, fbHeight = 0;
@@ -151,6 +164,21 @@ int main() {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        bool sceneDirty = false;
+        editorUi.draw(scene, colorMode, sceneRenderer.lineCount(), sceneDirty);
+
+        if (editorUi.openFileRequested()) {
+            editorUi.clearOpenFileRequest();
+            if (auto path = showOpenSrcDialog(window)) {
+                loadFileIntoScene(*path, scene);
+                sceneDirty = true;
+            }
+        }
+
         double cursorX, cursorY;
         glfwGetCursorPos(window, &cursorX, &cursorY);
         double dx = cursorX - g_lastCursorX;
@@ -158,15 +186,16 @@ int main() {
         g_lastCursorX = cursorX;
         g_lastCursorY = cursorY;
 
-        if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
-            camera.orbit(static_cast<float>(dx), static_cast<float>(dy));
-        } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
-            camera.pan(static_cast<float>(dx), static_cast<float>(dy));
+        if (!ImGui::GetIO().WantCaptureMouse) {
+            if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+                camera.orbit(static_cast<float>(dx), static_cast<float>(dy));
+            } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
+                camera.pan(static_cast<float>(dx), static_cast<float>(dy));
+            }
         }
 
-        if (g_colorModeDirty) {
-            sceneRenderer.rebuild(scene, g_colorMode);
-            g_colorModeDirty = false;
+        if (sceneDirty) {
+            sceneRenderer.rebuild(scene, colorMode);
         }
 
         glClearColor(0.09f, 0.10f, 0.12f, 1.0f);
@@ -180,8 +209,15 @@ int main() {
             sceneRenderer.draw(viewProj);
         }
 
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
         glfwSwapBuffers(window);
     }
+
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
 
     g_camera = nullptr;
     glfwDestroyWindow(window);

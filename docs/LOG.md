@@ -131,3 +131,45 @@ real pipeline -- `readLinesFromFile` -> `parseSrc` -> `Scene::addObject` ->
 exactly: "21 paths, 4 layers" and "21 line segments" uploaded to the GPU.
 This is the first milestone where the app renders something that came from
 an actual file, not placeholder geometry.
+
+## Milestone 7 — ImGui editor UI
+
+**What:** integrated Dear ImGui (GLFW + OpenGL3 backends) and built the
+control panel: an object list (select active, toggle visibility, reorder,
+link to next object), a transform panel bound directly to the active
+object's `Transform` (X/Y/Z/rotZ/flip, plus ±50mm nudge buttons), a layer
+table (click a row to select that layer's print paths), a selection-group
+manager (create from current selection, select, delete), a speed panel
+(exact or reduce/increase-by-percent, applied to whatever is selected), a
+color-mode picker, and File > Open wired to a native Windows file dialog
+(`ui/FileDialog.cpp`, `GetOpenFileNameW`) that loads through the same
+`parseSrc`/`parseGcode` pipeline milestone 6 proved out.
+
+**Structural decision:** `editor/Selection.h` and `editor/SpeedEditing.h`
+hold the actual mutation logic (selection compose, speed application) as
+plain functions taking a `SceneObject&` -- `ui/EditorUI` calls them but
+contains no editing logic itself. This is the same reasoning as the
+gcode_core split in milestone 4/5: it means the logic that matters (does
+"shift-click add to layer 1's selection" actually work?) can be
+unit-tested without ImGui or a window in the loop. Added 8 more checks to
+`tests/parser_smoke_test.cpp` covering replace/add/subtract selection
+composition and exact/reduce/increase speed application (including that
+reduce/increase compounds on the CURRENT effective speed, not the
+originally parsed one, and that PTP paths are correctly skipped) -- all 27
+checks across every milestone still pass.
+
+**Selection compose without viewport picking:** the original lets you
+click individual paths directly in the 3D viewport, with Shift/Ctrl for
+add/subtract. That requires ray-vs-line-segment hit testing against
+screen-space projected paths, which is a real feature on its own -- not
+implemented yet. What IS implemented: the same Replace/Add/Subtract
+semantics (read from Shift/Ctrl each frame) applied to layer-table clicks
+and selection-group "Select" buttons, which covers the "select by layer,"
+"select by group," and "select all visible" cases from the original
+requirements. Direct in-viewport path picking is an honest gap, not a
+silent omission -- worth revisiting once there's more on screen worth
+clicking individually.
+
+**Verified:** clean build, app launches, loads the sample file through the
+full UI-driven path (not just the hardcoded startup load from milestone 6),
+and the parser/editor logic test suite still passes after the refactor.

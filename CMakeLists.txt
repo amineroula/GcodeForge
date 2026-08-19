@@ -60,7 +60,7 @@ target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_LOADER_GLEW GLEW_STATI
 # parser without spinning up a graphics context (see docs/PLAN.md's
 # architecture section).
 file(GLOB_RECURSE GCODE_CORE_SOURCES CONFIGURE_DEPENDS
-    src/model/*.cpp src/parser/*.cpp src/io/*.cpp)
+    src/model/*.cpp src/parser/*.cpp src/io/*.cpp src/editor/*.cpp)
 add_library(gcode_core STATIC ${GCODE_CORE_SOURCES})
 target_include_directories(gcode_core PUBLIC include)
 target_link_libraries(gcode_core PUBLIC glm::glm)
@@ -72,6 +72,9 @@ add_executable(gcode_editor ${GCODE_APP_SOURCES})
 target_include_directories(gcode_editor PRIVATE include)
 target_link_libraries(gcode_editor PRIVATE gcode_core glfw libglew_static imgui)
 target_compile_definitions(gcode_editor PRIVATE GLEW_STATIC ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
+if(WIN32)
+    target_link_libraries(gcode_editor PRIVATE comdlg32)
+endif()
 
 enable_testing()
 add_executable(parser_smoke_test tests/parser_smoke_test.cpp)
