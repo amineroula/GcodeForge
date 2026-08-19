@@ -32,14 +32,15 @@ const char* colorModeLabel(ColorMode mode) {
 
 } // namespace
 
-void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, size_t renderedLineCount, bool& sceneDirty) {
+void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSettings& renderSettings,
+                     size_t renderedPrimitiveCount, bool& sceneDirty) {
     drawMenuBar();
 
     ImGui::SetNextWindowPos(ImVec2(12, 32), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(360, 640), ImGuiCond_FirstUseEver);
     ImGui::Begin("Editor");
 
-    drawViewPanel(camera);
+    drawViewPanel(camera, renderSettings, sceneDirty);
     ImGui::Separator();
     drawObjectListPanel(scene, sceneDirty);
 
@@ -60,7 +61,7 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, size_t r
     drawColorModePanel(colorMode, sceneDirty);
 
     ImGui::Separator();
-    drawStatsPanel(scene, renderedLineCount);
+    drawStatsPanel(scene, renderSettings.mode, renderedPrimitiveCount);
 
     ImGui::End();
 }
@@ -77,7 +78,7 @@ void EditorUI::drawMenuBar() {
     }
 }
 
-void EditorUI::drawViewPanel(Camera& camera) {
+void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty) {
     ImGui::Text("View");
 
     bool isPerspective = (camera.projection() == Camera::Projection::Perspective);
@@ -94,6 +95,23 @@ void EditorUI::drawViewPanel(Camera& camera) {
     if (ImGui::Button("Iso")) camera.setPreset(Camera::Preset::Iso);
 
     ImGui::TextDisabled("Alt+drag: LMB orbit / MMB pan / RMB zoom. Scroll also zooms.");
+
+    ImGui::Spacing();
+    ImGui::Text("Render mode");
+    bool isLines = (renderSettings.mode == RenderMode::Lines);
+    if (ImGui::RadioButton("Lines", isLines)) {
+        if (!isLines) { renderSettings.mode = RenderMode::Lines; dirty = true; }
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Geometry (bead)", !isLines)) {
+        if (isLines) { renderSettings.mode = RenderMode::Geometry; dirty = true; }
+    }
+
+    if (renderSettings.mode == RenderMode::Geometry) {
+        if (ImGui::SliderFloat("Bead width (mm)", &renderSettings.beadWidthMm, 0.5f, 50.0f, "%.1f")) dirty = true;
+        if (ImGui::SliderFloat("Bead height (mm)", &renderSettings.beadHeightMm, 0.5f, 50.0f, "%.1f")) dirty = true;
+        ImGui::TextDisabled("Print paths render as solid bead boxes; travel paths stay as thin lines.");
+    }
 }
 
 void EditorUI::drawObjectListPanel(Scene& scene, bool& dirty) {
@@ -323,12 +341,16 @@ void EditorUI::drawColorModePanel(ColorMode& colorMode, bool& dirty) {
     }
 }
 
-void EditorUI::drawStatsPanel(const Scene& scene, size_t renderedLineCount) {
+void EditorUI::drawStatsPanel(const Scene& scene, RenderMode mode, size_t renderedPrimitiveCount) {
     size_t totalPaths = 0, totalLayers = 0;
     for (const auto& object : scene.objects) {
         totalPaths += object.paths.size();
         totalLayers += object.layers.size();
     }
     ImGui::Text("%zu object(s), %zu path(s), %zu layer(s)", scene.objects.size(), totalPaths, totalLayers);
-    ImGui::Text("%zu line segment(s) on GPU", renderedLineCount);
+    if (mode == RenderMode::Lines) {
+        ImGui::Text("%zu line segment(s) on GPU", renderedPrimitiveCount);
+    } else {
+        ImGui::Text("%zu triangle(s) on GPU (bead geometry)", renderedPrimitiveCount);
+    }
 }

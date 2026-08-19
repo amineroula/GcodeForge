@@ -3,6 +3,7 @@
 #include "model/Scene.h"
 #include "render/Camera.h"
 #include "render/PathColorizer.h"
+#include "render/RenderSettings.h"
 
 // All ImGui panels: menu bar, view/projection controls, object list,
 // transform, layer table, selection groups, speed editing, color mode
@@ -13,25 +14,27 @@
 class EditorUI {
 public:
     // Draws every panel for the current frame. Sets `sceneDirty` to true if
-    // anything changed that requires SceneRenderer::rebuild() (transform
-    // edit, visibility toggle, color mode change, etc). Camera changes
-    // (view presets, projection toggle) don't need a scene rebuild -- they
-    // only affect the matrices main.cpp already recomputes every frame.
-    void draw(Scene& scene, ColorMode& colorMode, Camera& camera, size_t renderedLineCount, bool& sceneDirty);
+    // anything changed that requires the active renderer to rebuild
+    // (transform edit, visibility toggle, color mode change, render mode
+    // switch, bead size change, etc). Camera changes (view presets,
+    // projection toggle) don't need a rebuild -- they only affect the
+    // matrices main.cpp already recomputes every frame.
+    void draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSettings& renderSettings,
+              size_t renderedPrimitiveCount, bool& sceneDirty);
 
     bool openFileRequested() const { return openFileRequested_; }
     void clearOpenFileRequest() { openFileRequested_ = false; }
 
 private:
     void drawMenuBar();
-    void drawViewPanel(Camera& camera);
+    void drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty);
     void drawObjectListPanel(Scene& scene, bool& dirty);
     void drawTransformPanel(SceneObject& object, bool& dirty);
     void drawLayerTablePanel(SceneObject& object, bool& dirty);
     void drawSelectionGroupPanel(SceneObject& object, bool& dirty);
     void drawSpeedPanel(SceneObject& object, bool& dirty);
     void drawColorModePanel(ColorMode& colorMode, bool& dirty);
-    void drawStatsPanel(const Scene& scene, size_t renderedLineCount);
+    void drawStatsPanel(const Scene& scene, RenderMode mode, size_t renderedPrimitiveCount);
 
     bool openFileRequested_ = false;
 

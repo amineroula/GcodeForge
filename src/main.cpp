@@ -26,8 +26,10 @@
 #include "parser/SrcParser.h"
 #include "parser/GcodeParser.h"
 #include "render/Camera.h"
+#include "render/GeometryRenderer.h"
 #include "render/GridRenderer.h"
 #include "render/PathColorizer.h"
+#include "render/RenderSettings.h"
 #include "render/SceneRenderer.h"
 #include "ui/EditorUI.h"
 #include "ui/FileDialog.h"
@@ -142,9 +144,12 @@ int main() {
 
     GridRenderer grid;
     SceneRenderer sceneRenderer;
+    GeometryRenderer geometryRenderer;
     Scene scene;
     EditorUI editorUi;
     ColorMode colorMode = ColorMode::Layer;
+    RenderSettings renderSettings;
+    const glm::vec3 lightDir = glm::normalize(glm::vec3(0.4f, -0.5f, 0.8f));
 
     {
         // Try the sample next to the .exe first (matches how it's packaged
@@ -158,6 +163,15 @@ int main() {
 
         loadFileIntoScene(samplePath, scene);
         sceneRenderer.rebuild(scene, colorMode);
+
+        // Sanity-check the geometry (bead) renderer path at startup too,
+        // even though Lines is the default mode -- there's no automated
+        // way to click the UI's radio button from here, so this is the
+        // check that the mesh actually builds without a GL error.
+        geometryRenderer.rebuild(scene, colorMode, renderSettings.beadWidthMm, renderSettings.beadHeightMm);
+        GLenum geometryGlError = glGetError();
+        std::printf("Geometry mode sanity check: %zu triangle(s) built, glGetError=%d (0=GL_NO_ERROR)\n",
+                    geometryRenderer.triangleCount(), static_cast<int>(geometryGlError));
     }
 
     int fbWidth = 0, fbHeight = 0;
@@ -180,8 +194,12 @@ int main() {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        size_t renderedPrimitiveCount = (renderSettings.mode == RenderMode::Lines)
+            ? sceneRenderer.lineCount()
+            : geometryRenderer.triangleCount();
+
         bool sceneDirty = false;
-        editorUi.draw(scene, colorMode, camera, sceneRenderer.lineCount(), sceneDirty);
+        editorUi.draw(scene, colorMode, camera, renderSettings, renderedPrimitiveCount, sceneDirty);
 
         if (editorUi.openFileRequested()) {
             editorUi.clearOpenFileRequest();
@@ -211,7 +229,15 @@ int main() {
         }
 
         if (sceneDirty) {
-            sceneRenderer.rebuild(scene, colorMode);
+            // Only rebuild whichever renderer is actually on screen -- no
+            // reason to spend CPU building bead geometry nobody is looking
+            // at, or vice versa. Matters once files get big (docs/PLAN.md
+            // milestone 11 is the deeper version of this idea).
+            if (renderSettings.mode == RenderMode::Lines) {
+                sceneRenderer.rebuild(scene, colorMode);
+            } else {
+                geometryRenderer.rebuild(scene, colorMode, renderSettings.beadWidthMm, renderSettings.beadHeightMm);
+            }
         }
 
         glClearColor(0.09f, 0.10f, 0.12f, 1.0f);
@@ -222,7 +248,11 @@ int main() {
         if (height > 0) {
             glm::mat4 viewProj = camera.projectionMatrix(static_cast<float>(width), static_cast<float>(height)) * camera.viewMatrix();
             if (g_showGrid) grid.draw(viewProj);
-            sceneRenderer.draw(viewProj);
+            if (renderSettings.mode == RenderMode::Lines) {
+                sceneRenderer.draw(viewProj);
+            } else {
+                geometryRenderer.draw(viewProj, lightDir);
+            }
         }
 
         ImGui::Render();

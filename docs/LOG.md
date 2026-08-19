@@ -208,3 +208,46 @@ projection mid-session doesn't reset how "zoomed in" the view feels.
 Top/Front/Right/Iso buttons, so the view presets aren't keyboard-only
 anymore. Verified: clean build, app runs, existing test suite (27 checks,
 untouched by this change) still passes.
+
+## Post-milestone-7 addition — Geometry (bead) render mode
+
+Second view mode alongside the existing thin-line renderer: print paths
+now optionally render as solid rectangular "bead" boxes approximating the
+actual deposited material cross-section, while travel paths stay as thin
+lines (there's nothing to show as a bead on a nozzle-up move).
+
+**`render/GeometryRenderer`:** each print-path segment becomes an indexed
+box -- 8 vertices, 36 indices (12 triangles) -- not 36 raw unindexed
+vertices. This directly answers the "make it optimized, these are big
+files" part of the ask: indexing means vertex memory doesn't triple for no
+reason once files get into the tens/hundreds of thousands of segments that
+docs/PLAN.md milestone 11 is ultimately about. Per-vertex normals are
+computed from the cross-section corner only (ignoring the along-length
+direction) -- this avoids a stretching artifact on long thin segments and,
+as a side effect, makes the shading read as a smooth rounded bead rather
+than a faceted block, which is arguably a better visual match for actual
+deposited material anyway.
+
+**`render/MeshShader`:** a second shader (position+normal+color, one fixed
+directional light, ambient floor + diffuse) alongside `LineShader` --
+lines don't need lighting, solid geometry does, or it reads as a flat
+silhouette instead of a volume.
+
+**Same rebuild discipline as milestone 6, extended:** `main.cpp` now owns
+both `SceneRenderer` and `GeometryRenderer` but only rebuilds and draws
+whichever one `RenderSettings::mode` currently points at -- switching to
+Geometry mode doesn't touch the line buffer, and staying in Lines mode
+never builds bead geometry nobody's looking at. This is real but limited
+optimization (don't do wasted work), explicitly NOT the deeper adaptive-LOD
+system (culling, screen-space simplification) milestone 11 covers -- that
+remains a separate, larger piece of work.
+
+**Verified:** since there's no way to click the UI's radio button from
+this environment, added a startup sanity check that calls
+`GeometryRenderer::rebuild()` directly regardless of the UI's default mode
+and checks `glGetError()`. Result against the sample chair: 192 triangles,
+`glGetError() == GL_NO_ERROR`. Hand-check: 16 of the sample's 21 paths are
+print paths (4 layers x 4 sides), 16 x 12 triangles/box = 192 -- exact
+match. Existing 27-check test suite unaffected (GeometryRenderer needs a
+live GL context, so it isn't part of the headless gcode_core test target;
+this startup check is the equivalent verification for GL-dependent code).
