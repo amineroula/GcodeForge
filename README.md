@@ -28,4 +28,6 @@ Run `build/Debug/gcode_editor.exe` (or `build/gcode_editor` depending on generat
 
 ## Status
 
-Step 1 complete: window + OpenGL context boot (`src/main.cpp`).
+Milestone 2 of 12 complete: window + OpenGL context boot, and a quaternion-based
+orbit camera (mouse orbit/pan/zoom, Top/Front/Right/Iso presets) looking at a
+reference grid. See [docs/LOG.md](docs/LOG.md) for the how/why of each step.
