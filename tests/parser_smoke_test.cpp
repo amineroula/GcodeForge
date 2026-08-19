@@ -7,7 +7,10 @@
 #include "parser/GcodeParser.h"
 #include "editor/Selection.h"
 #include "editor/SpeedEditing.h"
+#include "editor/UndoStack.h"
+#include "editor/Picking.h"
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -144,12 +147,98 @@ void testEditorLogic() {
     check(!object.paths[3].speedOverride.has_value(), "Speed: PTP path has no override after being skipped");
 }
 
+// Whole-scene snapshot undo/redo, including the continuous-edit path
+// (begin/commit) that a drag or text-field edit uses to avoid pushing one
+// undo entry per frame while a value is being dragged.
+void testUndoStack() {
+    Scene scene;
+    SceneObject object;
+    object.name = "A";
+    object.transform.x = 0.0;
+    scene.addObject(object);
+
+    UndoStack undo;
+    undo.snapshotBeforeChange(scene);
+    scene.objects[0].transform.x = 50.0;
+
+    check(undo.canUndo(), "UndoStack: canUndo is true after a snapshot");
+    undo.undo(scene);
+    checkNear(scene.objects[0].transform.x, 0.0, "UndoStack: undo restores the pre-change X");
+    check(undo.canRedo(), "UndoStack: canRedo is true after an undo");
+    undo.redo(scene);
+    checkNear(scene.objects[0].transform.x, 50.0, "UndoStack: redo re-applies the change");
+
+    // Continuous edit: begin once at drag start, mutate across several
+    // "frames," commit once. Undo should land back at the PRE-drag value,
+    // not some intermediate value from partway through the drag.
+    Scene dragScene;
+    SceneObject dragObject;
+    dragObject.name = "B";
+    dragObject.transform.x = 1.0;
+    dragScene.addObject(dragObject);
+
+    UndoStack dragUndo;
+    dragUndo.beginContinuousEdit(dragScene);
+    dragScene.objects[0].transform.x = 2.0; // simulated drag frame 1
+    dragUndo.beginContinuousEdit(dragScene); // should be a no-op (already capturing) -- must NOT overwrite the pre-drag snapshot with 2.0
+    dragScene.objects[0].transform.x = 3.0; // simulated drag frame 2
+    dragUndo.commitContinuousEdit();
+
+    check(dragUndo.canUndo(), "UndoStack: committing a continuous edit pushes exactly one entry");
+    dragUndo.undo(dragScene);
+    checkNear(dragScene.objects[0].transform.x, 1.0, "UndoStack: continuous-edit undo restores the PRE-drag value, not an intermediate one");
+}
+
+// Screen-space picking: project known world points through a known
+// orthographic projection (world XY maps predictably to screen pixels) so
+// expected pixel positions can be hand-computed rather than guessed.
+void testPicking() {
+    // ortho(-100,100,-100,100): world x in [-100,100] -> screen x in [0,200];
+    // world y in [-100,100] -> screen y in [200,0] (Y flips: NDC is up, screen is down).
+    glm::mat4 projection = glm::ortho(-100.0f, 100.0f, -100.0f, 100.0f, -100.0f, 100.0f);
+    ScreenProjector projector{projection, 200.0f, 200.0f};
+
+    Scene crossScene;
+    SceneObject crossObject;
+    crossObject.name = "cross";
+    Path horizontal; horizontal.number = 1; horizontal.type = PathType::Print;
+    horizontal.from = glm::dvec3(-50, 0, 0); horizontal.to = glm::dvec3(50, 0, 0);
+    Path vertical; vertical.number = 2; vertical.type = PathType::Print;
+    vertical.from = glm::dvec3(0, -50, 0); vertical.to = glm::dvec3(0, 50, 0);
+    crossObject.paths = {horizontal, vertical};
+    crossScene.addObject(crossObject);
+
+    // Screen (50,100): sits exactly on the horizontal line (screen y=100),
+    // 50px away from the vertical line (screen x=100) -- nearest should be path 1.
+    auto hit = pickNearestPath(crossScene, projector, glm::vec2(50.0f, 100.0f), 10.0f);
+    check(hit.has_value() && hit->pathNumber == 1, "Picking: nearest-path finds the horizontal line, not the vertical one");
+
+    auto miss = pickNearestPath(crossScene, projector, glm::vec2(0.0f, 0.0f), 5.0f);
+    check(!miss.has_value(), "Picking: a point far from both lines (beyond pickRadius) finds nothing");
+
+    Scene rectScene;
+    SceneObject rectObject;
+    rectObject.name = "rectTest";
+    Path bottomLeft; bottomLeft.number = 1; bottomLeft.type = PathType::Print;
+    bottomLeft.from = glm::dvec3(-80, -80, 0); bottomLeft.to = glm::dvec3(-20, -80, 0); // screen midpoint (50,180)
+    Path topRight; topRight.number = 2; topRight.type = PathType::Print;
+    topRight.from = glm::dvec3(20, 80, 0); topRight.to = glm::dvec3(80, 80, 0); // screen midpoint (150,20)
+    rectObject.paths = {bottomLeft, topRight};
+    rectScene.addObject(rectObject);
+
+    auto rectHits = pickPathsInRect(rectScene, projector, glm::vec2(0.0f, 150.0f), glm::vec2(100.0f, 200.0f));
+    check(rectHits.size() == 1 && rectHits[0].pathNumber == 1,
+          "Picking: rectangle select finds only the path whose midpoint falls inside it");
+}
+
 } // namespace
 
 int main() {
     testSrcParser();
     testGcodeParser();
     testEditorLogic();
+    testUndoStack();
+    testPicking();
 
     if (g_failures == 0) {
         std::printf("\nAll checks passed.\n");

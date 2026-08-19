@@ -6,63 +6,78 @@
 
 namespace {
 
-// Local vertex indices within one box (0-7), forming 12 triangles (6
-// faces). Winding isn't consistent outward-facing on every face -- face
-// culling is left disabled (see GeometryRenderer::draw), so it doesn't
-// matter for correctness, only normals matter for shading.
-constexpr uint32_t kBoxTriangleIndices[36] = {
-    0, 1, 5,  0, 5, 4,  // bottom
-    3, 2, 6,  3, 6, 7,  // top
-    1, 2, 6,  1, 6, 5,  // +right side
-    0, 3, 7,  0, 7, 4,  // -right side
-    0, 1, 2,  0, 2, 3,  // start cap
-    4, 5, 6,  4, 6, 7,  // end cap
-};
+const glm::vec3 kWorldUp(0.0f, 0.0f, 1.0f);
 
-// Appends one bead box for a print path segment. Cross-section is a
-// widthxheight rectangle centered on the from->to centerline; height is
-// always along world Z (the bead sits "flat," regardless of the segment's
-// own tilt) -- a deliberate simplification, matches how these viewers
-// conventionally show layer height regardless of local path angle.
-void appendBox(std::vector<MeshVertex>& vertices, std::vector<uint32_t>& indices,
-                const glm::vec3& from, const glm::vec3& to, float halfWidth, float halfHeight,
-                const glm::vec3& color) {
-    glm::vec3 dir = to - from;
-    float length = glm::length(dir);
-    glm::vec3 dirUnit = (length > 1e-6f) ? dir / length : glm::vec3(1.0f, 0.0f, 0.0f);
+// One cross-section's "right" unit vector (perpendicular to travel
+// direction, in the horizontal plane). At an interior joint between two
+// segments, this uses the AVERAGE of the incoming and outgoing directions
+// (a simple miter) rather than either segment's own direction alone --
+// that's what makes adjacent boxes share a matching cross-section instead
+// of leaving a gap/overlap at the corner, which was the reported artifact.
+glm::vec3 crossSectionRight(const glm::vec3& incomingDir, const glm::vec3& outgoingDir) {
+    glm::vec3 dir = incomingDir + outgoingDir;
+    float len = glm::length(dir);
+    glm::vec3 dirUnit = (len > 1e-4f) ? dir / len : incomingDir; // near-180-degree reversal: fall back to just one side
+    glm::vec3 right = glm::cross(dirUnit, kWorldUp);
+    if (glm::length(right) < 1e-4f) return glm::vec3(1.0f, 0.0f, 0.0f); // segment is vertical
+    return glm::normalize(right);
+}
 
-    const glm::vec3 worldUp(0.0f, 0.0f, 1.0f);
-    glm::vec3 rightUnit = glm::cross(dirUnit, worldUp);
-    if (glm::length(rightUnit) < 1e-4f) rightUnit = glm::vec3(1.0f, 0.0f, 0.0f); // segment is vertical
-    else rightUnit = glm::normalize(rightUnit);
+// Appends one continuous "bead" run as a single mitered tube: N segments
+// share N+1 cross-sections (4 vertices each, 8 total for the whole run's
+// two ends plus interior joints), rather than each segment getting its own
+// disconnected 8-vertex box. This is both the gap fix and a real triangle
+// reduction: N boxes independently would need 2N end caps; a run needs
+// exactly 2, one at each true end.
+void appendRun(std::vector<MeshVertex>& vertices, std::vector<uint32_t>& indices,
+               const std::vector<glm::vec3>& runPoints, const std::vector<glm::vec3>& runColors,
+               float halfWidth, float halfHeight) {
+    size_t segmentCount = runColors.size();
+    if (segmentCount == 0) return;
 
-    glm::vec3 right = rightUnit * halfWidth;
-    glm::vec3 up = worldUp * halfHeight;
-
-    // Corner layout: [end: from/to][rightSign][upSign], matching the
-    // 0-7 indices kBoxTriangleIndices expects.
-    glm::vec3 positions[8] = {
-        from - right - up, from + right - up, from + right + up, from - right + up,
-        to - right - up,   to + right - up,   to + right + up,   to - right + up,
-    };
-    // Normal depends only on which corner of the cross-section this is,
-    // not on which end (from/to) -- see the class comment on why.
-    glm::vec3 cornerNormals[4] = {
-        glm::normalize(-rightUnit - worldUp),
-        glm::normalize(rightUnit - worldUp),
-        glm::normalize(rightUnit + worldUp),
-        glm::normalize(-rightUnit + worldUp),
-    };
+    std::vector<glm::vec3> rightUnits(segmentCount + 1);
+    for (size_t i = 0; i <= segmentCount; ++i) {
+        glm::vec3 incoming = (i == 0) ? (runPoints[1] - runPoints[0]) : (runPoints[i] - runPoints[i - 1]);
+        glm::vec3 outgoing = (i == segmentCount) ? (runPoints[segmentCount] - runPoints[segmentCount - 1])
+                                                  : (runPoints[i + 1] - runPoints[i]);
+        float inLen = glm::length(incoming), outLen = glm::length(outgoing);
+        glm::vec3 inUnit = (inLen > 1e-6f) ? incoming / inLen : glm::vec3(1.0f, 0.0f, 0.0f);
+        glm::vec3 outUnit = (outLen > 1e-6f) ? outgoing / outLen : glm::vec3(1.0f, 0.0f, 0.0f);
+        rightUnits[i] = crossSectionRight(inUnit, outUnit);
+    }
 
     uint32_t base = static_cast<uint32_t>(vertices.size());
-    for (int end = 0; end < 2; ++end) {
-        for (int corner = 0; corner < 4; ++corner) {
-            vertices.push_back({positions[end * 4 + corner], cornerNormals[corner], color});
-        }
+    for (size_t i = 0; i <= segmentCount; ++i) {
+        glm::vec3 right = rightUnits[i] * halfWidth;
+        glm::vec3 up = kWorldUp * halfHeight;
+        glm::vec3 p = runPoints[i];
+        // The very last cross-section has no "owning" segment (it's the
+        // end of the last one) -- reuse that segment's color.
+        glm::vec3 color = runColors[i < segmentCount ? i : segmentCount - 1];
+
+        glm::vec3 corners[4] = {p - right - up, p + right - up, p + right + up, p - right + up};
+        glm::vec3 normals[4] = {
+            glm::normalize(-rightUnits[i] - kWorldUp),
+            glm::normalize(rightUnits[i] - kWorldUp),
+            glm::normalize(rightUnits[i] + kWorldUp),
+            glm::normalize(-rightUnits[i] + kWorldUp),
+        };
+        for (int c = 0; c < 4; ++c) vertices.push_back({corners[c], normals[c], color});
     }
-    for (uint32_t localIndex : kBoxTriangleIndices) {
-        indices.push_back(base + localIndex);
+
+    for (size_t i = 0; i < segmentCount; ++i) {
+        uint32_t a = base + static_cast<uint32_t>(i * 4);
+        uint32_t b = base + static_cast<uint32_t>((i + 1) * 4);
+        // Corner order per cross-section: 0=(-right,-up) 1=(+right,-up) 2=(+right,+up) 3=(-right,+up)
+        indices.insert(indices.end(), {a + 0, a + 1, b + 1, a + 0, b + 1, b + 0}); // bottom
+        indices.insert(indices.end(), {a + 3, b + 3, b + 2, a + 3, b + 2, a + 2}); // top
+        indices.insert(indices.end(), {a + 1, a + 2, b + 2, a + 1, b + 2, b + 1}); // +right side
+        indices.insert(indices.end(), {a + 0, b + 0, b + 3, a + 0, b + 3, a + 3}); // -right side
     }
+
+    indices.insert(indices.end(), {base + 0, base + 1, base + 2, base + 0, base + 2, base + 3}); // start cap
+    uint32_t last = base + static_cast<uint32_t>(segmentCount * 4);
+    indices.insert(indices.end(), {last + 0, last + 1, last + 2, last + 0, last + 2, last + 3}); // end cap
 }
 
 } // namespace
@@ -123,17 +138,43 @@ void GeometryRenderer::rebuild(const Scene& scene, ColorMode colorMode, float be
 
     for (const auto& object : scene.objects) {
         if (!object.visible) continue;
-        for (const auto& path : object.paths) {
-            glm::vec3 fromWorld(applyTransform(object.transform, path.from));
-            glm::vec3 toWorld(applyTransform(object.transform, path.to));
-            glm::vec3 color = pathColor(object, path, colorMode, speedColors_);
+        const auto& paths = object.paths;
 
-            if (path.type == PathType::Print) {
-                appendBox(meshVertices, meshIndices, fromWorld, toWorld, halfWidth, halfHeight, color);
-            } else {
+        size_t i = 0;
+        while (i < paths.size()) {
+            if (paths[i].type != PathType::Print) {
+                glm::vec3 fromWorld(applyTransform(object.transform, paths[i].from));
+                glm::vec3 toWorld(applyTransform(object.transform, paths[i].to));
+                glm::vec3 color = pathColor(object, paths[i], colorMode, speedColors_);
                 travelVertices.push_back({fromWorld, color});
                 travelVertices.push_back({toWorld, color});
+                ++i;
+                continue;
             }
+
+            // Extend the run while consecutive print paths are
+            // position-connected (this path's `to` matches the next
+            // path's `from`) -- a real gap in the source data (not just a
+            // direction change) still correctly starts a new run/new caps.
+            size_t runEnd = i;
+            while (runEnd + 1 < paths.size()) {
+                const Path& cur = paths[runEnd];
+                const Path& next = paths[runEnd + 1];
+                if (next.type != PathType::Print) break;
+                if (glm::length(next.from - cur.to) > 1e-4) break;
+                ++runEnd;
+            }
+
+            std::vector<glm::vec3> runPoints;
+            std::vector<glm::vec3> runColors;
+            runPoints.push_back(glm::vec3(applyTransform(object.transform, paths[i].from)));
+            for (size_t k = i; k <= runEnd; ++k) {
+                runPoints.push_back(glm::vec3(applyTransform(object.transform, paths[k].to)));
+                runColors.push_back(pathColor(object, paths[k], colorMode, speedColors_));
+            }
+            appendRun(meshVertices, meshIndices, runPoints, runColors, halfWidth, halfHeight);
+
+            i = runEnd + 1;
         }
     }
 

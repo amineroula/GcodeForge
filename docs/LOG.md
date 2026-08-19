@@ -251,3 +251,96 @@ print paths (4 layers x 4 sides), 16 x 12 triangles/box = 192 -- exact
 match. Existing 27-check test suite unaffected (GeometryRenderer needs a
 live GL context, so it isn't part of the headless gcode_core test target;
 this startup check is the equivalent verification for GL-dependent code).
+
+## Post-milestone-7 batch — mitered geometry, bed panel, picking, undo/redo, ImGui scroll fix
+
+Six changes made together in response to feedback after testing a large
+file: geometry mode was fast but had a gap artifact between boxes and the
+user wanted it faster still; a bed panel; real path selection (not just
+layer-table clicks); undo/redo; and a bug where panels could only be
+scrolled with the scrollbar, not the mouse wheel.
+
+**ImGui scroll/keyboard bug, root cause:** `ImGui_ImplGlfw_InitForOpenGL`
+installs its own GLFW scroll/key callbacks. main.cpp then called
+`glfwSetScrollCallback`/`glfwSetKeyCallback` again afterward for the
+viewport's own controls -- GLFW only allows ONE callback per event type,
+so the second call silently replaced ImGui's, and ImGui never received
+scroll or key events again. Fixed by switching to
+`ImGui_ImplGlfw_InitForOpenGL(window, false)` and installing every
+callback (scroll, key, mouse button, cursor pos, char) ourselves, each one
+forwarding to the matching `ImGui_ImplGlfw_*Callback` first, then running
+our own logic gated on `WantCaptureMouse`/`WantCaptureKeyboard`. This is
+the officially recommended pattern whenever an app needs its own GLFW
+callbacks alongside ImGui.
+
+**Geometry gap fix (`render/GeometryRenderer`), rewritten around
+"runs":** consecutive, position-connected print paths are now merged into
+one continuous mitered tube instead of each segment getting its own
+disconnected box. At each interior joint, the cross-section orientation is
+the miter (average) of the incoming and outgoing segment directions, so
+adjacent segments share an exactly-matching cross-section -- that's the
+gap fix. It's also a real performance win: a run of N segments needs
+exactly 2 end caps total (one at each true end), not 2N -- on the sample
+file this cut triangle count from 192 to 144 (a run of 4 connected
+segments: 4x8=32 side triangles + 2x2=4 cap triangles = 36 per run x 4
+layers = 144, confirmed by hand and by the startup sanity check). On a
+file made of many long, straight, connected runs (the common case), the
+saving scales with run length, not segment count.
+
+**Bed panel (`render/BedSettings`, reworked `GridRenderer`):** the grid
+is no longer fixed at construction time -- `GridRenderer::rebuild(const
+BedSettings&)` regenerates it from width/depth/origin/grid-spacing
+(default 100mm = 10cm per line, as asked). The origin axis gizmo stays
+fixed at the true world origin regardless of bed position, so there's
+always a stable reference frame even when the bed itself is moved. A
+separate "Bed" ImGui window is anchored to the right edge of the screen
+(`ImGui::GetIO().DisplaySize.x` minus a margin), distinct from the main
+left-side Editor panel.
+
+**Viewport path selection (`editor/Picking`):** screen-space picking, not
+a 3D ray-vs-segment test -- each path's endpoints are projected through
+the view-projection matrix once, then a 2D point-to-segment or
+point-in-rectangle test runs in screen space. Deliberately brute-force
+(no spatial index): picking runs once per click, not per frame, so even
+100k+ segments is well under a millisecond -- this is NOT the milestone 11
+LOD system and doesn't need to be. Plain click picks the nearest path
+within a small pixel radius; plain drag (past a small threshold, to
+distinguish it from a click) marquee-selects every path whose screen-space
+MIDPOINT falls inside the dragged rectangle, drawn live via
+`ImGui::GetForegroundDrawList()`. Shift/Ctrl still compose
+(add/subtract) exactly as the layer-table and group selection already did.
+
+**Performance-correctness fix applied to selection generally:** selecting
+paths (viewport click/drag, layer-table row, group "Select") used to flow
+through the same `dirty` flag as structural edits, which forced a full
+`SceneRenderer`/`GeometryRenderer` rebuild on every selection change --
+wasteful, and directly working against "make it faster." Split into two
+flags: `sceneDirty` (structural changes -- transform, speed, visibility,
+color/render mode) triggers a full rebuild; `selectionDirty` (pure
+selection changes) only rebuilds the new lightweight
+`SelectionHighlightRenderer` (a bright-yellow overlay drawn on top of
+either render mode). Re-selecting paths on a huge file is now cheap
+regardless of file size.
+
+**Undo/redo (`editor/UndoStack`):** whole-scene snapshot undo, matching
+the original's own `pushUndo()` design (Scene/SceneObject/Path are plain
+copyable data with no owned resources, so "undo" is just "restore a saved
+copy"). Two recording modes: `snapshotBeforeChange()` for discrete
+single-click actions (nudge buttons, visibility toggles, apply-speed,
+create/delete group, reorder, link toggle), and
+`beginContinuousEdit()`/`commitContinuousEdit()` for drag/text fields
+(transform X/Y/Z/rotZ) using `ImGui::IsItemActivated()`/
+`IsItemDeactivatedAfterEdit()` so a slider drag produces ONE undo entry
+for the whole drag, not one per frame it's held. Wired to Ctrl+Z/Ctrl+Y
+(polled with edge detection, same pattern as the camera's Alt-drag) and an
+Edit menu with Undo/Redo items showing the shortcut and greying out when
+there's nothing to undo/redo. Selection changes are deliberately NOT
+undoable, matching the original's behavior.
+
+**Verified:** 34 checks now (was 27) -- added `testUndoStack()` (snapshot
+undo/redo, and specifically that a committed continuous edit undoes to the
+PRE-drag value, not an intermediate one) and `testPicking()` (nearest-path
+and rectangle-select against hand-computed screen coordinates from a known
+orthographic projection). All pass. Geometry mode's triangle count and
+`glGetError()` re-verified at 144/GL_NO_ERROR after the run-merging
+rewrite. Full app builds and launches cleanly.

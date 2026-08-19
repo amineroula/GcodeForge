@@ -1,36 +1,42 @@
-// Step 4: a real (if minimal) editor -- ImGui panels for objects,
-// transform, layers, selection groups, speed editing, and color mode, plus
-// File > Open for real SRC/G-code files.
+// Step 4: a real editor -- ImGui panels for objects, transform, layers,
+// selection groups, speed editing, color mode, a bed panel, undo/redo, and
+// viewport path selection, plus File > Open for real SRC/G-code files.
 //
 // Viewport controls are Maya-style: Alt+left-drag orbits, Alt+middle-drag
 // pans, Alt+right-drag (or plain scroll, no Alt needed) zooms/dollies.
-// Requiring Alt keeps plain clicks free for future path-picking (deferred,
-// see docs/LOG.md milestone 7) instead of always moving the camera.
-// Keys 1/2/3/4 jump to Top/Front/Right/Iso views (also available as
-// buttons in the View panel), key G toggles the reference grid. Mouse/keys
-// are ignored by the viewport whenever ImGui wants them (typing in a
-// field, clicking a panel).
+// Plain (no Alt) left-click selects the nearest path; plain left-drag
+// marquee-selects everything inside the dragged rectangle. Shift adds to
+// the selection, Ctrl subtracts. Keys 1/2/3/4 jump to Top/Front/Right/Iso
+// views, key G toggles the reference grid, Ctrl+Z/Ctrl+Y undo/redo. Mouse/
+// keys are ignored by the viewport whenever ImGui wants them.
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
+#include <algorithm>
 #include <cstdio>
 #include <string>
+#include <map>
 
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
 
+#include "editor/Picking.h"
+#include "editor/Selection.h"
+#include "editor/UndoStack.h"
 #include "io/FileIO.h"
 #include "model/Scene.h"
 #include "parser/SrcParser.h"
 #include "parser/GcodeParser.h"
+#include "render/BedSettings.h"
 #include "render/Camera.h"
 #include "render/GeometryRenderer.h"
 #include "render/GridRenderer.h"
 #include "render/PathColorizer.h"
 #include "render/RenderSettings.h"
 #include "render/SceneRenderer.h"
+#include "render/SelectionHighlightRenderer.h"
 #include "ui/EditorUI.h"
 #include "ui/FileDialog.h"
 
@@ -52,12 +58,36 @@ void onFramebufferResize(GLFWwindow*, int width, int height) {
     }
 }
 
-void onScroll(GLFWwindow*, double, double yOffset) {
+// IMPORTANT: ImGui_ImplGlfw_InitForOpenGL is called with install_callbacks=false
+// (see main()), specifically because we need our own scroll/key callbacks
+// for the viewport. GLFW only allows one callback per event type -- if we
+// let ImGui install its own and then called glfwSetScrollCallback/
+// glfwSetKeyCallback ourselves afterward (as an earlier version of this
+// file did), we'd silently REPLACE ImGui's callback, and ImGui would never
+// see scroll/key events again -- which is exactly why panel scrolling only
+// worked via the scrollbar and not the mouse wheel. The fix is to forward
+// every event to ImGui's own handler first, then run our own logic.
+
+void onScroll(GLFWwindow* window, double xOffset, double yOffset) {
+    ImGui_ImplGlfw_ScrollCallback(window, xOffset, yOffset);
     if (ImGui::GetIO().WantCaptureMouse) return;
     if (g_camera) g_camera->zoom(static_cast<float>(yOffset));
 }
 
-void onKey(GLFWwindow*, int key, int, int action, int) {
+void onMouseButton(GLFWwindow* window, int button, int action, int mods) {
+    ImGui_ImplGlfw_MouseButtonCallback(window, button, action, mods);
+}
+
+void onCursorPos(GLFWwindow* window, double x, double y) {
+    ImGui_ImplGlfw_CursorPosCallback(window, x, y);
+}
+
+void onChar(GLFWwindow* window, unsigned int c) {
+    ImGui_ImplGlfw_CharCallback(window, c);
+}
+
+void onKey(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    ImGui_ImplGlfw_KeyCallback(window, key, scancode, action, mods);
     if (action != GLFW_PRESS) return;
     if (ImGui::GetIO().WantCaptureKeyboard) return;
     switch (key) {
@@ -100,6 +130,17 @@ void loadFileIntoScene(const std::string& path, Scene& scene) {
     scene.addObject(std::move(object));
 }
 
+SelectionCompose currentSelectionCompose() {
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.KeyCtrl) return SelectionCompose::Subtract;
+    if (io.KeyShift) return SelectionCompose::Add;
+    return SelectionCompose::Replace;
+}
+
+void clearAllSelections(Scene& scene) {
+    for (auto& object : scene.objects) object.selectedPaths.clear();
+}
+
 } // namespace
 
 int main() {
@@ -136,7 +177,7 @@ int main() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
-    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplGlfw_InitForOpenGL(window, false); // false: we install and forward callbacks ourselves, see the note above onScroll
     ImGui_ImplOpenGL3_Init("#version 330");
 
     Camera camera;
@@ -145,11 +186,16 @@ int main() {
     GridRenderer grid;
     SceneRenderer sceneRenderer;
     GeometryRenderer geometryRenderer;
+    SelectionHighlightRenderer selectionHighlight;
     Scene scene;
     EditorUI editorUi;
+    UndoStack undoStack;
     ColorMode colorMode = ColorMode::Layer;
     RenderSettings renderSettings;
+    BedSettings bedSettings;
     const glm::vec3 lightDir = glm::normalize(glm::vec3(0.4f, -0.5f, 0.8f));
+
+    grid.rebuild(bedSettings);
 
     {
         // Try the sample next to the .exe first (matches how it's packaged
@@ -182,10 +228,25 @@ int main() {
     glfwSetFramebufferSizeCallback(window, onFramebufferResize);
     glfwSetScrollCallback(window, onScroll);
     glfwSetKeyCallback(window, onKey);
+    glfwSetMouseButtonCallback(window, onMouseButton);
+    glfwSetCursorPosCallback(window, onCursorPos);
+    glfwSetCharCallback(window, onChar);
 
     glfwGetCursorPos(window, &g_lastCursorX, &g_lastCursorY);
     glEnable(GL_DEPTH_TEST);
     glLineWidth(1.0f);
+
+    // Selection input state (plain click = pick nearest path, plain drag =
+    // marquee-select). Tracked via polling + edge detection, same approach
+    // as the camera's Alt-drag handling.
+    bool leftWasPressed = false;
+    glm::vec2 mouseDownPos(0.0f, 0.0f);
+    bool isDraggingMarquee = false;
+    constexpr float kDragThresholdPixels = 4.0f;
+    constexpr float kClickPickRadiusPixels = 8.0f;
+
+    bool ctrlZWasDown = false;
+    bool ctrlYWasDown = false;
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
@@ -199,7 +260,10 @@ int main() {
             : geometryRenderer.triangleCount();
 
         bool sceneDirty = false;
-        editorUi.draw(scene, colorMode, camera, renderSettings, renderedPrimitiveCount, sceneDirty);
+        bool selectionDirty = false;
+        bool bedDirty = false;
+        editorUi.draw(scene, colorMode, camera, renderSettings, bedSettings, undoStack,
+                      renderedPrimitiveCount, sceneDirty, selectionDirty, bedDirty);
 
         if (editorUi.openFileRequested()) {
             editorUi.clearOpenFileRequest();
@@ -208,6 +272,12 @@ int main() {
                 sceneDirty = true;
             }
         }
+
+        int width, height;
+        glfwGetFramebufferSize(window, &width, &height);
+        glm::mat4 viewMatrix = camera.viewMatrix();
+        glm::mat4 projMatrix = camera.projectionMatrix(static_cast<float>(width), static_cast<float>(height));
+        glm::mat4 viewProj = projMatrix * viewMatrix;
 
         double cursorX, cursorY;
         glfwGetCursorPos(window, &cursorX, &cursorY);
@@ -218,7 +288,9 @@ int main() {
 
         bool altHeld = glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
                        glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
-        if (altHeld && !ImGui::GetIO().WantCaptureMouse) {
+        bool viewportInputActive = !ImGui::GetIO().WantCaptureMouse;
+
+        if (altHeld && viewportInputActive) {
             if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
                 camera.orbit(static_cast<float>(dx), static_cast<float>(dy));
             } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS) {
@@ -226,6 +298,58 @@ int main() {
             } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
                 camera.zoom(static_cast<float>(-dy) * 0.05f); // drag down = zoom out, matching Maya's Alt+RMB dolly
             }
+        } else if (viewportInputActive) {
+            // Plain (no Alt) left button: click-select or marquee-select.
+            bool leftPressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            if (leftPressed && !leftWasPressed) {
+                mouseDownPos = glm::vec2(static_cast<float>(cursorX), static_cast<float>(cursorY));
+                isDraggingMarquee = false;
+            } else if (leftPressed && leftWasPressed) {
+                glm::vec2 current(static_cast<float>(cursorX), static_cast<float>(cursorY));
+                if (glm::length(current - mouseDownPos) > kDragThresholdPixels) isDraggingMarquee = true;
+            } else if (!leftPressed && leftWasPressed) {
+                ScreenProjector projector{viewProj, static_cast<float>(width), static_cast<float>(height)};
+                SelectionCompose compose = currentSelectionCompose();
+                glm::vec2 current(static_cast<float>(cursorX), static_cast<float>(cursorY));
+
+                if (isDraggingMarquee) {
+                    glm::vec2 rectMin(std::min(mouseDownPos.x, current.x), std::min(mouseDownPos.y, current.y));
+                    glm::vec2 rectMax(std::max(mouseDownPos.x, current.x), std::max(mouseDownPos.y, current.y));
+                    std::vector<PathRef> hits = pickPathsInRect(scene, projector, rectMin, rectMax);
+
+                    std::map<int, std::vector<int>> byObject;
+                    for (const auto& hit : hits) byObject[hit.objectId].push_back(hit.pathNumber);
+                    if (compose == SelectionCompose::Replace && hits.empty()) clearAllSelections(scene);
+                    for (auto& [objectId, pathNumbers] : byObject) {
+                        if (SceneObject* object = scene.findObject(objectId)) {
+                            applySelectionCompose(object->selectedPaths, pathNumbers, compose);
+                        }
+                    }
+                } else {
+                    auto hit = pickNearestPath(scene, projector, current, kClickPickRadiusPixels);
+                    if (hit) {
+                        scene.activeObjectId = hit->objectId;
+                        if (SceneObject* object = scene.findObject(hit->objectId)) {
+                            applySelectionCompose(object->selectedPaths, {hit->pathNumber}, compose);
+                        }
+                    } else if (compose == SelectionCompose::Replace) {
+                        clearAllSelections(scene);
+                    }
+                }
+                selectionDirty = true;
+            }
+            leftWasPressed = leftPressed;
+        }
+
+        if (!ImGui::GetIO().WantCaptureKeyboard) {
+            bool ctrlHeld = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                            glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+            bool zDown = glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS;
+            bool yDown = glfwGetKey(window, GLFW_KEY_Y) == GLFW_PRESS;
+            if (ctrlHeld && zDown && !ctrlZWasDown) { undoStack.undo(scene); sceneDirty = true; }
+            if (ctrlHeld && yDown && !ctrlYWasDown) { undoStack.redo(scene); sceneDirty = true; }
+            ctrlZWasDown = ctrlHeld && zDown;
+            ctrlYWasDown = ctrlHeld && yDown;
         }
 
         if (sceneDirty) {
@@ -238,21 +362,35 @@ int main() {
             } else {
                 geometryRenderer.rebuild(scene, colorMode, renderSettings.beadWidthMm, renderSettings.beadHeightMm);
             }
+            selectionDirty = true; // scene content moved/changed, so highlight positions may be stale too
+        }
+        if (selectionDirty) {
+            selectionHighlight.rebuild(scene);
+        }
+        if (bedDirty) {
+            grid.rebuild(bedSettings);
         }
 
         glClearColor(0.09f, 0.10f, 0.12f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        int width, height;
-        glfwGetFramebufferSize(window, &width, &height);
         if (height > 0) {
-            glm::mat4 viewProj = camera.projectionMatrix(static_cast<float>(width), static_cast<float>(height)) * camera.viewMatrix();
             if (g_showGrid) grid.draw(viewProj);
             if (renderSettings.mode == RenderMode::Lines) {
                 sceneRenderer.draw(viewProj);
             } else {
                 geometryRenderer.draw(viewProj, lightDir);
             }
+            selectionHighlight.draw(viewProj);
+        }
+
+        // Marquee rectangle overlay, drawn in screen space on top of everything.
+        if (isDraggingMarquee && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+            ImDrawList* drawList = ImGui::GetForegroundDrawList();
+            ImVec2 a(mouseDownPos.x, mouseDownPos.y);
+            ImVec2 b(static_cast<float>(cursorX), static_cast<float>(cursorY));
+            drawList->AddRect(a, b, IM_COL32(255, 255, 60, 255));
+            drawList->AddRectFilled(a, b, IM_COL32(255, 255, 60, 40));
         }
 
         ImGui::Render();

@@ -1,12 +1,14 @@
 #pragma once
 
+#include "render/BedSettings.h"
+
 #include <glm/glm.hpp>
 #include <GL/glew.h>
 
-// Draws a reference grid on the world XY plane (the "bed") plus a small
-// XYZ axis gizmo at the origin. This exists purely so the camera has
-// something to look at while we build it — the real toolpath renderer
-// comes later (milestone 6).
+// Draws the print bed's reference grid (rebuildable from BedSettings --
+// size, position, line spacing) plus a small XYZ axis gizmo fixed at the
+// true world origin (0,0,0), independent of bed position, so there's
+// always a stable frame of reference even when the bed itself is moved.
 class GridRenderer {
 public:
     GridRenderer();
@@ -15,6 +17,7 @@ public:
     GridRenderer(const GridRenderer&) = delete;
     GridRenderer& operator=(const GridRenderer&) = delete;
 
+    void rebuild(const BedSettings& bed);
     void draw(const glm::mat4& viewProj) const;
 
 private:
@@ -23,4 +26,5 @@ private:
     GLuint shaderProgram_ = 0;
     GLint mvpUniformLocation_ = -1;
     GLsizei vertexCount_ = 0;
+    GLsizei vboCapacityVertices_ = 0;
 };

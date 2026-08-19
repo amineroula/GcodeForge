@@ -33,25 +33,26 @@ const char* colorModeLabel(ColorMode mode) {
 } // namespace
 
 void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSettings& renderSettings,
-                     size_t renderedPrimitiveCount, bool& sceneDirty) {
-    drawMenuBar();
+                     BedSettings& bedSettings, UndoStack& undoStack, size_t renderedPrimitiveCount,
+                     bool& sceneDirty, bool& selectionDirty, bool& bedDirty) {
+    drawMenuBar(scene, undoStack, sceneDirty);
 
     ImGui::SetNextWindowPos(ImVec2(12, 32), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(360, 640), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(380, 680), ImGuiCond_FirstUseEver);
     ImGui::Begin("Editor");
 
     drawViewPanel(camera, renderSettings, sceneDirty);
     ImGui::Separator();
-    drawObjectListPanel(scene, sceneDirty);
+    drawObjectListPanel(scene, undoStack, sceneDirty);
 
     SceneObject* active = scene.activeObject();
     if (active) {
         ImGui::Separator();
         ImGui::Text("Active: %s", active->name.c_str());
-        drawTransformPanel(*active, sceneDirty);
-        drawLayerTablePanel(*active, sceneDirty);
-        drawSelectionGroupPanel(*active, sceneDirty);
-        drawSpeedPanel(*active, sceneDirty);
+        drawTransformPanel(scene, *active, undoStack, sceneDirty);
+        drawLayerTablePanel(*active, selectionDirty);
+        drawSelectionGroupPanel(scene, *active, undoStack, sceneDirty, selectionDirty);
+        drawSpeedPanel(scene, *active, undoStack, sceneDirty);
     } else {
         ImGui::Separator();
         ImGui::TextDisabled("No object loaded. File > Open to load a .src file.");
@@ -64,13 +65,31 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
     drawStatsPanel(scene, renderSettings.mode, renderedPrimitiveCount);
 
     ImGui::End();
+
+    float displayWidth = ImGui::GetIO().DisplaySize.x;
+    ImGui::SetNextWindowPos(ImVec2(displayWidth - 332, 32), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(320, 320), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Bed");
+    drawBedPanel(bedSettings, bedDirty);
+    ImGui::End();
 }
 
-void EditorUI::drawMenuBar() {
+void EditorUI::drawMenuBar(Scene& scene, UndoStack& undoStack, bool& sceneDirty) {
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Open SRC / G-code...")) {
                 openFileRequested_ = true;
+            }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Edit")) {
+            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, undoStack.canUndo())) {
+                undoStack.undo(scene);
+                sceneDirty = true;
+            }
+            if (ImGui::MenuItem("Redo", "Ctrl+Y", false, undoStack.canRedo())) {
+                undoStack.redo(scene);
+                sceneDirty = true;
             }
             ImGui::EndMenu();
         }
@@ -95,6 +114,7 @@ void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, boo
     if (ImGui::Button("Iso")) camera.setPreset(Camera::Preset::Iso);
 
     ImGui::TextDisabled("Alt+drag: LMB orbit / MMB pan / RMB zoom. Scroll also zooms.");
+    ImGui::TextDisabled("Plain click: select path. Plain drag: marquee-select.");
 
     ImGui::Spacing();
     ImGui::Text("Render mode");
@@ -110,11 +130,37 @@ void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, boo
     if (renderSettings.mode == RenderMode::Geometry) {
         if (ImGui::SliderFloat("Bead width (mm)", &renderSettings.beadWidthMm, 0.5f, 50.0f, "%.1f")) dirty = true;
         if (ImGui::SliderFloat("Bead height (mm)", &renderSettings.beadHeightMm, 0.5f, 50.0f, "%.1f")) dirty = true;
-        ImGui::TextDisabled("Print paths render as solid bead boxes; travel paths stay as thin lines.");
+        ImGui::TextDisabled("Print paths render as mitered solid bead tubes; travel paths stay as thin lines.");
     }
 }
 
-void EditorUI::drawObjectListPanel(Scene& scene, bool& dirty) {
+void EditorUI::drawBedPanel(BedSettings& bed, bool& bedDirty) {
+    ImGui::Text("Bed size");
+    if (ImGui::InputFloat("Width (mm)", &bed.widthMm, 10.0f, 100.0f, "%.0f")) { bed.widthMm = std::max(bed.widthMm, 10.0f); bedDirty = true; }
+    if (ImGui::InputFloat("Depth (mm)", &bed.depthMm, 10.0f, 100.0f, "%.0f")) { bed.depthMm = std::max(bed.depthMm, 10.0f); bedDirty = true; }
+
+    ImGui::Spacing();
+    ImGui::Text("Bed position (movement)");
+    if (ImGui::InputFloat("Origin X (mm)", &bed.originXMm, 10.0f, 100.0f, "%.1f")) bedDirty = true;
+    if (ImGui::InputFloat("Origin Y (mm)", &bed.originYMm, 10.0f, 100.0f, "%.1f")) bedDirty = true;
+    if (ImGui::InputFloat("Origin Z (mm)", &bed.originZMm, 10.0f, 100.0f, "%.1f")) bedDirty = true;
+
+    ImGui::Spacing();
+    ImGui::Text("Grid");
+    if (ImGui::Checkbox("Show grid", &bed.showGrid)) bedDirty = true;
+    if (ImGui::InputFloat("Line spacing (mm)", &bed.gridSpacingMm, 5.0f, 50.0f, "%.0f")) {
+        bed.gridSpacingMm = std::max(bed.gridSpacingMm, 1.0f);
+        bedDirty = true;
+    }
+    ImGui::TextDisabled("Default: 100mm (10cm) per line.");
+
+    if (ImGui::Button("Reset bed")) {
+        bed = BedSettings{};
+        bedDirty = true;
+    }
+}
+
+void EditorUI::drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dirty) {
     ImGui::Text("Objects");
     if (ImGui::BeginTable("objects", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders)) {
         ImGui::TableSetupColumn("Name");
@@ -131,19 +177,32 @@ void EditorUI::drawObjectListPanel(Scene& scene, bool& dirty) {
             ImGui::TableNextColumn();
             bool isActive = (scene.activeObjectId == object.id);
             if (ImGui::Selectable(object.name.c_str(), isActive, ImGuiSelectableFlags_SpanAllColumns)) {
-                scene.activeObjectId = object.id;
+                scene.activeObjectId = object.id; // not undoable -- active object is a UI cursor, not scene data
             }
 
             ImGui::TableNextColumn();
-            if (ImGui::Checkbox("##visible", &object.visible)) dirty = true;
+            bool visible = object.visible;
+            if (ImGui::Checkbox("##visible", &visible)) {
+                undoStack.snapshotBeforeChange(scene);
+                object.visible = visible;
+                dirty = true;
+            }
 
             ImGui::TableNextColumn();
             ImGui::BeginDisabled(i == 0);
-            if (ImGui::ArrowButton("##up", ImGuiDir_Up)) std::swap(scene.objects[i], scene.objects[i - 1]);
+            if (ImGui::ArrowButton("##up", ImGuiDir_Up)) {
+                undoStack.snapshotBeforeChange(scene);
+                std::swap(scene.objects[i], scene.objects[i - 1]);
+                dirty = true;
+            }
             ImGui::EndDisabled();
             ImGui::SameLine();
             ImGui::BeginDisabled(i + 1 >= scene.objects.size());
-            if (ImGui::ArrowButton("##down", ImGuiDir_Down)) std::swap(scene.objects[i], scene.objects[i + 1]);
+            if (ImGui::ArrowButton("##down", ImGuiDir_Down)) {
+                undoStack.snapshotBeforeChange(scene);
+                std::swap(scene.objects[i], scene.objects[i + 1]);
+                dirty = true;
+            }
             ImGui::EndDisabled();
 
             ImGui::TableNextColumn();
@@ -151,7 +210,9 @@ void EditorUI::drawObjectListPanel(Scene& scene, bool& dirty) {
                 int nextId = scene.objects[i + 1].id;
                 bool linked = scene.objectLinks.count({object.id, nextId}) > 0;
                 if (ImGui::Checkbox("##link", &linked)) {
+                    undoStack.snapshotBeforeChange(scene);
                     scene.toggleLink(object.id, nextId);
+                    dirty = true;
                 }
             } else {
                 ImGui::TextDisabled("--");
@@ -163,35 +224,60 @@ void EditorUI::drawObjectListPanel(Scene& scene, bool& dirty) {
     }
 }
 
-void EditorUI::drawTransformPanel(SceneObject& object, bool& dirty) {
+void EditorUI::drawTransformPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty) {
     if (!ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
     Transform& t = object.transform;
     ImGui::PushID("transform");
 
-    if (ImGui::InputDouble("X (mm)", &t.x, 1.0, 10.0, "%.2f")) dirty = true;
-    if (ImGui::InputDouble("Y (mm)", &t.y, 1.0, 10.0, "%.2f")) dirty = true;
-    if (ImGui::InputDouble("Z (mm)", &t.z, 1.0, 10.0, "%.2f")) dirty = true;
-    if (ImGui::InputDouble("Rotate Z (deg)", &t.rotZDegrees, 1.0, 10.0, "%.2f")) dirty = true;
-    if (ImGui::Checkbox("Flip X", &t.flipX)) dirty = true;
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Flip Y", &t.flipY)) dirty = true;
+    auto dragField = [&](const char* label, double* value) {
+        bool changed = ImGui::InputDouble(label, value, 1.0, 10.0, "%.2f");
+        if (ImGui::IsItemActivated()) undoStack.beginContinuousEdit(scene);
+        if (changed) dirty = true;
+        if (ImGui::IsItemDeactivatedAfterEdit()) undoStack.commitContinuousEdit();
+    };
+    dragField("X (mm)", &t.x);
+    dragField("Y (mm)", &t.y);
+    dragField("Z (mm)", &t.z);
+    dragField("Rotate Z (deg)", &t.rotZDegrees);
 
+    bool flipX = t.flipX;
+    if (ImGui::Checkbox("Flip X", &flipX)) {
+        undoStack.snapshotBeforeChange(scene);
+        t.flipX = flipX;
+        dirty = true;
+    }
+    ImGui::SameLine();
+    bool flipY = t.flipY;
+    if (ImGui::Checkbox("Flip Y", &flipY)) {
+        undoStack.snapshotBeforeChange(scene);
+        t.flipY = flipY;
+        dirty = true;
+    }
+
+    auto nudge = [&](const char* label, double* value, double delta) {
+        if (ImGui::Button(label)) {
+            undoStack.snapshotBeforeChange(scene);
+            *value += delta;
+            dirty = true;
+        }
+        ImGui::SameLine();
+    };
     ImGui::Text("Nudge:");
     ImGui::SameLine();
-    if (ImGui::Button("X-50")) { t.x -= 50.0; dirty = true; }
-    ImGui::SameLine();
-    if (ImGui::Button("X+50")) { t.x += 50.0; dirty = true; }
-    ImGui::SameLine();
-    if (ImGui::Button("Y-50")) { t.y -= 50.0; dirty = true; }
-    ImGui::SameLine();
-    if (ImGui::Button("Y+50")) { t.y += 50.0; dirty = true; }
-    ImGui::SameLine();
-    if (ImGui::Button("Z-50")) { t.z -= 50.0; dirty = true; }
-    ImGui::SameLine();
-    if (ImGui::Button("Z+50")) { t.z += 50.0; dirty = true; }
+    nudge("X-50", &t.x, -50.0);
+    nudge("X+50", &t.x, 50.0);
+    nudge("Y-50", &t.y, -50.0);
+    nudge("Y+50", &t.y, 50.0);
+    nudge("Z-50", &t.z, -50.0);
+    if (ImGui::Button("Z+50")) {
+        undoStack.snapshotBeforeChange(scene);
+        t.z += 50.0;
+        dirty = true;
+    }
 
     if (ImGui::Button("Reset transform")) {
+        undoStack.snapshotBeforeChange(scene);
         t = Transform{};
         dirty = true;
     }
@@ -199,7 +285,7 @@ void EditorUI::drawTransformPanel(SceneObject& object, bool& dirty) {
     ImGui::PopID();
 }
 
-void EditorUI::drawLayerTablePanel(SceneObject& object, bool& dirty) {
+void EditorUI::drawLayerTablePanel(SceneObject& object, bool& selectionDirty) {
     if (!ImGui::CollapsingHeader("Layers", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
     if (object.layers.empty()) {
@@ -233,7 +319,7 @@ void EditorUI::drawLayerTablePanel(SceneObject& object, bool& dirty) {
             if (ImGui::Selectable(label, anySelected, ImGuiSelectableFlags_SpanAllColumns)) {
                 std::vector<int> targets = pathNumbersForLayer(object, layer.layer);
                 applySelectionCompose(object.selectedPaths, targets, currentSelectionCompose());
-                dirty = true;
+                selectionDirty = true;
             }
 
             ImGui::TableNextColumn();
@@ -254,22 +340,23 @@ void EditorUI::drawLayerTablePanel(SceneObject& object, bool& dirty) {
     ImGui::SameLine();
     if (ImGui::SmallButton("Select all visible")) {
         applySelectionCompose(object.selectedPaths, allPathNumbers(object), currentSelectionCompose());
-        dirty = true;
+        selectionDirty = true;
     }
     ImGui::SameLine();
     if (ImGui::SmallButton("Clear")) {
         object.selectedPaths.clear();
-        dirty = true;
+        selectionDirty = true;
     }
 }
 
-void EditorUI::drawSelectionGroupPanel(SceneObject& object, bool& dirty) {
+void EditorUI::drawSelectionGroupPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty, bool& selectionDirty) {
     if (!ImGui::CollapsingHeader("Selection groups")) return;
 
     ImGui::InputText("Name", groupNameBuffer_, sizeof(groupNameBuffer_));
     ImGui::ColorEdit3("Color", groupColor_);
     ImGui::BeginDisabled(object.selectedPaths.empty());
     if (ImGui::Button("Create group from current selection")) {
+        undoStack.snapshotBeforeChange(scene);
         createSelectionGroupFromSelection(object, groupNameBuffer_,
                                            glm::vec3(groupColor_[0], groupColor_[1], groupColor_[2]));
         dirty = true;
@@ -283,10 +370,11 @@ void EditorUI::drawSelectionGroupPanel(SceneObject& object, bool& dirty) {
         ImGui::SameLine();
         if (ImGui::SmallButton("Select")) {
             applySelectionCompose(object.selectedPaths, group.pathNumbers, currentSelectionCompose());
-            dirty = true;
+            selectionDirty = true;
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("Delete")) {
+            undoStack.snapshotBeforeChange(scene);
             object.selectionGroups.erase(object.selectionGroups.begin() + static_cast<long>(i));
             ImGui::PopID();
             dirty = true;
@@ -296,11 +384,11 @@ void EditorUI::drawSelectionGroupPanel(SceneObject& object, bool& dirty) {
     }
 }
 
-void EditorUI::drawSpeedPanel(SceneObject& object, bool& dirty) {
+void EditorUI::drawSpeedPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty) {
     if (!ImGui::CollapsingHeader("Speed editing", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
     if (object.selectedPaths.empty()) {
-        ImGui::TextDisabled("Select paths (layer table, group, or 'select all visible') to edit speed.");
+        ImGui::TextDisabled("Select paths (viewport click/drag, layer table, or group) to edit speed.");
         return;
     }
 
@@ -308,6 +396,7 @@ void EditorUI::drawSpeedPanel(SceneObject& object, bool& dirty) {
 
     ImGui::InputDouble("Exact speed (m/s)", &speedExact_, 0.001, 0.01, "%.4f");
     if (ImGui::Button("Apply exact")) {
+        undoStack.snapshotBeforeChange(scene);
         SpeedApplyResult result = applySpeedToPaths(object, targets, SpeedApplyMode::Exact, speedExact_);
         std::printf("Applied exact speed to %d path(s), skipped %d PTP path(s)\n",
                     result.appliedCount, result.skippedPtpCount);
@@ -317,11 +406,13 @@ void EditorUI::drawSpeedPanel(SceneObject& object, bool& dirty) {
     ImGui::InputDouble("Percent", &speedPercent_, 1.0, 5.0, "%.1f");
     ImGui::SameLine();
     if (ImGui::Button("Reduce")) {
+        undoStack.snapshotBeforeChange(scene);
         applySpeedToPaths(object, targets, SpeedApplyMode::Reduce, speedPercent_);
         dirty = true;
     }
     ImGui::SameLine();
     if (ImGui::Button("Increase")) {
+        undoStack.snapshotBeforeChange(scene);
         applySpeedToPaths(object, targets, SpeedApplyMode::Increase, speedPercent_);
         dirty = true;
     }
