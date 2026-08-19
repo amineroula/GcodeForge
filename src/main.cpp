@@ -1,6 +1,10 @@
-// Step 2: a working orbit camera looking at a reference grid.
+// Step 3: load a real SRC file into the scene model and render it as
+// colored 3D lines. This is the first milestone where the app actually
+// shows a toolpath instead of placeholder scaffolding.
+//
 // Controls: left-drag orbit, right-drag pan, scroll to zoom,
-// keys 1/2/3/4 jump to Top/Front/Right/Iso views.
+// keys 1/2/3/4 jump to Top/Front/Right/Iso views, key C cycles color mode,
+// key G toggles the reference grid.
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
@@ -8,15 +12,36 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/string_cast.hpp>
 #include <cstdio>
+#include <string>
 
+#include "io/FileIO.h"
+#include "model/Scene.h"
+#include "parser/SrcParser.h"
 #include "render/Camera.h"
 #include "render/GridRenderer.h"
+#include "render/PathColorizer.h"
+#include "render/SceneRenderer.h"
 
 namespace {
 
 Camera* g_camera = nullptr;
 double g_lastCursorX = 0.0;
 double g_lastCursorY = 0.0;
+
+ColorMode g_colorMode = ColorMode::Layer;
+bool g_colorModeDirty = false;
+bool g_showGrid = true;
+
+const char* colorModeName(ColorMode mode) {
+    switch (mode) {
+        case ColorMode::Object: return "Object";
+        case ColorMode::Type: return "Type";
+        case ColorMode::Layer: return "Layer";
+        case ColorMode::Group: return "Group";
+        case ColorMode::Speed: return "Speed";
+    }
+    return "?";
+}
 
 void onGlfwError(int code, const char* description) {
     std::fprintf(stderr, "GLFW error %d: %s\n", code, description);
@@ -36,36 +61,22 @@ void onScroll(GLFWwindow*, double, double yOffset) {
 }
 
 void onKey(GLFWwindow*, int key, int, int action, int) {
-    if (action != GLFW_PRESS || !g_camera) return;
+    if (action != GLFW_PRESS) return;
     switch (key) {
-        case GLFW_KEY_1: g_camera->setPreset(Camera::Preset::Top); break;
-        case GLFW_KEY_2: g_camera->setPreset(Camera::Preset::Front); break;
-        case GLFW_KEY_3: g_camera->setPreset(Camera::Preset::Right); break;
-        case GLFW_KEY_4: g_camera->setPreset(Camera::Preset::Iso); break;
+        case GLFW_KEY_1: if (g_camera) g_camera->setPreset(Camera::Preset::Top); break;
+        case GLFW_KEY_2: if (g_camera) g_camera->setPreset(Camera::Preset::Front); break;
+        case GLFW_KEY_3: if (g_camera) g_camera->setPreset(Camera::Preset::Right); break;
+        case GLFW_KEY_4: if (g_camera) g_camera->setPreset(Camera::Preset::Iso); break;
+        case GLFW_KEY_C: {
+            int next = (static_cast<int>(g_colorMode) + 1) % 5;
+            g_colorMode = static_cast<ColorMode>(next);
+            g_colorModeDirty = true;
+            std::printf("Color mode: %s\n", colorModeName(g_colorMode));
+            break;
+        }
+        case GLFW_KEY_G: g_showGrid = !g_showGrid; break;
         default: break;
     }
-}
-
-// Sanity-check the camera math without needing eyes on the screen: print
-// where the camera ends up for each preset. "Top" should end up almost
-// directly above the origin looking straight down (forward.z near -1).
-void debugPrintPresets(Camera& camera) {
-    struct Named { const char* name; Camera::Preset preset; };
-    const Named presets[] = {
-        {"Top", Camera::Preset::Top},
-        {"Front", Camera::Preset::Front},
-        {"Right", Camera::Preset::Right},
-        {"Iso", Camera::Preset::Iso},
-    };
-    std::printf("-- camera preset sanity check --\n");
-    for (const auto& p : presets) {
-        camera.setPreset(p.preset);
-        std::printf("%-6s eye=%s forward=%s\n", p.name,
-                    glm::to_string(camera.eyePosition()).c_str(),
-                    glm::to_string(camera.forwardVector()).c_str());
-    }
-    camera.setPreset(Camera::Preset::Iso);
-    std::printf("---------------------------------\n");
 }
 
 } // namespace
@@ -103,9 +114,26 @@ int main() {
 
     Camera camera;
     g_camera = &camera;
-    debugPrintPresets(camera);
 
     GridRenderer grid;
+    SceneRenderer sceneRenderer;
+    Scene scene;
+
+    {
+        std::string samplePath = std::string(ASSETS_DIR) + "/samples/sample_chair.src";
+        std::vector<std::string> lines = readLinesFromFile(samplePath);
+        if (lines.empty()) {
+            std::fprintf(stderr, "Could not read sample file: %s\n", samplePath.c_str());
+        } else {
+            SceneObject object = parseSrc("Chair_01", lines);
+            std::printf("Loaded %s: %zu paths, %zu layers\n",
+                        object.name.c_str(), object.paths.size(), object.layers.size());
+            scene.addObject(std::move(object));
+            sceneRenderer.rebuild(scene, g_colorMode);
+            std::printf("Uploaded %zu line segments to the GPU. Color mode: %s\n",
+                        sceneRenderer.lineCount(), colorModeName(g_colorMode));
+        }
+    }
 
     int fbWidth = 0, fbHeight = 0;
     glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
@@ -136,6 +164,11 @@ int main() {
             camera.pan(static_cast<float>(dx), static_cast<float>(dy));
         }
 
+        if (g_colorModeDirty) {
+            sceneRenderer.rebuild(scene, g_colorMode);
+            g_colorModeDirty = false;
+        }
+
         glClearColor(0.09f, 0.10f, 0.12f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -143,7 +176,8 @@ int main() {
         glfwGetFramebufferSize(window, &width, &height);
         if (height > 0) {
             glm::mat4 viewProj = camera.projectionMatrix(static_cast<float>(width), static_cast<float>(height)) * camera.viewMatrix();
-            grid.draw(viewProj);
+            if (g_showGrid) grid.draw(viewProj);
+            sceneRenderer.draw(viewProj);
         }
 
         glfwSwapBuffers(window);

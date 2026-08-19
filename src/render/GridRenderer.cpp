@@ -1,79 +1,13 @@
 #include "render/GridRenderer.h"
+#include "render/LineShader.h"
 
 #include <glm/gtc/type_ptr.hpp>
 #include <vector>
-#include <cstdio>
-#include <cstdlib>
 
 namespace {
 
-// Each vertex is 6 floats: position.xyz, color.rgb. GL_LINES draws a
-// separate segment for every pair of vertices we push.
-struct Vertex {
-    glm::vec3 position;
-    glm::vec3 color;
-};
-
-const char* kVertexShaderSrc = R"(
-#version 330 core
-layout(location = 0) in vec3 aPosition;
-layout(location = 1) in vec3 aColor;
-
-uniform mat4 uMvp;
-
-out vec3 vColor;
-
-void main() {
-    gl_Position = uMvp * vec4(aPosition, 1.0);
-    vColor = aColor;
-}
-)";
-
-const char* kFragmentShaderSrc = R"(
-#version 330 core
-in vec3 vColor;
-out vec4 FragColor;
-
-void main() {
-    FragColor = vec4(vColor, 1.0);
-}
-)";
-
-GLuint compileShader(GLenum type, const char* source) {
-    GLuint shader = glCreateShader(type);
-    glShaderSource(shader, 1, &source, nullptr);
-    glCompileShader(shader);
-
-    GLint success = 0;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        char log[512];
-        glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
-        std::fprintf(stderr, "Shader compile error: %s\n", log);
-        std::exit(1);
-    }
-    return shader;
-}
-
-GLuint linkProgram(GLuint vertexShader, GLuint fragmentShader) {
-    GLuint program = glCreateProgram();
-    glAttachShader(program, vertexShader);
-    glAttachShader(program, fragmentShader);
-    glLinkProgram(program);
-
-    GLint success = 0;
-    glGetProgramiv(program, GL_LINK_STATUS, &success);
-    if (!success) {
-        char log[512];
-        glGetProgramInfoLog(program, sizeof(log), nullptr, log);
-        std::fprintf(stderr, "Shader link error: %s\n", log);
-        std::exit(1);
-    }
-    return program;
-}
-
-std::vector<Vertex> buildGridVertices() {
-    std::vector<Vertex> vertices;
+std::vector<LineVertex> buildGridVertices() {
+    std::vector<LineVertex> vertices;
 
     constexpr float kExtentMm = 500.0f;
     constexpr float kSpacingMm = 50.0f;
@@ -102,14 +36,10 @@ std::vector<Vertex> buildGridVertices() {
 } // namespace
 
 GridRenderer::GridRenderer() {
-    GLuint vertexShader = compileShader(GL_VERTEX_SHADER, kVertexShaderSrc);
-    GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, kFragmentShaderSrc);
-    shaderProgram_ = linkProgram(vertexShader, fragmentShader);
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
+    shaderProgram_ = createLineShaderProgram();
     mvpUniformLocation_ = glGetUniformLocation(shaderProgram_, "uMvp");
 
-    std::vector<Vertex> vertices = buildGridVertices();
+    std::vector<LineVertex> vertices = buildGridVertices();
     vertexCount_ = static_cast<GLsizei>(vertices.size());
 
     glGenVertexArrays(1, &vao_);
@@ -117,12 +47,12 @@ GridRenderer::GridRenderer() {
 
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices.size() * sizeof(Vertex)), vertices.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices.size() * sizeof(LineVertex)), vertices.data(), GL_STATIC_DRAW);
 
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, position)));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(LineVertex), reinterpret_cast<void*>(offsetof(LineVertex, position)));
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, color)));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(LineVertex), reinterpret_cast<void*>(offsetof(LineVertex, color)));
 
     glBindVertexArray(0);
 }

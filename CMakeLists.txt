@@ -71,7 +71,7 @@ file(GLOB_RECURSE GCODE_APP_SOURCES CONFIGURE_DEPENDS
 add_executable(gcode_editor ${GCODE_APP_SOURCES})
 target_include_directories(gcode_editor PRIVATE include)
 target_link_libraries(gcode_editor PRIVATE gcode_core glfw libglew_static imgui)
-target_compile_definitions(gcode_editor PRIVATE GLEW_STATIC)
+target_compile_definitions(gcode_editor PRIVATE GLEW_STATIC ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
 
 enable_testing()
 add_executable(parser_smoke_test tests/parser_smoke_test.cpp)

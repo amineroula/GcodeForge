@@ -105,3 +105,29 @@ assertions, then ran the actual parser against it. All 19 checks passed on
 the first run — meaningful because it means the hand-derivation of "what
 the original's algorithm should produce" and the C++ port's actual behavior
 agree, not just that the code compiles.
+
+## Milestone 6 — Line renderer + color modes
+
+**What:** `render/PathColorizer` reproduces the original's `pathColor()`
+exactly: same 18-color hex palette, same per-mode logic (object color /
+travel-orange-print-green / layer-indexed-into-palette / selection-group
+color-or-fallback / speed-bucket-indexed-into-palette). `render/SceneRenderer`
+walks every visible object's paths, applies `applyTransform()` to get
+world-space coordinates, colors each segment, and uploads the whole thing
+as one `GL_LINES` vertex buffer.
+
+**Refactor along the way:** pulled the shader compile/link code out of
+`GridRenderer` into `render/LineShader` (a `createLineShaderProgram()`
+free function + a shared `LineVertex` struct) once it became clear
+`SceneRenderer` needed the exact same position+color shader -- two
+renderers wanting the same shader source is the point where "just copy
+it" stops being the simpler option.
+
+**Verified end-to-end:** wrote `assets/samples/sample_chair.src`, a
+hand-authored 4-layer square toolpath (21 motion lines total: 1 PTP + 1
+travel LIN, then 4x [1 travel LIN + 4 print LIN]). Loaded it through the
+real pipeline -- `readLinesFromFile` -> `parseSrc` -> `Scene::addObject` ->
+`SceneRenderer::rebuild` -- and the console output matched the hand-count
+exactly: "21 paths, 4 layers" and "21 line segments" uploaded to the GPU.
+This is the first milestone where the app renders something that came from
+an actual file, not placeholder geometry.
