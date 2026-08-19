@@ -145,7 +145,8 @@ void GeometryRenderer::rebuild(const Scene& scene, ColorMode colorMode, float be
             if (paths[i].type != PathType::Print) {
                 glm::vec3 fromWorld(applyTransform(object.transform, paths[i].from));
                 glm::vec3 toWorld(applyTransform(object.transform, paths[i].to));
-                glm::vec3 color = pathColor(object, paths[i], colorMode, speedColors_);
+                bool selected = object.selectedPaths.count(paths[i].number) > 0;
+                glm::vec3 color = selected ? selectionHighlightColor() : pathColor(object, paths[i], colorMode, speedColors_);
                 travelVertices.push_back({fromWorld, color});
                 travelVertices.push_back({toWorld, color});
                 ++i;
@@ -170,7 +171,8 @@ void GeometryRenderer::rebuild(const Scene& scene, ColorMode colorMode, float be
             runPoints.push_back(glm::vec3(applyTransform(object.transform, paths[i].from)));
             for (size_t k = i; k <= runEnd; ++k) {
                 runPoints.push_back(glm::vec3(applyTransform(object.transform, paths[k].to)));
-                runColors.push_back(pathColor(object, paths[k], colorMode, speedColors_));
+                bool selected = object.selectedPaths.count(paths[k].number) > 0;
+                runColors.push_back(selected ? selectionHighlightColor() : pathColor(object, paths[k], colorMode, speedColors_));
             }
             appendRun(meshVertices, meshIndices, runPoints, runColors, halfWidth, halfHeight);
 

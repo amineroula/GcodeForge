@@ -64,8 +64,11 @@ void Camera::pan(float dxPixels, float dyPixels) {
     float halfHeight = kBaseHalfExtentMm / zoomFactor_;
     float worldPerPixel = (halfHeight * 2.0f) / viewportHeight_ * kPanSensitivity;
 
-    target_ -= right * (dxPixels * worldPerPixel);
-    target_ += up * (dyPixels * worldPerPixel);
+    // Sign convention: dragging right/up should feel like grabbing the
+    // scene and dragging it with the cursor (the content follows the
+    // hand), so the target moves the SAME direction as the cursor delta.
+    target_ += right * (dxPixels * worldPerPixel);
+    target_ -= up * (dyPixels * worldPerPixel);
 }
 
 void Camera::zoom(float delta) {

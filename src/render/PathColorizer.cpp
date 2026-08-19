@@ -15,6 +15,7 @@ const glm::vec3 kTravelColor = hexToVec3("#ff9f1a");
 const glm::vec3 kPrintColor = hexToVec3("#28c840");
 const glm::vec3 kGroupFallback = hexToVec3("#687780");
 const glm::vec3 kSpeedFallback = hexToVec3("#89969e");
+const glm::vec3 kSelectionHighlight = hexToVec3("#39ff5a"); // bright green, outside the normal palette on purpose
 
 // Points to a SelectionGroup within an object that contains the given path
 // number, or nullptr. Mirrors the original's groupForPath().
@@ -82,4 +83,8 @@ glm::vec3 pathColor(const SceneObject& object, const Path& path, ColorMode mode,
             return speedColors.colorFor(path.effectiveSpeed());
     }
     return kSpeedFallback;
+}
+
+glm::vec3 selectionHighlightColor() {
+    return kSelectionHighlight;
 }

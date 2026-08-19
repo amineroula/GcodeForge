@@ -7,6 +7,8 @@
 #include "render/PathColorizer.h"
 #include "render/RenderSettings.h"
 
+struct ImFont;
+
 // All ImGui panels: menu bar, view/projection controls, object list,
 // transform, layer table, selection groups, speed editing, color mode
 // picker, and a separate Bed panel (right side). Owns only UI input state
@@ -38,7 +40,15 @@ public:
     bool openFileRequested() const { return openFileRequested_; }
     void clearOpenFileRequest() { openFileRequested_ = false; }
 
+    // Set once, right after construction, if main.cpp successfully loaded
+    // a bold font (see main.cpp's font setup). Section labels use it when
+    // set; when null, they just render in the regular font -- the app
+    // still works, it's a cosmetic upgrade, not a dependency.
+    void setBoldFont(ImFont* font) { boldFont_ = font; }
+
 private:
+    void sectionLabel(const char* text); // bold if boldFont_ is set, plain otherwise
+
     void drawMenuBar(Scene& scene, UndoStack& undoStack, bool& sceneDirty);
     void drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty);
     void drawBedPanel(BedSettings& bedSettings, bool& bedDirty);
@@ -57,4 +67,6 @@ private:
 
     char groupNameBuffer_[64] = "Group";
     float groupColor_[3] = {0.212f, 0.663f, 1.0f};
+
+    ImFont* boldFont_ = nullptr;
 };

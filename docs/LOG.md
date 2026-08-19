@@ -344,3 +344,74 @@ and rectangle-select against hand-computed screen coordinates from a known
 orthographic projection). All pass. Geometry mode's triangle count and
 `glGetError()` re-verified at 144/GL_NO_ERROR after the run-merging
 rewrite. Full app builds and launches cleanly.
+
+## Post-milestone-7 batch 2 — bug fixes from photographed testing
+
+Six more fixes, this time from screenshots of the app actually running on
+the desk PC with a real (non-sample) file loaded via File > Open.
+
+**Pan direction reversed.** `Camera::pan()` had `target_ -= right*dx;
+target_ += up*dy;` -- flipped both signs so dragging feels like grabbing
+the scene and moving it with the cursor, not fighting it.
+
+**Selection invisible in Geometry mode -- root cause diagnosed, not just
+patched.** `SelectionHighlightRenderer` draws each selected path's
+CENTERLINE. In Lines mode that's the only geometry there, so it's fine. In
+Geometry mode the centerline sits INSIDE the solid bead box -- with depth
+testing on (which it is, for correct 3D rendering generally), the box's
+own opaque front surface is nearer the camera than its own centerline, so
+the depth test correctly rejects drawing the highlight there. This isn't a
+rendering glitch, it's the depth test doing exactly its job against
+geometry that happens to occlude itself. Real fix: `GeometryRenderer` now
+bakes `selectionHighlightColor()` directly into the mesh/travel-line
+vertex colors for selected paths, instead of relying on a separate overlay
+that can't see through solid geometry. Also standardized the highlight
+color itself to bright green (`#39ff5a`) per feedback, shared via
+`render/PathColorizer::selectionHighlightColor()` so both renderers use
+literally the same value.
+
+**Marquee rectangle getting stuck on screen during camera orbit -- a real
+state-machine bug.** Traced from the screenshot showing a giant yellow
+rectangle covering the viewport during what should have been a plain
+rotate: `isDraggingMarquee` was only ever reset to `false` on the NEXT
+mouse-down, never immediately after a drag was released. Alt+LMB-drag
+(orbit) also holds the left mouse button -- so the marquee draw condition
+(`isDraggingMarquee && leftButtonPressed`) would go true again the moment
+the user held Alt+LMB to orbit after any earlier click, and then track the
+rotate drag as if it were still marquee-selecting. Fixed by (1) explicitly
+resetting `isDraggingMarquee` immediately after handling a release, (2)
+resetting it whenever Alt is held (Alt means camera nav, never selection),
+and (3) moving `leftPressed`/`leftWasPressed` edge-detection to update
+unconditionally every frame instead of only inside whichever branch
+happened to run, so toggling Alt mid-drag can't leave the edge-detection
+state stale either. Also added a defense-in-depth `!altHeld` check on the
+marquee's actual draw call.
+
+**Objects panel: added Delete and a per-object color swatch.** Delete
+needed care -- erasing mid-loop over `scene.objects` while iterating by
+index would invalidate later iterations, so the actual erase is deferred
+to right after the table finishes drawing for the frame, and if the
+deleted object was active, `activeObjectId` falls back to whatever's now
+first (or 0 if the scene is now empty). The color swatch
+(`ImGui::ColorEdit3` bound to `object.color`) uses the same
+begin/commitContinuousEdit undo pattern as the transform fields, since
+dragging inside a color picker is exactly the same "many frames, one
+logical edit" shape as dragging a slider.
+
+**UI looked "weak" -- swapped the default ImGui font for Segoe UI.** The
+single biggest lever for "does this look like a real app" turned out to be
+the font: ImGui's built-in default is a small bitmap font meant for debug
+overlays, not a real UI. Loaded Segoe UI (regular + bold) from
+`C:\Windows\Fonts\` -- safe to hardcode since this is a Windows-only app
+and Segoe UI ships on every stock install; `AddFontFromFileTTF` returns
+null rather than crashing if the path's ever wrong, with a fallback to
+ImGui's built-in font. Section labels and collapsing-header titles now use
+the bold variant via a small `EditorUI::sectionLabel()` helper. Also
+tuned `ImGuiStyle` (rounding, padding, spacing) away from ImGui's very
+utilitarian defaults.
+
+**Verified:** full 34-check test suite still passes (none of these were
+pure-logic changes worth new automated tests -- they're rendering/input/
+visual fixes verified by building, running, and re-checking the geometry
+sanity numbers, which were unaffected). Screenshots from the desk PC
+confirmed the underlying bugs before each fix was written.

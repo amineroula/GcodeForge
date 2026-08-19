@@ -34,3 +34,10 @@ private:
 
 glm::vec3 pathColor(const SceneObject& object, const Path& path, ColorMode mode,
                      const SpeedColorTable& speedColors);
+
+// The one selection-highlight color, shared by every renderer that needs
+// to show "this is selected" (SelectionHighlightRenderer's line overlay,
+// GeometryRenderer's baked-in bead/travel coloring). Bright green,
+// deliberately outside the normal palette so it never gets confused with
+// a color-mode color.
+glm::vec3 selectionHighlightColor();

@@ -1,11 +1,8 @@
 #include "render/SelectionHighlightRenderer.h"
+#include "render/PathColorizer.h"
 
 #include <glm/gtc/type_ptr.hpp>
 #include <vector>
-
-namespace {
-const glm::vec3 kHighlightColor(1.0f, 1.0f, 0.15f); // bright yellow -- reads over both print-green and travel-orange
-}
 
 SelectionHighlightRenderer::SelectionHighlightRenderer() {
     shaderProgram_ = createLineShaderProgram();
@@ -37,8 +34,9 @@ void SelectionHighlightRenderer::rebuild(const Scene& scene) {
             if (!object.selectedPaths.count(path.number)) continue;
             glm::vec3 fromWorld(applyTransform(object.transform, path.from));
             glm::vec3 toWorld(applyTransform(object.transform, path.to));
-            vertices.push_back({fromWorld, kHighlightColor});
-            vertices.push_back({toWorld, kHighlightColor});
+            glm::vec3 color = selectionHighlightColor();
+            vertices.push_back({fromWorld, color});
+            vertices.push_back({toWorld, color});
         }
     }
 

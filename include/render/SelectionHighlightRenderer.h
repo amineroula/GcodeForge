@@ -6,11 +6,16 @@
 #include <GL/glew.h>
 #include <glm/glm.hpp>
 
-// Draws every currently-selected path as a bright overlay line, on top of
-// whichever main renderer (Lines or Geometry) is active. Selection needs
-// to be visible regardless of render mode or color mode -- a fixed
-// highlight color that ignores ColorMode entirely is what makes "what's
-// selected" readable no matter what else is going on screen.
+// Draws every currently-selected path's CENTERLINE as a bright overlay
+// line. This alone is enough in Lines mode, but NOT in Geometry mode: the
+// centerline sits inside the solid bead box, so the depth test correctly
+// hides it behind the box's own opaque surface -- a real bug that showed
+// up as "selection is invisible in Geometry mode." The actual fix for
+// Geometry mode is in GeometryRenderer, which bakes selectionHighlightColor()
+// directly into the selected paths' bead/travel-line vertex colors instead
+// of relying on this overlay. This renderer is still useful there for
+// travel paths (thin lines, nothing occludes them) and is the whole
+// mechanism in Lines mode.
 class SelectionHighlightRenderer {
 public:
     SelectionHighlightRenderer();

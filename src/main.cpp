@@ -177,6 +177,31 @@ int main() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
+
+    // The default ImGui font (a small bitmap font baked for debug tools)
+    // is a big part of why a plain ImGui app "looks weak" -- swap in a
+    // real system font. Segoe UI ships on every stock Windows install, so
+    // this is safe to hardcode for a Windows-only app; AddFontFromFileTTF
+    // returns nullptr (not a crash) if the path is ever wrong, so the
+    // fallback to ImGui's built-in font still works if something's off.
+    ImGuiIO& io = ImGui::GetIO();
+    ImFont* regularFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17.0f);
+    ImFont* boldFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeuib.ttf", 18.0f);
+    if (!regularFont) io.Fonts->AddFontDefault();
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 6.0f;
+    style.ChildRounding = 6.0f;
+    style.FrameRounding = 4.0f;
+    style.GrabRounding = 4.0f;
+    style.PopupRounding = 4.0f;
+    style.ScrollbarRounding = 6.0f;
+    style.WindowPadding = ImVec2(10.0f, 10.0f);
+    style.FramePadding = ImVec2(6.0f, 4.0f);
+    style.ItemSpacing = ImVec2(8.0f, 6.0f);
+    style.ScrollbarSize = 14.0f;
+    style.WindowTitleAlign = ImVec2(0.02f, 0.5f);
+
     ImGui_ImplGlfw_InitForOpenGL(window, false); // false: we install and forward callbacks ourselves, see the note above onScroll
     ImGui_ImplOpenGL3_Init("#version 330");
 
@@ -189,6 +214,7 @@ int main() {
     SelectionHighlightRenderer selectionHighlight;
     Scene scene;
     EditorUI editorUi;
+    editorUi.setBoldFont(boldFont);
     UndoStack undoStack;
     ColorMode colorMode = ColorMode::Layer;
     RenderSettings renderSettings;
@@ -290,17 +316,28 @@ int main() {
                        glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
         bool viewportInputActive = !ImGui::GetIO().WantCaptureMouse;
 
+        // leftPressed/leftWasPressed are tracked unconditionally, every
+        // frame, regardless of altHeld or viewportInputActive -- if this
+        // edge-detection state only updated inside the branches below (as
+        // an earlier version of this code did), toggling Alt mid-drag
+        // could leave it stuck, which combined with isDraggingMarquee
+        // never being reset after a completed drag caused the marquee
+        // rectangle to reappear and track the cursor during an unrelated
+        // Alt+LMB camera orbit (Alt+LMB holds the left button too) --
+        // exactly the reported "selection box keeps showing up" bug.
+        bool leftPressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+
         if (altHeld && viewportInputActive) {
-            if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+            if (leftPressed) {
                 camera.orbit(static_cast<float>(dx), static_cast<float>(dy));
             } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS) {
                 camera.pan(static_cast<float>(dx), static_cast<float>(dy));
             } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
                 camera.zoom(static_cast<float>(-dy) * 0.05f); // drag down = zoom out, matching Maya's Alt+RMB dolly
             }
+            isDraggingMarquee = false; // Alt is for camera nav -- never leave a marquee armed while it's held
         } else if (viewportInputActive) {
             // Plain (no Alt) left button: click-select or marquee-select.
-            bool leftPressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
             if (leftPressed && !leftWasPressed) {
                 mouseDownPos = glm::vec2(static_cast<float>(cursorX), static_cast<float>(cursorY));
                 isDraggingMarquee = false;
@@ -337,9 +374,10 @@ int main() {
                     }
                 }
                 selectionDirty = true;
+                isDraggingMarquee = false; // drag is over -- must reset, or a later Alt+LMB orbit re-triggers the overlay (see note above)
             }
-            leftWasPressed = leftPressed;
         }
+        leftWasPressed = leftPressed;
 
         if (!ImGui::GetIO().WantCaptureKeyboard) {
             bool ctrlHeld = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
@@ -385,7 +423,11 @@ int main() {
         }
 
         // Marquee rectangle overlay, drawn in screen space on top of everything.
-        if (isDraggingMarquee && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+        // The !altHeld check is defense-in-depth on top of the state-machine
+        // fix above -- isDraggingMarquee should already be false whenever
+        // Alt is held, but never rendering a marquee during camera nav is
+        // cheap insurance against this exact class of bug recurring.
+        if (isDraggingMarquee && !altHeld && leftPressed) {
             ImDrawList* drawList = ImGui::GetForegroundDrawList();
             ImVec2 a(mouseDownPos.x, mouseDownPos.y);
             ImVec2 b(static_cast<float>(cursorX), static_cast<float>(cursorY));
