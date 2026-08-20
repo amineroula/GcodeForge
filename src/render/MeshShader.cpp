@@ -82,8 +82,12 @@ void main() {
             baseColor = stripe > 0.5 ? vec3(1.0) : vec3(0.0);
         }
         emissive = true;
-    } else if (uHasSelection != 0 && (uSelectionStyle == SELECTION_STYLE_PULSE || uSelectionStyle == SELECTION_STYLE_STRIPES)) {
-        baseColor = vColor * 0.25; // dim everything else so the highlighted geometry pops
+    } else if (uHasSelection != 0 && uSelectionStyle == SELECTION_STYLE_PULSE) {
+        // Only Pulse dims the rest of the scene. Stripes deliberately
+        // leaves everything else at normal lit brightness ("don't turn
+        // the light off") -- the moving stripe pattern is unmistakable
+        // enough on its own without needing to darken everything around it.
+        baseColor = vColor * 0.25;
     }
 
     vec3 n = normalize(vNormal);

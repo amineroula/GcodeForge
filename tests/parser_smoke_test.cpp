@@ -315,9 +315,8 @@ void testBedIO() {
     original.showGrid = false;
 
     BedHeightmap originalHeightmap;
-    originalHeightmap.spacingMm = 50.0f;
     originalHeightmap.visible = true;
-    originalHeightmap.resizeToBed(original.widthMm, original.depthMm);
+    originalHeightmap.resize(12, 6);
     for (size_t i = 0; i < originalHeightmap.elevationsMm.size(); ++i) {
         originalHeightmap.elevationsMm[i] = static_cast<float>(i) * 0.1f - 1.0f;
     }
@@ -337,7 +336,6 @@ void testBedIO() {
     checkNear(loaded.gridSpacingMm, original.gridSpacingMm, "BedIO: gridSpacing round-trips");
     check(loaded.showGrid == original.showGrid, "BedIO: showGrid round-trips");
 
-    checkNear(loadedHeightmap.spacingMm, originalHeightmap.spacingMm, "BedIO: heightmap spacing round-trips");
     check(loadedHeightmap.visible == originalHeightmap.visible, "BedIO: heightmap visible round-trips");
     check(loadedHeightmap.cols == originalHeightmap.cols, "BedIO: heightmap cols round-trips");
     check(loadedHeightmap.rows == originalHeightmap.rows, "BedIO: heightmap rows round-trips");
@@ -667,6 +665,7 @@ void testSrcExporterLayerAction() {
 } // namespace
 
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     testSrcParser();
     testGcodeParser();
     testEditorLogic();

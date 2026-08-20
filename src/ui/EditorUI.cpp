@@ -43,6 +43,12 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
                      UndoStack& undoStack, size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty) {
     drawMenuBar(scene, undoStack, sceneDirty);
 
+    // Panels collapsed: skip both floating windows entirely, leaving an
+    // unobstructed view of the viewport. The toggle button itself lives in
+    // the menu bar (drawMenuBar), which stays visible either way, so it's
+    // always reachable to bring the panels back.
+    if (!panelsVisible_) return;
+
     ImGui::SetNextWindowPos(ImVec2(12, 32), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(380, 680), ImGuiCond_FirstUseEver);
     ImGui::Begin("Editor");
@@ -102,6 +108,14 @@ void EditorUI::drawMenuBar(Scene& scene, UndoStack& undoStack, bool& sceneDirty)
                 sceneDirty = true;
             }
             ImGui::EndMenu();
+        }
+        // Panel collapse toggle: lives directly in the menu bar (not its
+        // own floating window) so it's always visible and reachable
+        // regardless of panelsVisible_'s current state -- clicking it
+        // hides/shows the Editor and Bed windows for an unobstructed view
+        // of the viewport, click again to bring them back.
+        if (ImGui::SmallButton(panelsVisible_ ? "Hide panels" : "Show panels")) {
+            panelsVisible_ = !panelsVisible_;
         }
         ImGui::EndMainMenuBar();
     }
@@ -267,34 +281,34 @@ void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHei
     }
     ImGui::EndDisabled();
 
-    // Bed heightmap: operator-entered elevation measurements at fixed grid
-    // points across the bed, visualized as a colored heatmap surface so
-    // warp is visible before it ruins a print. bedDirty is reused for
-    // every edit here (spacing, resize, per-point value, visibility) --
-    // main.cpp's bedDirty handler already calls resizeToBed() and
-    // rebuilds BedHeightmapRenderer whenever it fires, so this doesn't
-    // need its own separate dirty flag threaded through the whole call
-    // chain.
+    // Bed heightmap: operator-entered elevation measurements across the
+    // bed, visualized as a colored heatmap surface so warp is visible
+    // before it ruins a print. Columns/rows are the source of truth here
+    // (not a spacing value) -- the operator states the grid directly
+    // ("10 columns, 5 rows"), and X/Y spacing is just bed size divided by
+    // (cols-1)/(rows-1). bedDirty is reused for every edit here (columns,
+    // rows, per-point value, visibility) -- main.cpp's bedDirty handler
+    // already rebuilds BedHeightmapRenderer whenever it fires, so this
+    // doesn't need its own separate dirty flag threaded through the whole
+    // call chain.
     ImGui::Spacing();
     ImGui::Spacing();
     sectionLabel("Bed Heightmap");
     ImGui::TextWrapped("Enter measured bed elevation at each grid point to see where the bed is "
-                        "elevated too much, as a heatmap.");
+                        "elevated too much, as a heatmap. Point (0,0) is one bed corner, "
+                        "(columns-1, rows-1) is the opposite corner.");
 
     if (ImGui::Checkbox("Show heatmap", &heightmap.visible)) bedDirty = true;
 
-    float spacing = heightmap.spacingMm;
-    if (ImGui::DragFloat("Spacing (mm)", &spacing, 1.0f, 5.0f, 1000.0f, "%.0f")) {
-        heightmap.spacingMm = std::max(spacing, 5.0f);
+    int cols = heightmap.cols;
+    int rows = heightmap.rows;
+    bool colsChanged = ImGui::InputInt("Columns", &cols);
+    bool rowsChanged = ImGui::InputInt("Rows", &rows);
+    if (colsChanged || rowsChanged) {
+        heightmap.resize(std::max(cols, 2), std::max(rows, 2));
         bedDirty = true;
     }
-    ImGui::TextDisabled("Default: one measurement point every 100mm (10cm).");
 
-    if (ImGui::Button("Resize grid to bed")) {
-        heightmap.resizeToBed(bed.widthMm, bed.depthMm);
-        bedDirty = true;
-    }
-    ImGui::SameLine();
     if (ImGui::Button("Reset all to 0")) {
         std::fill(heightmap.elevationsMm.begin(), heightmap.elevationsMm.end(), 0.0f);
         bedDirty = true;
@@ -315,9 +329,8 @@ void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHei
         ImGui::Text("%d x %d grid (%d points)", heightmap.cols, heightmap.rows, heightmap.cols * heightmap.rows);
         ImGui::TextDisabled("Drag a value to scrub it, or double-click/Ctrl+click to type an exact number.");
 
-        // Scrollable child so a large grid (e.g. 11x11 at the default
-        // 1000mm bed / 100mm spacing = 121 fields) doesn't blow out the
-        // rest of the Bed panel.
+        // Scrollable child so a large grid doesn't blow out the rest of
+        // the Bed panel.
         ImGui::BeginChild("heightmapGrid", ImVec2(0, 220), true, ImGuiWindowFlags_HorizontalScrollbar);
         if (ImGui::BeginTable("heightmapTable", heightmap.cols, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
             // Row 0 (the -Y edge) drawn FIRST. Counterintuitive but

@@ -272,7 +272,7 @@ int main() {
     BedHeightmap bedHeightmap;
 
     grid.rebuild(bedSettings);
-    bedHeightmap.resizeToBed(bedSettings.widthMm, bedSettings.depthMm);
+    bedHeightmap.resize(bedHeightmap.cols, bedHeightmap.rows); // allocates elevationsMm to match the default cols/rows
     bedHeightmapRenderer.rebuild(bedSettings, bedHeightmap);
 
     {
@@ -688,11 +688,10 @@ int main() {
         }
         if (bedDirty) {
             grid.rebuild(bedSettings);
-            // Reused for heightmap edits too (spacing, resize, per-point
-            // values, visibility) -- not just bed size/position -- so the
-            // heightmap mesh needs a resize-to-current-bed-extent pass
-            // (a no-op if the bed itself didn't change) before rebuilding.
-            bedHeightmap.resizeToBed(bedSettings.widthMm, bedSettings.depthMm);
+            // Reused for heightmap edits too (columns/rows, per-point
+            // values, visibility), not just bed size/position -- cols/rows
+            // are independent of bed size now (the operator sets them
+            // directly), so this is just a mesh rebuild, no resize needed.
             bedHeightmapRenderer.rebuild(bedSettings, bedHeightmap);
         }
 

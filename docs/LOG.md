@@ -908,3 +908,79 @@ against the operator's description rather than needing a new change.
 **Verified:** all 106 tests still pass; full Debug rebuild clean; startup
 sanity checks (Geometry, outline, bed heightmap) all still report
 `glGetError=0`.
+
+## Stripes as default, panel collapse toggle, bed heightmap grid redesign
+
+Another operator-feedback batch, plus a real bug caught by actually
+running the test suite rather than assuming a refactor was safe.
+
+**Stripes made the default selection style, and no longer dims the rest
+of the scene.** `RenderSettings::selectionStyle` now defaults to
+`Stripes` (was `Outline`). The mesh fragment shader's "dim everything
+else" branch, previously shared by both Pulse and Stripes, is now Pulse-
+only -- Stripes leaves unselected geometry at normal lit brightness
+("don't turn the light off"), relying on the moving stripe pattern alone
+to read as unmistakable.
+
+**Panel collapse toggle.** A "Hide panels"/"Show panels" button lives
+directly in the menu bar (not a floating window of its own, so it's
+always reachable regardless of state). When collapsed, `EditorUI::draw()`
+returns immediately after drawing the menu bar, skipping the Editor and
+Bed windows entirely for an unobstructed view of the viewport.
+
+**Multi-monitor / detachable panels -- investigated, not implemented
+this round.** Dear ImGui's docking branch supports exactly this
+(`ImGuiConfigFlags_ViewportsEnable` lets any window be dragged out into
+its own OS-level window, including onto another monitor) and the
+existing GLFW/OpenGL3 backends already have full support for it built
+in -- no backend rewrite needed. The blocker is that this repo pins
+ImGui to the `v1.91.1` tag on the mainline branch (`CMakeLists.txt`);
+docking/viewports live on a separate branch with its own API surface,
+so adopting it means a real dependency swap and a full UI re-test, not
+a quick flag flip. Worth doing as its own focused change rather than
+folding into this batch.
+
+**Bed heightmap grid redesign: columns/rows instead of spacing.** Per
+the request ("bed 100cm, 10 columns, 5 rows"), `BedHeightmap` no longer
+derives its grid from a spacing value -- `cols`/`rows` are now the
+operator-set source of truth directly (Bed panel gained "Columns"/"Rows"
+integer fields, replacing the old "Spacing (mm)" + "Resize grid to bed"
+button), with X/Y spacing simply derived as `bedWidthMm/(cols-1)` at
+render/save time. `BedHeightmap::resizeToBed()` was replaced with
+`resize(cols, rows)`, resizing directly rather than being driven by bed
+dimensions. `io/BedIO`'s save format changed to match: each grid point
+now gets its own `heightmapPoint <localX> <localY> <elevationZ>` line
+(local bed-relative X/Y, computed at save time, plus the raw measured Z)
+instead of the previous compact `heightmapRow <v0> <v1> ...` blocks --
+explicit per-point positions make the saved file self-describing and
+reconstructible without knowing the grid-generation formula, matching
+"if I save it I get a position of the whole bed and the position of each
+point."
+
+**Real bug found and fixed: an out-of-bounds read that manifested as an
+infinite hang, not a crash.** While updating the round-trip test for the
+new API, `parser_smoke_test.exe` started hanging forever partway through
+-- three separate runs each got stuck and had to be killed via
+`taskkill`. Root cause: `BedHeightmap`'s new defaults (`cols=10, rows=5`,
+chosen to match the "10 columns, 5 rows" example in the request) left
+`elevationsMm` at its OWN default -- an empty vector -- so a freshly
+default-constructed `BedHeightmap` had `cols`/`rows` claiming 50 points
+while the backing vector held zero. `resize()`'s "preserve existing
+values by grid position" copy loop trusted that invariant and read
+`elevationsMm[row*cols+col]` out of bounds. In a Debug build, MSVC's
+Debug STL raises an assertion dialog on that -- which, with no console
+attached to display it, blocks the process forever waiting for a click
+that can never come. That's indistinguishable from an infinite loop from
+the outside, which is exactly what it looked like until the process list
+was checked directly (`tasklist`/`taskkill`) and the hang point was
+narrowed down by adding unbuffered stdout to the test binary and
+re-running under a hard timeout. Fixed at the root: `elevationsMm`'s
+default member initializer now explicitly sizes itself to `cols*rows`
+(legal C++ -- member initializers run in declaration order, so `cols`/
+`rows` are already set when this one runs). `resize()` also got a
+bounds check against the ACTUAL current vector size as defense in depth,
+in case the invariant is ever violated again some other way.
+
+**Verified:** all 106 tests pass (confirmed via a hard-timeout run after
+the fix, not just "it returned"); full Debug rebuild clean; startup
+sanity checks report a 10x5/72-triangle default grid with `glGetError=0`.

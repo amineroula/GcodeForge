@@ -43,7 +43,7 @@ enum class SelectionStyle {
 
 struct RenderSettings {
     RenderMode mode = RenderMode::Lines;
-    SelectionStyle selectionStyle = SelectionStyle::Outline;
+    SelectionStyle selectionStyle = SelectionStyle::Stripes;
     float beadWidthMm = 7.0f;   // cross-section width of the simulated extrusion bead
     float beadHeightMm = 3.0f;  // cross-section height (roughly: layer height)
 

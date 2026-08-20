@@ -96,4 +96,9 @@ private:
     int layerSelectionAnchor_ = -1;
 
     ImFont* boldFont_ = nullptr;
+
+    // Toggled by the "Hide/Show panels" button in the menu bar -- when
+    // false, draw() returns right after drawing the menu bar, skipping
+    // the Editor and Bed windows entirely for an unobstructed viewport.
+    bool panelsVisible_ = true;
 };
