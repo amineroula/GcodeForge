@@ -73,7 +73,7 @@ void GizmoRenderer::draw(const glm::mat4& viewProj) const {
     glUseProgram(shaderProgram_);
     glUniformMatrix4fv(mvpUniformLocation_, 1, GL_FALSE, glm::value_ptr(viewProj));
     glDisable(GL_DEPTH_TEST); // gizmo should always be visible, drawn on top of everything
-    glLineWidth(2.0f);
+    glLineWidth(5.0f);
     glBindVertexArray(vao_);
     glDrawArrays(GL_LINES, 0, vertexCount_);
     glBindVertexArray(0);

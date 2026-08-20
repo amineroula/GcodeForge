@@ -604,3 +604,119 @@ must confirm/edit the real command before export.
   and output byte-identical to the original -- the strongest available
   evidence the patch-based design actually holds up on production data,
   not just the hand-written test snippet.
+
+## Post-milestone-9 feedback batch -- selection, dragging, framing, lighting
+
+A round of fixes/features driven directly by the operator testing real
+builds on real hardware (desk PC, RTX 4080) and reporting bugs by photo.
+
+**Marquee selection now does real rectangle-segment intersection.**
+Previously a path counted as "inside" the drag rectangle only if its
+*midpoint* fell inside it -- a path that crossed the rectangle without its
+midpoint landing inside was missed. Replaced with Liang-Barsky
+segment-vs-rectangle clipping (`editor/Picking.h`), so a path is selected
+if any part of it intersects the rectangle, matching every other editor's
+marquee-select behavior.
+
+**Select-backfacing toggle.** `RenderSettings::selectBackfacing` -- off
+(default) prefers whichever path is nearer the camera when candidates
+overlap on screen, matching what you'd expect to click; on, picking falls
+back to pure 2D screen-space nearest, letting the operator grab geometry
+that's behind something else without having to rotate the view first.
+
+**Backface culling for Geometry mode preview.** Requested as "depth
+culling for better preview" -- interpreted as GPU backface culling
+(`RenderSettings::backfaceCulling`, `glCullFace(GL_BACK)`), which single
+handedly surfaced a real mesh-winding bug: 5 of the 6 box faces in the
+bead mesh had inverted normals from a hand-derivation error, invisible
+under normal double-sided rendering but immediately obvious with culling
+on (whole faces vanished). Fixed with a self-correcting `appendQuad()`
+that computes the actual face normal from vertex positions and picks
+winding order to match a stated expected-outward direction, instead of
+trusting hardcoded index order -- can't silently drift out of sync with
+the mesh topology again.
+
+**4x MSAA** (`GLFW_SAMPLES=4` before window creation) for smoother line
+edges, per "sampling options for better line drawing."
+
+**Gizmo redesign -- see milestone 9's entry above** for the full
+writeup (visibility root cause + Start/End/Whole target modes); listed
+here again only because a follow-up fix landed in this same batch, below.
+
+**Connected dragging.** After Start/End/Whole gizmo editing shipped, the
+operator found that moving a path's endpoint left it visibly detached
+from its neighbor (screenshot: a gap where two paths used to touch).
+`editor/ConnectedDrag.h/.cpp`'s `buildDragSnapshots()` fixes this by
+propagating the drag delta one hop to any immediately-adjacent,
+*unselected* path whose touching endpoint currently coincides
+(`glm::length(prev.to - p.from) < 1e-4`) with the endpoint being moved --
+so dragging the middle path of a connected chain pulls both neighbors'
+touching ends along with it, while a genuine gap (paths that were never
+actually touching) correctly does NOT get pulled together. 9 new tests
+cover Whole/Start modes and the no-pull-on-a-real-gap case.
+
+**Gizmo made thicker** (`glLineWidth` 2.0 -> 5.0 in `GizmoRenderer`) --
+straightforward legibility fix, no design questions involved.
+
+**Outline selection -- two attempts, first one shipped broken.** Attempt
+1: draw a screen-space-wide line along each selected path's centerline
+*before* the real geometry, relying on ordinary depth testing to let only
+the wide line's edges show through as a border (a real, standard trick --
+and still in use today for Lines-mode and travel-path highlighting, where
+it's provably correct). Reported broken by the operator with a photo:
+"the highlight is only from one side, not the whole line." Root cause:
+that trick only produces a symmetric outline for something with no depth
+extent perpendicular to the view (a flat line in Lines mode). A Geometry
+mode bead is a 3D tube -- a fixed-pixel-width line drawn along ITS
+centerline pokes out by different, view-angle-dependent amounts on each
+side, so it reads as one-sided highlighting rather than a clean outline
+from most angles. Attempt 2 replaced it with the standard "inverted hull"
+technique for Geometry mode specifically: build a second mesh containing
+only the selected (and connectivity-pulled-in) paths, enlarged by a fixed
+margin, and draw it FIRST with **front-face culling** (`GL_CULL_FACE` +
+`GL_FRONT`) so only its far/back faces render; the real mesh, drawn next
+and always closer to the camera on its own front surface, naturally
+occludes the shell's center via normal depth testing, leaving only a rim
+visible right at the silhouette edge -- angle-independent by construction,
+unlike a screen-space line. `GeometryRenderer` gained a whole second
+VAO/VBO/EBO for this outline mesh; `SelectionHighlightRenderer` now skips
+print-type paths entirely in Geometry mode (the outline mesh replaces
+that job there) while still using the original wide-line technique for
+Lines mode and for travel paths in both modes. Verified via an automated
+startup sanity check: selecting every print path on the sample object and
+rebuilding produces exactly 144 outline triangles (matching the main
+mesh's own triangle count for a fully-selected object) with
+`glGetError() == GL_NO_ERROR`.
+
+**View/frame keybinds.** `editor/Framing.h/.cpp`'s `computeFrameBounds()`
+computes a bounding sphere -- of the current selection if non-empty,
+falling back to the whole scene otherwise -- and `Camera::frameBounds()`
+repoints the orbit target and adjusts zoom to fit it with a 1.3x margin.
+Wired to key **F** (frame). T/P/U map to existing camera preset/projection
+calls (Top view, Perspective, Orthographic). Note: the operator's request
+listed "F" for both frame and front view in the same sentence -- resolved
+by keeping Front on its existing key (2) and its UI button, since F=frame
+matches the Maya/Blender convention and was the first meaning given.
+
+**Multi-light "Environment" system**, in the Bed panel per "put it in the
+bed environment rollout." Replaced the single hardcoded `lightDir` with
+`LightingSettings` (`include/render/LightingSettings.h`): a
+`std::vector<Light>` of up to `kMaxLights = 4`, each with a direction,
+color, and enabled flag, defaulting to one light matching the old
+hardcoded value so existing files look identical until the operator
+actually opens the new panel. `MeshShader`'s fragment shader now loops
+over `uLightDirs[4]`/`uLightColors[4]`/`uLightCount` instead of a single
+direction uniform. `GeometryRenderer::draw()` takes a `const
+LightingSettings&` and uploads only the *enabled* lights each frame (a
+disabled light isn't sent at all, rather than sent with a zero color).
+New Bed-panel section: per-light direction sliders (-1..1 per axis),
+color picker, an enable checkbox, and Add/Remove buttons (remove disabled
+below one light, add disabled at the 4-light cap). Lighting is a
+per-frame shader uniform, never baked into any mesh, so changing it needs
+no scene rebuild -- unlike almost everything else in the Bed/Editor
+panels, it doesn't touch `bedDirty`/`sceneDirty` at all.
+
+**Verified:** all 101 existing tests still pass (no regressions); startup
+sanity checks (Geometry mesh, outline mesh) both report `glGetError=0`
+after the lighting-signature change; full Debug rebuild of both
+`gcode_editor` and `parser_smoke_test` succeeded cleanly.

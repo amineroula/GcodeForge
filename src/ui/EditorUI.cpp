@@ -39,8 +39,8 @@ void EditorUI::sectionLabel(const char* text) {
 }
 
 void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSettings& renderSettings,
-                     BedSettings& bedSettings, UndoStack& undoStack, size_t renderedPrimitiveCount,
-                     bool& sceneDirty, bool& selectionDirty, bool& bedDirty) {
+                     BedSettings& bedSettings, LightingSettings& lightingSettings, UndoStack& undoStack,
+                     size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty) {
     drawMenuBar(scene, undoStack, sceneDirty);
 
     ImGui::SetNextWindowPos(ImVec2(12, 32), ImGuiCond_FirstUseEver);
@@ -76,7 +76,7 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
     ImGui::SetNextWindowPos(ImVec2(displayWidth - 332, 32), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(320, 320), ImGuiCond_FirstUseEver);
     ImGui::Begin("Bed");
-    drawBedPanel(bedSettings, bedDirty);
+    drawBedPanel(bedSettings, lightingSettings, bedDirty);
     ImGui::End();
 }
 
@@ -165,7 +165,7 @@ void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, boo
     ImGui::TextDisabled("an unselected neighbor; Whole translates each selected path rigidly, so it never does.");
 }
 
-void EditorUI::drawBedPanel(BedSettings& bed, bool& bedDirty) {
+void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, bool& bedDirty) {
     sectionLabel("Bed size");
     if (ImGui::InputFloat("Width (mm)", &bed.widthMm, 10.0f, 100.0f, "%.0f")) { bed.widthMm = std::max(bed.widthMm, 10.0f); bedDirty = true; }
     if (ImGui::InputFloat("Depth (mm)", &bed.depthMm, 10.0f, 100.0f, "%.0f")) { bed.depthMm = std::max(bed.depthMm, 10.0f); bedDirty = true; }
@@ -194,6 +194,49 @@ void EditorUI::drawBedPanel(BedSettings& bed, bool& bedDirty) {
     if (ImGui::Button("Save Bed...")) saveBedRequested_ = true;
     ImGui::SameLine();
     if (ImGui::Button("Load Bed...")) loadBedRequested_ = true;
+
+    // Lighting affects only Geometry-mode shading (a per-frame shader
+    // uniform, not baked into any mesh) -- no bedDirty/sceneDirty needed,
+    // the next frame's draw call just picks up the new values directly.
+    ImGui::Spacing();
+    ImGui::Spacing();
+    sectionLabel("Environment / Lighting");
+    ImGui::TextDisabled("Affects Geometry view mode shading only.");
+
+    int lightToRemove = -1;
+    for (size_t i = 0; i < lighting.lights.size(); ++i) {
+        Light& light = lighting.lights[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::Separator();
+        ImGui::Checkbox("Enabled", &light.enabled);
+        ImGui::SameLine();
+        ImGui::Text("Light %d", static_cast<int>(i + 1));
+        ImGui::SameLine(ImGui::GetWindowWidth() - 60.0f);
+        bool canRemove = lighting.lights.size() > 1;
+        ImGui::BeginDisabled(!canRemove);
+        if (ImGui::SmallButton("Remove")) lightToRemove = static_cast<int>(i);
+        ImGui::EndDisabled();
+
+        float dir[3] = {light.direction.x, light.direction.y, light.direction.z};
+        if (ImGui::SliderFloat3("Direction", dir, -1.0f, 1.0f)) {
+            light.direction = glm::vec3(dir[0], dir[1], dir[2]);
+        }
+        float color[3] = {light.color.r, light.color.g, light.color.b};
+        if (ImGui::ColorEdit3("Color", color)) {
+            light.color = glm::vec3(color[0], color[1], color[2]);
+        }
+        ImGui::PopID();
+    }
+    if (lightToRemove >= 0) {
+        lighting.lights.erase(lighting.lights.begin() + lightToRemove);
+    }
+
+    ImGui::Spacing();
+    ImGui::BeginDisabled(static_cast<int>(lighting.lights.size()) >= LightingSettings::kMaxLights);
+    if (ImGui::Button("Add Light")) {
+        lighting.lights.push_back(Light{});
+    }
+    ImGui::EndDisabled();
 }
 
 void EditorUI::drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dirty) {

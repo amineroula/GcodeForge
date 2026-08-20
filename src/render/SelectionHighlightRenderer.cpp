@@ -25,13 +25,19 @@ SelectionHighlightRenderer::~SelectionHighlightRenderer() {
     glDeleteProgram(shaderProgram_);
 }
 
-void SelectionHighlightRenderer::rebuild(const Scene& scene) {
+void SelectionHighlightRenderer::rebuild(const Scene& scene, RenderMode mode) {
     std::vector<LineVertex> vertices;
 
     for (const auto& object : scene.objects) {
         if (!object.visible || object.selectedPaths.empty()) continue;
         for (const auto& path : object.paths) {
             if (!object.selectedPaths.count(path.number)) continue;
+            // Print paths in Geometry mode are handled by GeometryRenderer's
+            // own inverted-hull outline mesh instead -- see this class's
+            // header comment for why a centerline highlight doesn't work
+            // for a path embedded in solid 3D geometry.
+            if (mode == RenderMode::Geometry && path.type == PathType::Print) continue;
+
             glm::vec3 fromWorld(applyTransform(object.transform, path.from));
             glm::vec3 toWorld(applyTransform(object.transform, path.to));
             glm::vec3 color = selectionHighlightColor();
@@ -56,7 +62,14 @@ void SelectionHighlightRenderer::draw(const glm::mat4& viewProj) const {
     if (vertexCount_ == 0) return;
     glUseProgram(shaderProgram_);
     glUniformMatrix4fv(mvpUniformLocation_, 1, GL_FALSE, glm::value_ptr(viewProj));
-    glLineWidth(3.0f); // wide lines aren't guaranteed >1px on every GPU/driver in core profile (NVIDIA honors it, some don't) -- the bright color alone still reads fine either way
+    // Wide on purpose -- this line is drawn BEFORE the normal scene (see
+    // main.cpp), so only the part of it that pokes out beyond the real
+    // geometry's own screen-space footprint stays visible once the real
+    // geometry draws over it, which is what produces the outline/border
+    // look instead of a solid recolor. Wide lines aren't guaranteed >1px
+    // on every GPU/driver in core profile (NVIDIA honors it, some don't);
+    // the bright color alone still reads as *something* selected either way.
+    glLineWidth(6.0f);
     glBindVertexArray(vao_);
     glDrawArrays(GL_LINES, 0, vertexCount_);
     glBindVertexArray(0);

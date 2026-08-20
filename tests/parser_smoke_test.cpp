@@ -12,10 +12,13 @@
 #include "io/BedIO.h"
 #include "editor/Gizmo.h"
 #include "editor/SrcExporter.h"
+#include "editor/ConnectedDrag.h"
+#include "editor/Framing.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <vector>
 #include <string>
 #include <cmath>
@@ -429,6 +432,94 @@ void testGizmoOrigin() {
           "GizmoOrigin: Start mode with an EMPTY selection falls back to the whole-object centroid");
 }
 
+// Three connected paths, 1->2->3 (path[i].to == path[i+1].from exactly).
+// Selecting only the MIDDLE path and dragging must pull the touching
+// endpoint of each unselected neighbor along too -- this is the fix for
+// "when I move a path it should stay connected, not move alone."
+SceneObject threeConnectedPaths() {
+    SceneObject object;
+    object.name = "chain";
+    Path p1; p1.number = 1; p1.type = PathType::Print; p1.from = glm::dvec3(0, 0, 0); p1.to = glm::dvec3(10, 0, 0);
+    Path p2; p2.number = 2; p2.type = PathType::Print; p2.from = glm::dvec3(10, 0, 0); p2.to = glm::dvec3(20, 0, 0);
+    Path p3; p3.number = 3; p3.type = PathType::Print; p3.from = glm::dvec3(20, 0, 0); p3.to = glm::dvec3(30, 0, 0);
+    object.paths = {p1, p2, p3};
+    return object;
+}
+
+void testConnectedDragWhole() {
+    SceneObject object = threeConnectedPaths();
+    object.selectedPaths = {2};
+
+    auto snapshots = buildDragSnapshots(object, GizmoTargetMode::Whole);
+    check(snapshots.size() == 3, "ConnectedDrag: Whole mode on the middle path pulls in both neighbors (3 total)");
+
+    std::map<int, PathDragSnapshot> byNumber;
+    for (const auto& s : snapshots) byNumber[s.pathNumber] = s;
+
+    check(byNumber.count(1) && byNumber[1].moveFrom == false && byNumber[1].moveTo == true,
+          "ConnectedDrag: neighbor path 1 only moves its TO (the end touching path 2)");
+    check(byNumber.count(2) && byNumber[2].moveFrom == true && byNumber[2].moveTo == true,
+          "ConnectedDrag: the selected path 2 moves both endpoints (Whole mode)");
+    check(byNumber.count(3) && byNumber[3].moveFrom == true && byNumber[3].moveTo == false,
+          "ConnectedDrag: neighbor path 3 only moves its FROM (the end touching path 2)");
+}
+
+void testConnectedDragStart() {
+    SceneObject object = threeConnectedPaths();
+    object.selectedPaths = {2};
+
+    // Start mode only moves path 2's FROM -- so only path 1 (touching that
+    // end) should be pulled in; path 3 (touching path 2's untouched TO)
+    // must NOT be affected.
+    auto snapshots = buildDragSnapshots(object, GizmoTargetMode::Start);
+    check(snapshots.size() == 2, "ConnectedDrag: Start mode only pulls in the neighbor on the moving end (2 total)");
+
+    std::map<int, PathDragSnapshot> byNumber;
+    for (const auto& s : snapshots) byNumber[s.pathNumber] = s;
+    check(byNumber.count(1) && byNumber[1].moveTo == true, "ConnectedDrag: Start mode still pulls path 1's TO along");
+    check(byNumber.count(2) && byNumber[2].moveFrom == true && byNumber[2].moveTo == false,
+          "ConnectedDrag: Start mode moves only path 2's FROM");
+    check(byNumber.find(3) == byNumber.end(), "ConnectedDrag: Start mode does NOT touch path 3 (unrelated end)");
+}
+
+void testConnectedDragGap() {
+    // Same chain, but path 3 is disconnected from path 2 (a real gap, not
+    // just a direction change) -- dragging path 2's TO in Whole mode must
+    // NOT drag path 3 along, since they were never actually touching.
+    SceneObject object = threeConnectedPaths();
+    object.paths[2].from = glm::dvec3(25, 5, 0); // no longer coincides with path 2's TO (20,0,0)
+    object.selectedPaths = {2};
+
+    auto snapshots = buildDragSnapshots(object, GizmoTargetMode::Whole);
+    std::map<int, PathDragSnapshot> byNumber;
+    for (const auto& s : snapshots) byNumber[s.pathNumber] = s;
+    check(byNumber.find(3) == byNumber.end(), "ConnectedDrag: a genuine gap (not touching) does NOT pull the neighbor in");
+}
+
+void testFrameBounds() {
+    SceneObject object = threeConnectedPaths(); // spans world X 0..30, Y=0, Z=0
+    Scene scene;
+    scene.addObject(object);
+    SceneObject& stored = scene.objects.back();
+
+    // Frame-all (no selection): should cover the whole chain, center at
+    // roughly (15, 0, 0), the chain's midpoint.
+    auto allBounds = computeFrameBounds(scene, /*preferSelection=*/true);
+    check(allBounds.has_value(), "FrameBounds: frame-all returns a value for a non-empty scene");
+    if (allBounds) checkNear(allBounds->center.x, 15.0, "FrameBounds: frame-all centers on the whole chain's midpoint");
+
+    // Select just path 1 (world X 0..10): frame-selection should center
+    // on ~5, not the whole chain's ~15.
+    stored.selectedPaths = {1};
+    auto selBounds = computeFrameBounds(scene, /*preferSelection=*/true);
+    check(selBounds.has_value(), "FrameBounds: frame-selection returns a value with a selection");
+    if (selBounds) checkNear(selBounds->center.x, 5.0, "FrameBounds: frame-selection centers on ONLY the selected path, not the whole chain");
+
+    // preferSelection=false should ignore the selection and frame everything.
+    auto forcedAll = computeFrameBounds(scene, /*preferSelection=*/false);
+    if (forcedAll) checkNear(forcedAll->center.x, 15.0, "FrameBounds: preferSelection=false frames everything regardless of selection");
+}
+
 // Same 7-path snippet as testSrcParser, used here to verify the exporter:
 // (1) a completely untouched round-trip produces byte-identical output
 // and zero inserted lines, (2) a transform edit patches coordinates and
@@ -565,6 +656,10 @@ int main() {
     testSrcExporterTransform();
     testSrcExporterSpeedOverride();
     testSrcExporterLayerAction();
+    testConnectedDragWhole();
+    testConnectedDragStart();
+    testConnectedDragGap();
+    testFrameBounds();
 
     if (g_failures == 0) {
         std::printf("\nAll checks passed.\n");

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "model/Scene.h"
+#include "render/LightingSettings.h"
 #include "render/LineShader.h"
 #include "render/MeshShader.h"
 #include "render/PathColorizer.h"
@@ -42,9 +43,10 @@ public:
     GeometryRenderer& operator=(const GeometryRenderer&) = delete;
 
     void rebuild(const Scene& scene, ColorMode colorMode, float beadWidthMm, float beadHeightMm);
-    void draw(const glm::mat4& viewProj, const glm::vec3& lightDir, bool backfaceCulling) const;
+    void draw(const glm::mat4& viewProj, const LightingSettings& lighting, bool backfaceCulling) const;
 
     size_t triangleCount() const { return static_cast<size_t>(indexCount_) / 3; }
+    size_t outlineTriangleCount() const { return static_cast<size_t>(outlineIndexCount_) / 3; }
 
 private:
     // Bead mesh (print paths): indexed triangle list, position+normal+color.
@@ -53,7 +55,9 @@ private:
     GLuint meshEbo_ = 0;
     GLuint meshShaderProgram_ = 0;
     GLint meshMvpLoc_ = -1;
-    GLint meshLightDirLoc_ = -1;
+    GLint meshLightDirsLoc_ = -1;
+    GLint meshLightColorsLoc_ = -1;
+    GLint meshLightCountLoc_ = -1;
     GLsizei indexCount_ = 0;
     GLsizei vboCapacityVertices_ = 0;
     GLsizei eboCapacityIndices_ = 0;
@@ -65,6 +69,24 @@ private:
     GLint travelMvpLoc_ = -1;
     GLsizei travelVertexCount_ = 0;
     GLsizei travelVboCapacityVertices_ = 0;
+
+    // Selection outline: a SEPARATE, slightly enlarged copy of just the
+    // selected paths' bead mesh, drawn with front-face culling (only its
+    // back faces render) before the normal mesh. This is the "inverted
+    // hull" outline technique: the normal mesh's own front surface
+    // (always closer to camera than the enlarged shell's far side) occludes
+    // the shell's center, leaving only a rim visible right at the
+    // silhouette edge -- angle-independent, unlike a fixed-pixel-width
+    // line drawn along the centerline (which only reads as an "outline"
+    // from some viewing angles and not others -- the actual reported bug
+    // this replaces). Reuses appendRun/appendQuad, so winding correctness
+    // (backface culling depends on it) carries over automatically.
+    GLuint outlineVao_ = 0;
+    GLuint outlineVbo_ = 0;
+    GLuint outlineEbo_ = 0;
+    GLsizei outlineIndexCount_ = 0;
+    GLsizei outlineVboCapacityVertices_ = 0;
+    GLsizei outlineEboCapacityIndices_ = 0;
 
     SpeedColorTable speedColors_;
 };

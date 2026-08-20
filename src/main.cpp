@@ -29,6 +29,8 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
 
+#include "editor/ConnectedDrag.h"
+#include "editor/Framing.h"
 #include "editor/Gizmo.h"
 #include "editor/Picking.h"
 #include "editor/Selection.h"
@@ -44,6 +46,7 @@
 #include "render/GeometryRenderer.h"
 #include "render/GizmoRenderer.h"
 #include "render/GridRenderer.h"
+#include "render/LightingSettings.h"
 #include "render/PathColorizer.h"
 #include "render/RenderSettings.h"
 #include "render/SceneRenderer.h"
@@ -54,6 +57,7 @@
 namespace {
 
 Camera* g_camera = nullptr;
+Scene* g_scene = nullptr;
 double g_lastCursorX = 0.0;
 double g_lastCursorY = 0.0;
 bool g_showGrid = true;
@@ -106,6 +110,19 @@ void onKey(GLFWwindow* window, int key, int scancode, int action, int mods) {
         case GLFW_KEY_2: if (g_camera) g_camera->setPreset(Camera::Preset::Front); break;
         case GLFW_KEY_3: if (g_camera) g_camera->setPreset(Camera::Preset::Right); break;
         case GLFW_KEY_4: if (g_camera) g_camera->setPreset(Camera::Preset::Iso); break;
+        case GLFW_KEY_T: if (g_camera) g_camera->setPreset(Camera::Preset::Top); break;
+        case GLFW_KEY_P: if (g_camera) g_camera->setProjection(Camera::Projection::Perspective); break;
+        case GLFW_KEY_U: if (g_camera) g_camera->setProjection(Camera::Projection::Orthographic); break;
+        case GLFW_KEY_F:
+            // "F" was requested for both "frame selection" and "front view" --
+            // frame wins (listed first, and matches Maya/Blender convention);
+            // front view stays on key 2 and the View panel's Front button.
+            if (g_camera && g_scene) {
+                if (auto bounds = computeFrameBounds(*g_scene, /*preferSelection=*/true)) {
+                    g_camera->frameBounds(bounds->center, bounds->radius);
+                }
+            }
+            break;
         case GLFW_KEY_G: g_showGrid = !g_showGrid; break;
         default: break;
     }
@@ -232,13 +249,14 @@ int main() {
     SelectionHighlightRenderer selectionHighlight;
     GizmoRenderer gizmoRenderer;
     Scene scene;
+    g_scene = &scene;
     EditorUI editorUi;
     editorUi.setBoldFont(boldFont);
     UndoStack undoStack;
     ColorMode colorMode = ColorMode::Layer;
     RenderSettings renderSettings;
     BedSettings bedSettings;
-    const glm::vec3 lightDir = glm::normalize(glm::vec3(0.4f, -0.5f, 0.8f));
+    LightingSettings lightingSettings;
 
     grid.rebuild(bedSettings);
 
@@ -263,6 +281,21 @@ int main() {
         GLenum geometryGlError = glGetError();
         std::printf("Geometry mode sanity check: %zu triangle(s) built, glGetError=%d (0=GL_NO_ERROR)\n",
                     geometryRenderer.triangleCount(), static_cast<int>(geometryGlError));
+
+        // Sanity-check the outline mesh too (can't click a path to select
+        // it from here): select every print path on the sample object,
+        // rebuild, and confirm the outline mesh actually builds.
+        if (SceneObject* sample = scene.activeObject()) {
+            for (const auto& path : sample->paths) {
+                if (path.type == PathType::Print) sample->selectedPaths.insert(path.number);
+            }
+            geometryRenderer.rebuild(scene, colorMode, renderSettings.beadWidthMm, renderSettings.beadHeightMm);
+            GLenum outlineGlError = glGetError();
+            std::printf("Outline mesh sanity check: %zu triangle(s) built, glGetError=%d (0=GL_NO_ERROR)\n",
+                        geometryRenderer.outlineTriangleCount(), static_cast<int>(outlineGlError));
+            sample->selectedPaths.clear();
+            geometryRenderer.rebuild(scene, colorMode, renderSettings.beadWidthMm, renderSettings.beadHeightMm);
+        }
     }
 
     // Debug/testing convenience: load an extra file at startup if
@@ -352,10 +385,12 @@ int main() {
     glm::vec3 gizmoDragAxisOrigin(0.0f);
     float gizmoDragStartT = 0.0f;
     double gizmoDragStartValue = 0.0; // Object mode only
-    // Start/End/Whole modes only: each selected path's from/to as they
-    // were at drag start, so the delta is always applied from a fixed
-    // base rather than accumulated frame-to-frame (which would drift).
-    std::vector<std::tuple<int, glm::dvec3, glm::dvec3>> gizmoDragPathSnapshots;
+    // Start/End/Whole modes only: each affected path's from/to as they
+    // were at drag start (selected paths AND any connected unselected
+    // neighbor -- see editor/ConnectedDrag.h), so the delta is always
+    // applied from a fixed base rather than accumulated frame-to-frame
+    // (which would drift).
+    std::vector<PathDragSnapshot> gizmoDragPathSnapshots;
     constexpr float kGizmoPickRadiusPixels = 10.0f;
 
     while (!glfwWindowShouldClose(window)) {
@@ -372,7 +407,7 @@ int main() {
         bool sceneDirty = false;
         bool selectionDirty = false;
         bool bedDirty = false;
-        editorUi.draw(scene, colorMode, camera, renderSettings, bedSettings, undoStack,
+        editorUi.draw(scene, colorMode, camera, renderSettings, bedSettings, lightingSettings, undoStack,
                       renderedPrimitiveCount, sceneDirty, selectionDirty, bedDirty);
 
         if (editorUi.openFileRequested()) {
@@ -496,11 +531,10 @@ int main() {
                                                          : (*axisHit == GizmoAxis::Y) ? active->transform.y
                                                                                        : active->transform.z;
                                 } else {
-                                    for (const auto& path : active->paths) {
-                                        if (active->selectedPaths.count(path.number)) {
-                                            gizmoDragPathSnapshots.emplace_back(path.number, path.from, path.to);
-                                        }
-                                    }
+                                    // Includes the selected paths AND any connected
+                                    // unselected neighbor, so the drag doesn't tear
+                                    // the path away from what it was touching.
+                                    gizmoDragPathSnapshots = buildDragSnapshots(*active, effectiveMode);
                                 }
                                 undoStack.beginContinuousEdit(scene);
                                 gizmoHit = true;
@@ -529,14 +563,15 @@ int main() {
                             // the world-space drag delta back before applying it.
                             glm::vec3 worldDelta = axisDir * deltaScalar;
                             glm::dvec3 localDelta = inverseTransformDelta(active->transform, glm::dvec3(worldDelta));
-                            for (const auto& [pathNumber, startFrom, startTo] : gizmoDragPathSnapshots) {
-                                if (Path* path = active->findPath(pathNumber)) {
-                                    if (gizmoDragMode == GizmoTargetMode::Start || gizmoDragMode == GizmoTargetMode::Whole) {
-                                        path->from = startFrom + localDelta;
-                                    }
-                                    if (gizmoDragMode == GizmoTargetMode::End || gizmoDragMode == GizmoTargetMode::Whole) {
-                                        path->to = startTo + localDelta;
-                                    }
+                            // Each snapshot carries its OWN moveFrom/moveTo flags
+                            // (not the global gizmoDragMode) -- a connected
+                            // neighbor that got pulled in only moves the ONE
+                            // endpoint that was actually touching the selection,
+                            // not both.
+                            for (const auto& snap : gizmoDragPathSnapshots) {
+                                if (Path* path = active->findPath(snap.pathNumber)) {
+                                    if (snap.moveFrom) path->from = snap.startFrom + localDelta;
+                                    if (snap.moveTo) path->to = snap.startTo + localDelta;
                                 }
                             }
                         }
@@ -609,7 +644,7 @@ int main() {
             selectionDirty = true; // scene content moved/changed, so highlight positions may be stale too
         }
         if (selectionDirty) {
-            selectionHighlight.rebuild(scene);
+            selectionHighlight.rebuild(scene, renderSettings.mode);
             // GeometryRenderer bakes selectionHighlightColor() directly
             // into its mesh vertex colors (the separate overlay above
             // can't show through solid bead geometry -- see
@@ -632,12 +667,18 @@ int main() {
 
         if (height > 0) {
             if (g_showGrid) grid.draw(viewProj);
+            // Selection highlight draws BEFORE the real geometry, wide and
+            // depth-tested normally -- the real geometry (always at least
+            // as close to the camera as its own centerline) naturally
+            // overwrites the highlight's color across its footprint,
+            // leaving only the wide highlight's edges visible as an
+            // outline/border. See SelectionHighlightRenderer.h.
+            selectionHighlight.draw(viewProj);
             if (renderSettings.mode == RenderMode::Lines) {
                 sceneRenderer.draw(viewProj);
             } else {
-                geometryRenderer.draw(viewProj, lightDir, renderSettings.backfaceCulling);
+                geometryRenderer.draw(viewProj, lightingSettings, renderSettings.backfaceCulling);
             }
-            selectionHighlight.draw(viewProj);
 
             if (SceneObject* active = scene.activeObject()) {
                 // NOT active->transform.x/y/z -- that raw pivot can be
@@ -677,6 +718,7 @@ int main() {
     ImGui::DestroyContext();
 
     g_camera = nullptr;
+    g_scene = nullptr;
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;

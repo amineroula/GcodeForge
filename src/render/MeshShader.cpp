@@ -25,17 +25,24 @@ void main() {
 
 const char* kFragmentShaderSrc = R"(
 #version 330 core
+#define MAX_LIGHTS 4
+
 in vec3 vNormal;
 in vec3 vColor;
 out vec4 FragColor;
 
-uniform vec3 uLightDir;
+uniform vec3 uLightDirs[MAX_LIGHTS];
+uniform vec3 uLightColors[MAX_LIGHTS];
+uniform int uLightCount;
 
 void main() {
     vec3 n = normalize(vNormal);
-    float diffuse = max(dot(n, normalize(uLightDir)), 0.0);
-    float brightness = 0.40 + 0.60 * diffuse; // ambient floor + diffuse term
-    FragColor = vec4(vColor * brightness, 1.0);
+    vec3 lightSum = vec3(0.35); // ambient floor, same role as the old brightness formula's constant term
+    for (int i = 0; i < uLightCount; ++i) {
+        float diffuse = max(dot(n, normalize(uLightDirs[i])), 0.0);
+        lightSum += uLightColors[i] * diffuse * 0.65;
+    }
+    FragColor = vec4(vColor * lightSum, 1.0);
 }
 )";
 

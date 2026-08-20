@@ -4,6 +4,7 @@
 #include "model/Scene.h"
 #include "render/BedSettings.h"
 #include "render/Camera.h"
+#include "render/LightingSettings.h"
 #include "render/PathColorizer.h"
 #include "render/RenderSettings.h"
 
@@ -34,8 +35,8 @@ public:
     // these -- they just affect matrices main.cpp already recomputes every
     // frame.
     void draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSettings& renderSettings,
-              BedSettings& bedSettings, UndoStack& undoStack, size_t renderedPrimitiveCount,
-              bool& sceneDirty, bool& selectionDirty, bool& bedDirty);
+              BedSettings& bedSettings, LightingSettings& lightingSettings, UndoStack& undoStack,
+              size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty);
 
     bool openFileRequested() const { return openFileRequested_; }
     void clearOpenFileRequest() { openFileRequested_ = false; }
@@ -59,7 +60,7 @@ private:
 
     void drawMenuBar(Scene& scene, UndoStack& undoStack, bool& sceneDirty);
     void drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty);
-    void drawBedPanel(BedSettings& bedSettings, bool& bedDirty);
+    void drawBedPanel(BedSettings& bedSettings, LightingSettings& lightingSettings, bool& bedDirty);
     void drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dirty);
     void drawTransformPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty);
     void drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty, bool& selectionDirty);

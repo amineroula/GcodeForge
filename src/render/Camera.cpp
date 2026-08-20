@@ -80,6 +80,13 @@ void Camera::zoom(float delta) {
     zoomFactor_ = std::clamp(zoomFactor_, kMinZoom, kMaxZoom);
 }
 
+void Camera::frameBounds(const glm::vec3& center, float radius) {
+    target_ = center;
+    constexpr float kMarginFactor = 1.3f; // a bit of breathing room around the framed bounds
+    float desiredHalfExtent = std::max(radius * kMarginFactor, 1.0f);
+    zoomFactor_ = std::clamp(kBaseHalfExtentMm / desiredHalfExtent, kMinZoom, kMaxZoom);
+}
+
 void Camera::setPreset(Preset preset) {
     switch (preset) {
         case Preset::Top:

@@ -49,6 +49,12 @@ public:
 
     void setViewportSize(float width, float height);
 
+    // "Frame" (F key): point the camera at `center` and set zoom so a
+    // sphere of `radius` around it roughly fills the view, with margin.
+    // Directly sets target_/zoomFactor_ rather than the incremental
+    // pan()/zoom() -- framing is an absolute jump, not a relative drag.
+    void frameBounds(const glm::vec3& center, float radius);
+
     // For debugging/teaching: where is the camera actually looking?
     glm::vec3 eyePosition() const;
     glm::vec3 forwardVector() const;
