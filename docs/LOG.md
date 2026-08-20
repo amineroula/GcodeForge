@@ -766,3 +766,90 @@ a one-click A/B instead of another round-trip.
 Geometry/outline sanity checks still report `glGetError=0` (Outline style
 is still the default, so this is confirming the new gating didn't break
 the existing path, not just the new one).
+
+## More selection styles, color-by-object fix, layer range-select, bead UX, bed heightmap
+
+Another operator-feedback batch, the biggest so far -- one real bug report
+(color-by-object), one UX request (layer range-select, bead defaults/drag),
+and one genuinely new feature (bed heightmap).
+
+**Stripes and Wireframe selection styles, and a real fix to Pulse.** The
+operator's read of Pulse from a screenshot -- "weird" -- pointed at a real
+bug, not just taste: the tinted color was still being multiplied by
+`lightSum` afterward, so any face angled away from every light stayed
+mostly at the 0.35 ambient floor regardless of how bright the pulse tint
+was -- half the selected tube visibly glowed and half didn't, depending on
+its facet's normal. Fixed by making highlighted fragments **emissive**
+(skip the lighting multiply entirely) in every animated style, so the
+highlight color is what actually reaches the screen. Two new styles
+added alongside the fix, per "make multiple versions": **Stripes**
+(diagonal black/white hazard-tape bands scrolling across selected
+geometry, driven by world position + `uTime` so the motion reads the same
+from any angle -- about as hard to confuse with lit geometry as this gets
+without an image texture) and **Wireframe** (the existing outline mesh,
+reused, drawn as `GL_LINE` instead of filled front-culled triangles -- a
+bright cage around the selection). `MeshVertex` gained `vWorldPos` as a
+shader varying (free -- vertex positions are already world-space, no
+model matrix exists in this app) to drive the stripe pattern. Selection
+style dropdown now lists all four.
+
+**"Color mode: Object" fix.** Root cause: every `SceneObject` was created
+with the exact same hardcoded default color (`SceneObject.h`), so loading
+a second file made both objects render identically in Object mode until
+the operator manually recolored one via the object list's swatch --
+indistinguishable objects looks exactly like "doesn't work" even though
+the color-mode *logic* itself (`pathColor()`'s `Object` case) was already
+correct. Fixed in `loadFileIntoScene()` (`main.cpp`): each newly-loaded
+object now gets the next color in the shared palette, indexed by load
+order, so Object mode distinguishes objects out of the box. Still just a
+starting point -- the swatch can still override it per object.
+
+**Layer table shift-click range-select.** Previously shift-click just
+ADDED the one clicked layer (Add compose mode), same as a plain click
+except non-destructive to the existing selection. Now: `EditorUI` tracks
+`layerSelectionAnchor_`, the last layer clicked WITHOUT shift (plain or
+ctrl). A shift-click computes the full inclusive range between the anchor
+and the clicked layer and adds every path in every layer in that range --
+"click layer 3, shift-click layer 37, get 3 through 37" exactly as
+requested. Ctrl-click (subtract) still operates on just the one clicked
+layer and also moves the anchor, matching the usual file-explorer
+convention where any non-shift click resets the range starting point.
+
+**Bead defaults changed to 7mm width / 3mm height** (was 8/4mm),
+`RenderSettings::beadWidthMm/beadHeightMm`. Both controls switched from
+`SliderFloat` to `DragFloat` -- click-and-drag the number itself to scrub
+the value (still double-click/Ctrl+click to type an exact one), instead
+of needing to land the cursor on a thin slider track.
+
+**Bed heightmap -- new feature.** The request: enter real bed-elevation
+measurements taken every 10cm and see them as a heatmap, to catch a
+warped bed before it ruins a print.
+- `model/BedHeightmap` (core, no GL dependency): a row-major grid of
+  elevation samples (mm), `spacingMm` apart in both axes, sized from the
+  current bed's width/depth via `resizeToBed()` (`floor(extent/spacing)+1`
+  per axis, so both edges always get a sample point). Resizing (bed size
+  or spacing change) preserves existing values BY GRID POSITION wherever
+  the old and new grids overlap, instead of discarding entered
+  measurements on every edit.
+- `render/BedHeightmapRenderer`: one quad (two triangles) per grid cell,
+  Z-offset by the measured elevation at each corner, colored via a blue
+  (low) -> green (mid) -> red (high) heatmap ramp normalized to the
+  largest elevation magnitude currently entered -- reads at a glance
+  without needing a legend. Deliberately reuses `GeometryRenderer`'s
+  `MeshVertex` layout and mesh shader (position/normal/color/selected,
+  `selected` always 0 here) rather than writing a near-duplicate shader
+  just for this.
+- Bed panel gained a "Bed Heightmap" section: spacing control, "Resize
+  grid to bed" / "Reset all to 0" buttons, a "Show heatmap" toggle, and a
+  scrollable table of `DragFloat` cells (one per grid point, row order
+  matches Top-view orientation) for entering the actual measurements.
+- `io/BedIO`'s save/load format extended to include the heightmap
+  (spacing, visibility, dimensions, and every value, one row per line) --
+  measurements taken on a real bed are exactly the kind of thing that
+  should survive a session, saved together with the bed they describe.
+  5 new round-trip tests cover every field including the full value grid.
+
+**Verified:** 106 tests pass total (5 new BedIO heightmap tests); full
+Debug rebuild clean; startup sanity checks extended with a bed-heightmap
+check (11x11 grid at the default 1000mm bed / 100mm spacing -> 200
+triangles, `glGetError=0`) alongside the existing Geometry/outline checks.

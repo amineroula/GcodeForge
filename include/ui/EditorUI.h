@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor/UndoStack.h"
+#include "model/BedHeightmap.h"
 #include "model/Scene.h"
 #include "render/BedSettings.h"
 #include "render/Camera.h"
@@ -35,8 +36,8 @@ public:
     // these -- they just affect matrices main.cpp already recomputes every
     // frame.
     void draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSettings& renderSettings,
-              BedSettings& bedSettings, LightingSettings& lightingSettings, UndoStack& undoStack,
-              size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty);
+              BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& bedHeightmap,
+              UndoStack& undoStack, size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty);
 
     bool openFileRequested() const { return openFileRequested_; }
     void clearOpenFileRequest() { openFileRequested_ = false; }
@@ -60,7 +61,7 @@ private:
 
     void drawMenuBar(Scene& scene, UndoStack& undoStack, bool& sceneDirty);
     void drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty);
-    void drawBedPanel(BedSettings& bedSettings, LightingSettings& lightingSettings, bool& bedDirty);
+    void drawBedPanel(BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& heightmap, bool& bedDirty);
     void drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dirty);
     void drawTransformPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty);
     void drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty, bool& selectionDirty);
@@ -86,6 +87,13 @@ private:
     int layerActionPresetIndex_ = 0;
     char layerActionTextBuffer_[256] = "";
     int layerActionTargetLayer_ = 1;
+
+    // Last layer-table row clicked WITHOUT shift (plain or ctrl) -- the
+    // anchor a subsequent shift-click ranges from. -1 = no anchor yet.
+    // Not reset on active-object switch: a stale anchor from a different
+    // object just produces an odd range on the very first shift-click
+    // after switching, which is an acceptable edge case for a UI cursor.
+    int layerSelectionAnchor_ = -1;
 
     ImFont* boldFont_ = nullptr;
 };

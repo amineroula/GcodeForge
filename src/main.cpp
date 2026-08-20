@@ -38,9 +38,11 @@
 #include "editor/UndoStack.h"
 #include "io/BedIO.h"
 #include "io/FileIO.h"
+#include "model/BedHeightmap.h"
 #include "model/Scene.h"
 #include "parser/SrcParser.h"
 #include "parser/GcodeParser.h"
+#include "render/BedHeightmapRenderer.h"
 #include "render/BedSettings.h"
 #include "render/Camera.h"
 #include "render/GeometryRenderer.h"
@@ -155,6 +157,15 @@ void loadFileIntoScene(const std::string& path, Scene& scene) {
     SceneObject object = (ext == "gcode" || ext == "nc") ? parseGcode(name, lines) : parseSrc(name, lines);
     std::printf("Loaded %s (%s): %zu paths, %zu layers\n",
                 object.name.c_str(), path.c_str(), object.paths.size(), object.layers.size());
+    // Every SceneObject starts with the same hardcoded default color (see
+    // SceneObject.h) -- fine for a single object, but it made "Color mode:
+    // Object" look broken once a second file was loaded, since both
+    // objects rendered identically until the operator manually recolored
+    // one. Give each newly-loaded object the next color in the shared
+    // palette instead, indexed by load order, so Object mode distinguishes
+    // objects out of the box. Still just a starting point -- the object
+    // list's color swatch can still override it per object.
+    object.color = colorPalette()[scene.objects.size() % colorPalette().size()];
     scene.addObject(std::move(object));
 }
 
@@ -248,6 +259,7 @@ int main() {
     GeometryRenderer geometryRenderer;
     SelectionHighlightRenderer selectionHighlight;
     GizmoRenderer gizmoRenderer;
+    BedHeightmapRenderer bedHeightmapRenderer;
     Scene scene;
     g_scene = &scene;
     EditorUI editorUi;
@@ -257,8 +269,11 @@ int main() {
     RenderSettings renderSettings;
     BedSettings bedSettings;
     LightingSettings lightingSettings;
+    BedHeightmap bedHeightmap;
 
     grid.rebuild(bedSettings);
+    bedHeightmap.resizeToBed(bedSettings.widthMm, bedSettings.depthMm);
+    bedHeightmapRenderer.rebuild(bedSettings, bedHeightmap);
 
     {
         // Try the sample next to the .exe first (matches how it's packaged
@@ -296,6 +311,18 @@ int main() {
             sample->selectedPaths.clear();
             geometryRenderer.rebuild(scene, colorMode, renderSettings.beadWidthMm, renderSettings.beadHeightMm);
         }
+
+        // Sanity-check the bed heightmap mesh too: put some non-zero
+        // elevations in and confirm it actually builds without a GL error.
+        for (size_t i = 0; i < bedHeightmap.elevationsMm.size(); ++i) {
+            bedHeightmap.elevationsMm[i] = (static_cast<float>(i % 5) - 2.0f) * 0.5f;
+        }
+        bedHeightmapRenderer.rebuild(bedSettings, bedHeightmap);
+        GLenum heightmapGlError = glGetError();
+        std::printf("Bed heightmap sanity check: %d x %d grid, %zu triangle(s) built, glGetError=%d (0=GL_NO_ERROR)\n",
+                    bedHeightmap.cols, bedHeightmap.rows, bedHeightmapRenderer.triangleCount(), static_cast<int>(heightmapGlError));
+        std::fill(bedHeightmap.elevationsMm.begin(), bedHeightmap.elevationsMm.end(), 0.0f);
+        bedHeightmapRenderer.rebuild(bedSettings, bedHeightmap);
     }
 
     // Debug/testing convenience: load an extra file at startup if
@@ -407,7 +434,7 @@ int main() {
         bool sceneDirty = false;
         bool selectionDirty = false;
         bool bedDirty = false;
-        editorUi.draw(scene, colorMode, camera, renderSettings, bedSettings, lightingSettings, undoStack,
+        editorUi.draw(scene, colorMode, camera, renderSettings, bedSettings, lightingSettings, bedHeightmap, undoStack,
                       renderedPrimitiveCount, sceneDirty, selectionDirty, bedDirty);
 
         if (editorUi.openFileRequested()) {
@@ -420,7 +447,7 @@ int main() {
         if (editorUi.saveBedRequested()) {
             editorUi.clearSaveBedRequest();
             if (auto path = showSaveBedDialog(window)) {
-                if (!saveBedSettings(*path, bedSettings)) {
+                if (!saveBedSettings(*path, bedSettings, bedHeightmap)) {
                     std::fprintf(stderr, "Could not save bed settings to: %s\n", path->c_str());
                 }
             }
@@ -428,7 +455,7 @@ int main() {
         if (editorUi.loadBedRequested()) {
             editorUi.clearLoadBedRequest();
             if (auto path = showOpenBedDialog(window)) {
-                if (loadBedSettings(*path, bedSettings)) {
+                if (loadBedSettings(*path, bedSettings, bedHeightmap)) {
                     bedDirty = true;
                 } else {
                     std::fprintf(stderr, "Could not load bed settings from: %s\n", path->c_str());
@@ -660,6 +687,12 @@ int main() {
         }
         if (bedDirty) {
             grid.rebuild(bedSettings);
+            // Reused for heightmap edits too (spacing, resize, per-point
+            // values, visibility) -- not just bed size/position -- so the
+            // heightmap mesh needs a resize-to-current-bed-extent pass
+            // (a no-op if the bed itself didn't change) before rebuilding.
+            bedHeightmap.resizeToBed(bedSettings.widthMm, bedSettings.depthMm);
+            bedHeightmapRenderer.rebuild(bedSettings, bedHeightmap);
         }
 
         glClearColor(0.09f, 0.10f, 0.12f, 1.0f);
@@ -667,6 +700,7 @@ int main() {
 
         if (height > 0) {
             if (g_showGrid) grid.draw(viewProj);
+            if (bedHeightmap.visible) bedHeightmapRenderer.draw(viewProj, lightingSettings);
             // Selection highlight draws BEFORE the real geometry, wide and
             // depth-tested normally -- the real geometry (always at least
             // as close to the camera as its own centerline) naturally

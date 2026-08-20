@@ -302,7 +302,8 @@ void testPickingBackfacing() {
           "Picking: selectBackfacing=false prefers the path nearer the camera, even when it's farther away on screen");
 }
 
-// Save then load a BedSettings and check every field round-trips exactly.
+// Save then load a BedSettings + BedHeightmap and check every field
+// round-trips exactly.
 void testBedIO() {
     BedSettings original;
     original.widthMm = 1234.5f;
@@ -313,11 +314,20 @@ void testBedIO() {
     original.gridSpacingMm = 42.0f;
     original.showGrid = false;
 
+    BedHeightmap originalHeightmap;
+    originalHeightmap.spacingMm = 50.0f;
+    originalHeightmap.visible = true;
+    originalHeightmap.resizeToBed(original.widthMm, original.depthMm);
+    for (size_t i = 0; i < originalHeightmap.elevationsMm.size(); ++i) {
+        originalHeightmap.elevationsMm[i] = static_cast<float>(i) * 0.1f - 1.0f;
+    }
+
     const std::string path = "bed_io_test_tmp.bed";
-    check(saveBedSettings(path, original), "BedIO: save succeeds");
+    check(saveBedSettings(path, original, originalHeightmap), "BedIO: save succeeds");
 
     BedSettings loaded;
-    check(loadBedSettings(path, loaded), "BedIO: load succeeds");
+    BedHeightmap loadedHeightmap;
+    check(loadBedSettings(path, loaded, loadedHeightmap), "BedIO: load succeeds");
 
     checkNear(loaded.widthMm, original.widthMm, "BedIO: width round-trips");
     checkNear(loaded.depthMm, original.depthMm, "BedIO: depth round-trips");
@@ -327,10 +337,26 @@ void testBedIO() {
     checkNear(loaded.gridSpacingMm, original.gridSpacingMm, "BedIO: gridSpacing round-trips");
     check(loaded.showGrid == original.showGrid, "BedIO: showGrid round-trips");
 
+    checkNear(loadedHeightmap.spacingMm, originalHeightmap.spacingMm, "BedIO: heightmap spacing round-trips");
+    check(loadedHeightmap.visible == originalHeightmap.visible, "BedIO: heightmap visible round-trips");
+    check(loadedHeightmap.cols == originalHeightmap.cols, "BedIO: heightmap cols round-trips");
+    check(loadedHeightmap.rows == originalHeightmap.rows, "BedIO: heightmap rows round-trips");
+    bool valuesMatch = loadedHeightmap.elevationsMm.size() == originalHeightmap.elevationsMm.size();
+    if (valuesMatch) {
+        for (size_t i = 0; i < originalHeightmap.elevationsMm.size(); ++i) {
+            if (std::abs(loadedHeightmap.elevationsMm[i] - originalHeightmap.elevationsMm[i]) > 1e-4) {
+                valuesMatch = false;
+                break;
+            }
+        }
+    }
+    check(valuesMatch, "BedIO: heightmap elevation values round-trip");
+
     std::remove(path.c_str());
 
     BedSettings missing;
-    check(!loadBedSettings("this_file_does_not_exist.bed", missing), "BedIO: loading a missing file returns false");
+    BedHeightmap missingHeightmap;
+    check(!loadBedSettings("this_file_does_not_exist.bed", missing, missingHeightmap), "BedIO: loading a missing file returns false");
 }
 
 // Gizmo drag math: an orthographic projection with world X in [-100,100]

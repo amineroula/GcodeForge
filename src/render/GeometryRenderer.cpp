@@ -378,6 +378,22 @@ void GeometryRenderer::draw(const glm::mat4& viewProj, const LightingSettings& l
         glBindVertexArray(outlineVao_);
         glDrawElements(GL_TRIANGLES, outlineIndexCount_, GL_UNSIGNED_INT, nullptr);
         glBindVertexArray(0);
+    } else if (selectionStyle == SelectionStyle::Wireframe && outlineIndexCount_ > 0) {
+        // Reuses the SAME enlarged outline mesh as the Outline style, just
+        // drawn as lines instead of front-culled filled triangles -- a
+        // bright cage around the selected geometry. No culling (want both
+        // near and far edges of the cage visible) and no depth trickery
+        // needed since lines don't fully occlude what's behind them.
+        glDisable(GL_CULL_FACE);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        glLineWidth(2.5f);
+        glUseProgram(meshShaderProgram_);
+        glUniformMatrix4fv(meshMvpLoc_, 1, GL_FALSE, glm::value_ptr(viewProj));
+        glUniform1i(meshSelectionStyleLoc_, static_cast<int>(SelectionStyle::Wireframe));
+        glBindVertexArray(outlineVao_);
+        glDrawElements(GL_TRIANGLES, outlineIndexCount_, GL_UNSIGNED_INT, nullptr);
+        glBindVertexArray(0);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     }
 
     if (backfaceCulling) {

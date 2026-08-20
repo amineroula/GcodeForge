@@ -39,8 +39,8 @@ void EditorUI::sectionLabel(const char* text) {
 }
 
 void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSettings& renderSettings,
-                     BedSettings& bedSettings, LightingSettings& lightingSettings, UndoStack& undoStack,
-                     size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty) {
+                     BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& bedHeightmap,
+                     UndoStack& undoStack, size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty) {
     drawMenuBar(scene, undoStack, sceneDirty);
 
     ImGui::SetNextWindowPos(ImVec2(12, 32), ImGuiCond_FirstUseEver);
@@ -76,7 +76,7 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
     ImGui::SetNextWindowPos(ImVec2(displayWidth - 332, 32), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(320, 320), ImGuiCond_FirstUseEver);
     ImGui::Begin("Bed");
-    drawBedPanel(bedSettings, lightingSettings, bedDirty);
+    drawBedPanel(bedSettings, lightingSettings, bedHeightmap, bedDirty);
     ImGui::End();
 }
 
@@ -138,8 +138,11 @@ void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, boo
     }
 
     if (renderSettings.mode == RenderMode::Geometry) {
-        if (ImGui::SliderFloat("Bead width (mm)", &renderSettings.beadWidthMm, 0.5f, 50.0f, "%.1f")) dirty = true;
-        if (ImGui::SliderFloat("Bead height (mm)", &renderSettings.beadHeightMm, 0.5f, 50.0f, "%.1f")) dirty = true;
+        // DragFloat instead of SliderFloat: click-drag the number itself to
+        // scrub the value (also still double-click/ctrl-click to type an
+        // exact number), rather than needing to hit a thin slider track.
+        if (ImGui::DragFloat("Bead width (mm)", &renderSettings.beadWidthMm, 0.1f, 0.5f, 50.0f, "%.1f")) dirty = true;
+        if (ImGui::DragFloat("Bead height (mm)", &renderSettings.beadHeightMm, 0.1f, 0.5f, 50.0f, "%.1f")) dirty = true;
         ImGui::TextDisabled("Print paths render as mitered solid bead tubes; travel paths stay as thin lines.");
         // Rendering-only toggle -- no rebuild needed, just checked at draw time.
         ImGui::Checkbox("Backface culling (hide inside of tubes)", &renderSettings.backfaceCulling);
@@ -148,9 +151,11 @@ void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, boo
         // needed, GeometryRenderer already builds both the outline mesh
         // and the per-vertex selected flag every rebuild regardless of
         // which style is currently active, so switching is instant.
-        static const char* kSelectionStyleNames[] = {"Outline", "Pulse (glow selected, dim rest)"};
+        static const char* kSelectionStyleNames[] = {
+            "Outline", "Pulse (glow selected, dim rest)", "Stripes (moving hazard tape)", "Wireframe cage"
+        };
         int styleIndex = static_cast<int>(renderSettings.selectionStyle);
-        if (ImGui::Combo("Selection style", &styleIndex, kSelectionStyleNames, 2)) {
+        if (ImGui::Combo("Selection style", &styleIndex, kSelectionStyleNames, 4)) {
             renderSettings.selectionStyle = static_cast<SelectionStyle>(styleIndex);
         }
     }
@@ -175,7 +180,7 @@ void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, boo
     ImGui::TextDisabled("an unselected neighbor; Whole translates each selected path rigidly, so it never does.");
 }
 
-void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, bool& bedDirty) {
+void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHeightmap& heightmap, bool& bedDirty) {
     sectionLabel("Bed size");
     if (ImGui::InputFloat("Width (mm)", &bed.widthMm, 10.0f, 100.0f, "%.0f")) { bed.widthMm = std::max(bed.widthMm, 10.0f); bedDirty = true; }
     if (ImGui::InputFloat("Depth (mm)", &bed.depthMm, 10.0f, 100.0f, "%.0f")) { bed.depthMm = std::max(bed.depthMm, 10.0f); bedDirty = true; }
@@ -261,6 +266,70 @@ void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, bool& 
         lighting.lights.push_back(Light{});
     }
     ImGui::EndDisabled();
+
+    // Bed heightmap: operator-entered elevation measurements at fixed grid
+    // points across the bed, visualized as a colored heatmap surface so
+    // warp is visible before it ruins a print. bedDirty is reused for
+    // every edit here (spacing, resize, per-point value, visibility) --
+    // main.cpp's bedDirty handler already calls resizeToBed() and
+    // rebuilds BedHeightmapRenderer whenever it fires, so this doesn't
+    // need its own separate dirty flag threaded through the whole call
+    // chain.
+    ImGui::Spacing();
+    ImGui::Spacing();
+    sectionLabel("Bed Heightmap");
+    ImGui::TextWrapped("Enter measured bed elevation at each grid point to see where the bed is "
+                        "elevated too much, as a heatmap.");
+
+    if (ImGui::Checkbox("Show heatmap", &heightmap.visible)) bedDirty = true;
+
+    float spacing = heightmap.spacingMm;
+    if (ImGui::DragFloat("Spacing (mm)", &spacing, 1.0f, 5.0f, 1000.0f, "%.0f")) {
+        heightmap.spacingMm = std::max(spacing, 5.0f);
+        bedDirty = true;
+    }
+    ImGui::TextDisabled("Default: one measurement point every 100mm (10cm).");
+
+    if (ImGui::Button("Resize grid to bed")) {
+        heightmap.resizeToBed(bed.widthMm, bed.depthMm);
+        bedDirty = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset all to 0")) {
+        std::fill(heightmap.elevationsMm.begin(), heightmap.elevationsMm.end(), 0.0f);
+        bedDirty = true;
+    }
+
+    if (heightmap.cols >= 2 && heightmap.rows >= 2) {
+        ImGui::Text("%d x %d grid (%d points)", heightmap.cols, heightmap.rows, heightmap.cols * heightmap.rows);
+        ImGui::TextDisabled("Drag a value to scrub it, or double-click/Ctrl+click to type an exact number.");
+
+        // Scrollable child so a large grid (e.g. 11x11 at the default
+        // 1000mm bed / 100mm spacing = 121 fields) doesn't blow out the
+        // rest of the Bed panel.
+        ImGui::BeginChild("heightmapGrid", ImVec2(0, 220), true, ImGuiWindowFlags_HorizontalScrollbar);
+        if (ImGui::BeginTable("heightmapTable", heightmap.cols, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+            // Row heightmap.rows-1 (the far/+Y edge) drawn FIRST, so the
+            // table reads top-to-bottom the same way the bed looks from
+            // Top view (higher Y = further "up" on screen there).
+            for (int row = heightmap.rows - 1; row >= 0; --row) {
+                ImGui::TableNextRow();
+                for (int col = 0; col < heightmap.cols; ++col) {
+                    ImGui::TableNextColumn();
+                    ImGui::PushID(row * heightmap.cols + col);
+                    ImGui::SetNextItemWidth(56.0f);
+                    if (ImGui::DragFloat("##v", &heightmap.at(col, row), 0.02f, -50.0f, 50.0f, "%.2f")) {
+                        bedDirty = true;
+                    }
+                    ImGui::PopID();
+                }
+            }
+            ImGui::EndTable();
+        }
+        ImGui::EndChild();
+    } else {
+        ImGui::TextDisabled("No grid yet -- click \"Resize grid to bed\".");
+    }
 }
 
 void EditorUI::drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dirty) {
@@ -447,7 +516,7 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
     }
 
     ImGui::TextWrapped("Click a row to select that layer's print paths "
-                        "(Shift = add, Ctrl = subtract).");
+                        "(Shift = range-select from the last clicked layer, Ctrl = subtract).");
 
     if (ImGui::BeginTable("layers", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
                            ImVec2(0, 180))) {
@@ -470,8 +539,26 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
                 if (object.selectedPaths.count(p)) { anySelected = true; break; }
             }
             if (ImGui::Selectable(label, anySelected, ImGuiSelectableFlags_SpanAllColumns)) {
-                std::vector<int> targets = pathNumbersForLayer(object, layer.layer);
-                applySelectionCompose(object.selectedPaths, targets, currentSelectionCompose());
+                SelectionCompose compose = currentSelectionCompose();
+                if (compose == SelectionCompose::Add && layerSelectionAnchor_ >= 0) {
+                    // Shift-click: select every layer between the last
+                    // clicked layer (the anchor) and this one, inclusive --
+                    // standard range-select (click 3, shift-click 37, get
+                    // 3 through 37), not just Add-this-one-layer.
+                    int lo = std::min(layerSelectionAnchor_, layer.layer);
+                    int hi = std::max(layerSelectionAnchor_, layer.layer);
+                    std::vector<int> targets;
+                    for (const auto& rangeLayer : object.layers) {
+                        if (rangeLayer.layer < lo || rangeLayer.layer > hi) continue;
+                        std::vector<int> layerPaths = pathNumbersForLayer(object, rangeLayer.layer);
+                        targets.insert(targets.end(), layerPaths.begin(), layerPaths.end());
+                    }
+                    applySelectionCompose(object.selectedPaths, targets, SelectionCompose::Add);
+                } else {
+                    std::vector<int> targets = pathNumbersForLayer(object, layer.layer);
+                    applySelectionCompose(object.selectedPaths, targets, compose);
+                    layerSelectionAnchor_ = layer.layer; // plain/ctrl clicks move the anchor; shift-click ranges from the last one
+                }
                 selectionDirty = true;
             }
 

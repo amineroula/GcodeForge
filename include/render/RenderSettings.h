@@ -22,18 +22,30 @@ enum class SelectionStyle {
     // with front-face culling before the real mesh, producing a rim right
     // at the silhouette edge from any angle. See GeometryRenderer::draw().
     Outline,
-    // Selected geometry pulses toward white over time; everything else in
-    // Geometry mode dims down so the pulsing selection reads clearly
-    // against it. No extra mesh, just a per-vertex flag and a uTime
-    // uniform in the mesh shader.
+    // Selected geometry glows/pulses toward white over time (unlit --
+    // doesn't dim on faces angled away from every light, which is what
+    // made an earlier version of this look inconsistent/"weird" half-lit);
+    // everything else in Geometry mode dims down so the pulse reads
+    // clearly against it. No extra mesh, just a per-vertex flag and a
+    // uTime uniform in the mesh shader.
     Pulse,
+    // Moving black/white diagonal "hazard tape" stripes across selected
+    // geometry, unlit and driven by world position + time so the pattern
+    // reads as an unmistakable moving texture from any angle -- about as
+    // hard to confuse with ordinary lit geometry as this gets without an
+    // actual image texture.
+    Stripes,
+    // The enlarged outline mesh (same one Outline uses) drawn as lines
+    // instead of filled front-culled triangles -- a bright wireframe cage
+    // around the selected geometry, cheap and unambiguous.
+    Wireframe,
 };
 
 struct RenderSettings {
     RenderMode mode = RenderMode::Lines;
     SelectionStyle selectionStyle = SelectionStyle::Outline;
-    float beadWidthMm = 8.0f;   // cross-section width of the simulated extrusion bead
-    float beadHeightMm = 4.0f;  // cross-section height (roughly: layer height)
+    float beadWidthMm = 7.0f;   // cross-section width of the simulated extrusion bead
+    float beadHeightMm = 3.0f;  // cross-section height (roughly: layer height)
 
     // Geometry mode only: hide back-facing bead triangles (the inside
     // surface of the tube, facing away from the camera) via GPU backface
