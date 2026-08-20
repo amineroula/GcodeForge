@@ -119,6 +119,9 @@ SceneObject parseSrc(const std::string& objectName, const std::vector<std::strin
                     path.from = previous.value_or(to);
                     path.to = to;
                     path.srcLine = lineIndex;
+                    path.a = matchNumber(block, kARe);
+                    path.b = matchNumber(block, kBRe);
+                    path.c = matchNumber(block, kCRe);
                     object.paths.push_back(path);
 
                     previous = to;

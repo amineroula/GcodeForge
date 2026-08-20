@@ -11,6 +11,7 @@
 #include "editor/Picking.h"
 #include "io/BedIO.h"
 #include "editor/Gizmo.h"
+#include "editor/SrcExporter.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstdio>
@@ -46,7 +47,7 @@ void testSrcParser() {
         ";TRAVEL START",
         "$VEL.CP = 0.100",
         "PTP {X 1000,Y 500,Z 300}",
-        "LIN {X 1000,Y 500,Z 82}",
+        "LIN {X 1000,Y 500,Z 82,A 90,B 0,C 180}",
         ";TRAVEL END",
         "$VEL.CP = 0.040",
         "LIN {X 1010,Y 500,Z 82}",
@@ -75,6 +76,14 @@ void testSrcParser() {
               "SRC: path 3 picked up the $VEL.CP = 0.040 in effect at that line");
         check(object.paths[1].speed.has_value() && std::abs(*object.paths[1].speed - 0.100) < 1e-9,
               "SRC: path 2 picked up the earlier $VEL.CP = 0.100");
+        check(object.paths[1].a.has_value() && object.paths[1].b.has_value() && object.paths[1].c.has_value(),
+              "SRC: path 2's A/B/C orientation is captured, not silently dropped");
+        if (object.paths[1].a && object.paths[1].b && object.paths[1].c) {
+            checkNear(*object.paths[1].a, 90.0, "SRC: path 2 A = 90");
+            checkNear(*object.paths[1].b, 0.0, "SRC: path 2 B = 0");
+            checkNear(*object.paths[1].c, 180.0, "SRC: path 2 C = 180");
+        }
+        check(!object.paths[2].a.has_value(), "SRC: a path without A/B/C in its source line has no orientation (not a false 0)");
     }
 
     if (object.layers.size() == 2) {
@@ -233,6 +242,63 @@ void testPicking() {
           "Picking: rectangle select finds only the path whose midpoint falls inside it");
 }
 
+// A path whose MIDPOINT is outside the marquee rectangle, but one end
+// grazes a corner of it, must still be selected -- this was the reported
+// "drag selection only selects when inside the rectangle" complaint;
+// the fix moved from midpoint-containment to real segment intersection.
+void testMarqueeTouch() {
+    glm::mat4 projection = glm::ortho(-100.0f, 100.0f, -100.0f, 100.0f, -100.0f, 100.0f);
+    ScreenProjector projector{projection, 200.0f, 200.0f};
+
+    Scene scene;
+    SceneObject object;
+    object.name = "grazer";
+    Path grazing; grazing.number = 1; grazing.type = PathType::Print;
+    grazing.from = glm::dvec3(-80, 80, 0); // screen (20,20)
+    grazing.to = glm::dvec3(-20, 20, 0);   // screen (80,80); midpoint screen (50,50)
+    object.paths = {grazing};
+    scene.addObject(object);
+
+    // Rect only covers the corner near the path's START point (20,20);
+    // the path's midpoint (50,50) is well outside this rect.
+    auto hits = pickPathsInRect(scene, projector, glm::vec2(0.0f, 0.0f), glm::vec2(30.0f, 30.0f));
+    check(hits.size() == 1 && hits[0].pathNumber == 1,
+          "Picking: marquee selects a path that only grazes a corner of the rect, not just ones whose midpoint is inside");
+}
+
+// selectBackfacing controls whether picking prefers the camera-nearest
+// candidate over the merely-closer-on-screen one. Uses the projector's
+// own computed depth (rather than assuming a Z/NDC sign convention) to
+// decide which path is actually nearer, so the test is convention-proof.
+void testPickingBackfacing() {
+    glm::mat4 projection = glm::ortho(-100.0f, 100.0f, -100.0f, 100.0f, -100.0f, 100.0f);
+    ScreenProjector projector{projection, 200.0f, 200.0f};
+
+    Scene scene;
+    SceneObject object;
+    object.name = "depthTest";
+    Path pathA; pathA.number = 1; pathA.type = PathType::Print; // screen x=10 -- exactly on the click point
+    pathA.from = glm::dvec3(-95, 0, 50); pathA.to = glm::dvec3(-85, 0, 50);
+    Path pathB; pathB.number = 2; pathB.type = PathType::Print; // screen x=35 -- 25px from the click point
+    pathB.from = glm::dvec3(-70, 0, -50); pathB.to = glm::dvec3(-60, 0, -50);
+    object.paths = {pathA, pathB};
+    scene.addObject(object);
+
+    float depthA = projector.project(glm::vec3(-90.0f, 0.0f, 50.0f))->z;
+    float depthB = projector.project(glm::vec3(-65.0f, 0.0f, -50.0f))->z;
+    int nearerPathNumber = (depthA < depthB) ? 1 : 2;
+
+    glm::vec2 clickPoint(10.0f, 100.0f); // exactly on path A; 25px from path B
+
+    auto withBackfacing = pickNearestPath(scene, projector, clickPoint, 30.0f, /*selectBackfacing=*/true);
+    check(withBackfacing.has_value() && withBackfacing->pathNumber == 1,
+          "Picking: selectBackfacing=true picks the 2D-nearest path regardless of which is actually closer to the camera");
+
+    auto withoutBackfacing = pickNearestPath(scene, projector, clickPoint, 30.0f, /*selectBackfacing=*/false);
+    check(withoutBackfacing.has_value() && withoutBackfacing->pathNumber == nearerPathNumber,
+          "Picking: selectBackfacing=false prefers the path nearer the camera, even when it's farther away on screen");
+}
+
 // Save then load a BedSettings and check every field round-trips exactly.
 void testBedIO() {
     BedSettings original;
@@ -300,6 +366,187 @@ void testGizmoMath() {
     check(!hitNone.has_value(), "Gizmo: a point far from every arrow picks nothing");
 }
 
+// inverseTransformDelta must undo applyTransform's rotation+flip exactly,
+// for any transform -- verified here with a 90-degree rotation plus a
+// flip, since that's the case most likely to reveal a sign-convention bug.
+void testTransformDelta() {
+    Transform t;
+    t.rotZDegrees = 90.0;
+    t.flipX = true;
+    t.x = 500.0; // translation should NOT matter for a delta
+    t.y = -200.0;
+
+    glm::dvec3 localDelta(1.0, 2.0, 3.0);
+    glm::dvec3 worldA = applyTransform(t, glm::dvec3(0.0));
+    glm::dvec3 worldB = applyTransform(t, localDelta);
+    glm::dvec3 worldDelta = worldB - worldA;
+
+    glm::dvec3 recovered = inverseTransformDelta(t, worldDelta);
+    checkNear(recovered.x, localDelta.x, "TransformDelta: inverse recovers local X through rotation+flip");
+    checkNear(recovered.y, localDelta.y, "TransformDelta: inverse recovers local Y through rotation+flip");
+    checkNear(recovered.z, localDelta.z, "TransformDelta: inverse recovers local Z (unaffected by Z-only rotation)");
+}
+
+// computeGizmoOrigin must react to selection and mode, not just sit at the
+// object's raw (and possibly geometry-irrelevant) transform pivot.
+void testGizmoOrigin() {
+    SceneObject object;
+    object.name = "gizmoTest";
+    Path p1; p1.number = 1; p1.type = PathType::Print;
+    p1.from = glm::dvec3(0, 0, 0); p1.to = glm::dvec3(10, 0, 0);
+    Path p2; p2.number = 2; p2.type = PathType::Print;
+    p2.from = glm::dvec3(10, 0, 0); p2.to = glm::dvec3(10, 10, 0);
+    object.paths = {p1, p2};
+    // transform.x/y/z deliberately left at 0 -- a realistic case (a
+    // freshly-loaded file) where the raw pivot would NOT be anywhere near
+    // this geometry if it were far from local-space origin.
+
+    auto wholeOrigin = computeGizmoOrigin(object, GizmoTargetMode::Object);
+    check(wholeOrigin.has_value(), "GizmoOrigin: Object mode returns a value for a non-empty object");
+    if (wholeOrigin) {
+        // centroid of all 4 endpoints: (0,0,0),(10,0,0),(10,0,0),(10,10,0) -> (7.5, 2.5, 0)
+        checkNear(wholeOrigin->x, 7.5, "GizmoOrigin: Object mode centroid X");
+        checkNear(wholeOrigin->y, 2.5, "GizmoOrigin: Object mode centroid Y");
+    }
+
+    object.selectedPaths = {2};
+    auto startOrigin = computeGizmoOrigin(object, GizmoTargetMode::Start);
+    check(startOrigin.has_value(), "GizmoOrigin: Start mode returns a value with a selection");
+    if (startOrigin) {
+        checkNear(startOrigin->x, 10.0, "GizmoOrigin: Start mode uses path 2's FROM point (10,0,0), not its TO");
+        checkNear(startOrigin->y, 0.0, "GizmoOrigin: Start mode Y matches path 2's FROM");
+    }
+
+    auto endOrigin = computeGizmoOrigin(object, GizmoTargetMode::End);
+    if (endOrigin) {
+        checkNear(endOrigin->x, 10.0, "GizmoOrigin: End mode uses path 2's TO point (10,10,0)");
+        checkNear(endOrigin->y, 10.0, "GizmoOrigin: End mode Y matches path 2's TO");
+    }
+
+    object.selectedPaths.clear();
+    auto fallbackOrigin = computeGizmoOrigin(object, GizmoTargetMode::Start);
+    check(fallbackOrigin.has_value() && std::abs(fallbackOrigin->x - 7.5) < 1e-6,
+          "GizmoOrigin: Start mode with an EMPTY selection falls back to the whole-object centroid");
+}
+
+// Same 7-path snippet as testSrcParser, used here to verify the exporter:
+// (1) a completely untouched round-trip produces byte-identical output
+// and zero inserted lines, (2) a transform edit patches coordinates and
+// nothing else, (3) a speed override on ONE path produces exactly two
+// insertions -- the override itself and the automatic "restore" once the
+// next unmodified path's original speed no longer matches what we last
+// declared.
+std::vector<std::string> sampleSrcLinesForExport() {
+    return {
+        "DEF Chair_01()",
+        ";TRAVEL START",
+        "$VEL.CP = 0.100",
+        "PTP {X 1000,Y 500,Z 300}",
+        "LIN {X 1000,Y 500,Z 82,A 90,B 0,C 180}",
+        ";TRAVEL END",
+        "$VEL.CP = 0.040",
+        "LIN {X 1010,Y 500,Z 82}",
+        "LIN {X 1020,Y 510,Z 82}",
+        "LIN {X 1030,Y 520,Z 82}",
+        "LIN {X 1030,Y 520,Z 84}",
+        "LIN {X 1040,Y 530,Z 84}",
+        "END",
+    };
+}
+
+void testSrcExporterRoundTrip() {
+    std::vector<std::string> lines = sampleSrcLinesForExport();
+    SceneObject object = parseSrc("Chair_01", lines);
+
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(object, result);
+
+    check(result.success, "SrcExporter: untouched round-trip succeeds");
+    check(result.patchedCoordinateLines == 0, "SrcExporter: untouched round-trip patches zero coordinate lines");
+    check(result.insertedSpeedLines == 0, "SrcExporter: untouched round-trip inserts zero speed lines");
+    check(exported.size() == lines.size(), "SrcExporter: untouched round-trip doesn't change line count");
+    bool identical = (exported == lines);
+    check(identical, "SrcExporter: untouched round-trip is byte-identical to the original");
+}
+
+void testSrcExporterTransform() {
+    std::vector<std::string> lines = sampleSrcLinesForExport();
+    SceneObject object = parseSrc("Chair_01", lines);
+    object.transform.x = 100.0; // pure translation, easy to verify by hand
+
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(object, result);
+
+    check(result.success, "SrcExporter: transform export succeeds");
+    check(result.patchedCoordinateLines == object.paths.size(),
+          "SrcExporter: transform edit patches every path's coordinate line");
+
+    SceneObject reparsed = parseSrc("Chair_01_reparsed", exported);
+    check(reparsed.paths.size() == object.paths.size(), "SrcExporter: re-parsed export has the same path count");
+    if (reparsed.paths.size() == object.paths.size()) {
+        for (size_t i = 0; i < object.paths.size(); ++i) {
+            checkNear(reparsed.paths[i].to.x, object.paths[i].to.x + 100.0,
+                      "SrcExporter: re-parsed path X reflects the +100 transform");
+        }
+        // A/B/C on the one line that had them must survive untouched.
+        check(reparsed.paths[1].a.has_value() && std::abs(*reparsed.paths[1].a - 90.0) < 1e-6,
+              "SrcExporter: orientation (A) survives a coordinate patch on the same line");
+    }
+}
+
+void testSrcExporterSpeedOverride() {
+    std::vector<std::string> lines = sampleSrcLinesForExport();
+    SceneObject object = parseSrc("Chair_01", lines);
+
+    // Override path 4 (0-indexed 3, the 2nd print path -- both at the
+    // original 0.040) to a slower speed. Expect exactly two insertions:
+    // the override before path 4, and an automatic restore to 0.040
+    // before path 5 (the next path, whose OWN original speed diverges
+    // from what we just declared).
+    check(object.paths.size() == 7, "SrcExporter: sample still parses to 7 paths (precondition)");
+    object.paths[3].speedOverride = 0.020;
+
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(object, result);
+
+    check(result.success, "SrcExporter: speed-override export succeeds");
+    check(result.insertedSpeedLines == 2,
+          "SrcExporter: a single-path override produces exactly 2 insertions (override + auto-restore)");
+
+    std::string joined;
+    for (const auto& line : exported) joined += line + "\n";
+    check(joined.find("$VEL.CP = 0.020000") != std::string::npos, "SrcExporter: override speed line is present");
+    check(joined.find("$VEL.CP = 0.040000") != std::string::npos, "SrcExporter: restore speed line is present");
+
+    SceneObject reparsed = parseSrc("Chair_01_reparsed", exported);
+    if (reparsed.paths.size() == 7) {
+        checkNear(reparsed.paths[3].speed.value_or(-1.0), 0.020, "SrcExporter: re-parsed path 4 picks up the overridden speed");
+        checkNear(reparsed.paths[4].speed.value_or(-1.0), 0.040, "SrcExporter: re-parsed path 5 picks up the restored speed");
+    }
+}
+
+void testSrcExporterLayerAction() {
+    std::vector<std::string> lines = sampleSrcLinesForExport();
+    SceneObject object = parseSrc("Chair_01", lines);
+
+    LayerAction action;
+    action.layer = 1;
+    action.label = "Part cooling ON";
+    action.krlText = "$OUT[12] = TRUE";
+    object.layerActions.push_back(action);
+
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(object, result);
+
+    check(result.success, "SrcExporter: layer-action export succeeds");
+    check(result.insertedLayerActions == 1, "SrcExporter: exactly one layer action inserted");
+
+    std::string joined;
+    for (const auto& line : exported) joined += line + "\n";
+    check(joined.find("$OUT[12] = TRUE") != std::string::npos, "SrcExporter: layer action's KRL text is present in the output");
+    check(joined.find("Part cooling ON") != std::string::npos, "SrcExporter: layer action's label is present as a traceability comment");
+}
+
 } // namespace
 
 int main() {
@@ -308,8 +555,16 @@ int main() {
     testEditorLogic();
     testUndoStack();
     testPicking();
+    testMarqueeTouch();
+    testPickingBackfacing();
     testBedIO();
     testGizmoMath();
+    testTransformDelta();
+    testGizmoOrigin();
+    testSrcExporterRoundTrip();
+    testSrcExporterTransform();
+    testSrcExporterSpeedOverride();
+    testSrcExporterLayerAction();
 
     if (g_failures == 0) {
         std::printf("\nAll checks passed.\n");

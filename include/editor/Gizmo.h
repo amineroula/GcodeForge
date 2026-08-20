@@ -1,5 +1,7 @@
 #pragma once
 
+#include "model/SceneObject.h"
+
 #include <glm/glm.hpp>
 #include <optional>
 #include <vector>
@@ -50,3 +52,27 @@ struct GizmoAxisScreenSegment {
 // nearest if more than one is within range.
 std::optional<GizmoAxis> pickGizmoAxis(const std::vector<GizmoAxisScreenSegment>& segments,
                                         glm::vec2 screenPoint, float pickRadiusPixels);
+
+// What the gizmo edits when dragged. Object moves the whole object
+// (mutates Transform.x/y/z); Start/End/Whole edit the CURRENTLY SELECTED
+// paths directly (mutates Path::from and/or Path::to in local space) --
+// Start only moves each selected path's start point, End only its end
+// point (both can break connectivity with an unselected neighboring path,
+// same trade-off as moving one vertex of a polyline in any curve editor),
+// Whole translates each selected path rigidly (both endpoints together,
+// so it never breaks connectivity by itself).
+enum class GizmoTargetMode { Object, Start, End, Whole };
+
+// Where the gizmo should be drawn, in world space. Deliberately NOT the
+// object's raw Transform.x/y/z pivot -- that can be arbitrarily far from
+// the actual geometry (e.g. a freshly-loaded real KUKA file typically has
+// Transform == {0,0,0} while its coordinates are in the thousands of mm,
+// which made the gizmo render off in empty space, invisible relative to
+// where the geometry actually is on screen). Instead this is always the
+// world-space centroid of whatever the gizmo would actually move:
+//  - Start/End/Whole with a non-empty selection: centroid of the relevant
+//    point(s) of the selected paths.
+//  - Object mode, or Start/End/Whole with nothing selected (falls back to
+//    Object mode): centroid of the WHOLE object's paths.
+// Returns nullopt only if the object has no paths at all.
+std::optional<glm::vec3> computeGizmoOrigin(const SceneObject& object, GizmoTargetMode mode);

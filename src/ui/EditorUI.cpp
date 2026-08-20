@@ -56,7 +56,7 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
         ImGui::Separator();
         ImGui::Text("Active: %s", active->name.c_str());
         drawTransformPanel(scene, *active, undoStack, sceneDirty);
-        drawLayerTablePanel(*active, selectionDirty);
+        drawLayerTablePanel(scene, *active, undoStack, sceneDirty, selectionDirty);
         drawSelectionGroupPanel(scene, *active, undoStack, sceneDirty, selectionDirty);
         drawSpeedPanel(scene, *active, undoStack, sceneDirty);
     } else {
@@ -85,6 +85,10 @@ void EditorUI::drawMenuBar(Scene& scene, UndoStack& undoStack, bool& sceneDirty)
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Open SRC / G-code...")) {
                 openFileRequested_ = true;
+            }
+            bool hasActive = (scene.activeObject() != nullptr);
+            if (ImGui::MenuItem("Save SRC As...", nullptr, false, hasActive)) {
+                saveSrcRequested_ = true;
             }
             ImGui::EndMenu();
         }
@@ -137,7 +141,28 @@ void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, boo
         if (ImGui::SliderFloat("Bead width (mm)", &renderSettings.beadWidthMm, 0.5f, 50.0f, "%.1f")) dirty = true;
         if (ImGui::SliderFloat("Bead height (mm)", &renderSettings.beadHeightMm, 0.5f, 50.0f, "%.1f")) dirty = true;
         ImGui::TextDisabled("Print paths render as mitered solid bead tubes; travel paths stay as thin lines.");
+        // Rendering-only toggle -- no rebuild needed, just checked at draw time.
+        ImGui::Checkbox("Backface culling (hide inside of tubes)", &renderSettings.backfaceCulling);
     }
+
+    ImGui::Spacing();
+    // Picking-only toggle -- affects the next click, nothing to rebuild.
+    ImGui::Checkbox("Select backfacing/hidden geometry", &renderSettings.selectBackfacing);
+    ImGui::TextDisabled("Off: clicking prefers the path nearest the camera. On: prefers whichever is closest on screen.");
+
+    ImGui::Spacing();
+    sectionLabel("Move gizmo");
+    GizmoTargetMode& gm = renderSettings.gizmoMode;
+    if (ImGui::RadioButton("Object", gm == GizmoTargetMode::Object)) gm = GizmoTargetMode::Object;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Start", gm == GizmoTargetMode::Start)) gm = GizmoTargetMode::Start;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("End", gm == GizmoTargetMode::End)) gm = GizmoTargetMode::End;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Whole", gm == GizmoTargetMode::Whole)) gm = GizmoTargetMode::Whole;
+    ImGui::TextDisabled("Object moves the whole object. Start/End/Whole edit the CURRENT PATH SELECTION directly");
+    ImGui::TextDisabled("(with no selection, these fall back to Object mode). Start/End can break connectivity with");
+    ImGui::TextDisabled("an unselected neighbor; Whole translates each selected path rigidly, so it never does.");
 }
 
 void EditorUI::drawBedPanel(BedSettings& bed, bool& bedDirty) {
@@ -343,7 +368,7 @@ void EditorUI::drawTransformPanel(Scene& scene, SceneObject& object, UndoStack& 
     ImGui::PopID();
 }
 
-void EditorUI::drawLayerTablePanel(SceneObject& object, bool& selectionDirty) {
+void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty, bool& selectionDirty) {
     if (boldFont_) ImGui::PushFont(boldFont_);
     bool layersOpen = ImGui::CollapsingHeader("Layers", ImGuiTreeNodeFlags_DefaultOpen);
     if (boldFont_) ImGui::PopFont();
@@ -407,6 +432,46 @@ void EditorUI::drawLayerTablePanel(SceneObject& object, bool& selectionDirty) {
     if (ImGui::SmallButton("Clear")) {
         object.selectedPaths.clear();
         selectionDirty = true;
+    }
+
+    ImGui::Spacing();
+    sectionLabel("Layer actions");
+    ImGui::TextWrapped("Insert a command before a layer's first motion line on export "
+                        "(HALT, part cooling, or custom KRL text).");
+
+    static const char* kPresetLabels[] = {"Halt", "Part cooling ON", "Part cooling OFF", "Custom"};
+    static const char* kPresetText[] = {"HALT", "; TODO: set the correct output for this cell, e.g. $OUT[12] = TRUE",
+                                         "; TODO: set the correct output for this cell, e.g. $OUT[12] = FALSE", ""};
+    if (ImGui::Combo("Preset", &layerActionPresetIndex_, kPresetLabels, 4)) {
+        std::snprintf(layerActionTextBuffer_, sizeof(layerActionTextBuffer_), "%s", kPresetText[layerActionPresetIndex_]);
+    }
+    ImGui::InputInt("Target layer", &layerActionTargetLayer_);
+    layerActionTargetLayer_ = std::clamp(layerActionTargetLayer_, 1, object.layers.empty() ? 1 : object.layers.back().layer);
+    ImGui::InputText("KRL text", layerActionTextBuffer_, sizeof(layerActionTextBuffer_));
+
+    if (ImGui::Button("Add layer action")) {
+        undoStack.snapshotBeforeChange(scene);
+        LayerAction action;
+        action.layer = layerActionTargetLayer_;
+        action.label = kPresetLabels[layerActionPresetIndex_];
+        action.krlText = layerActionTextBuffer_;
+        object.layerActions.push_back(action);
+        dirty = true;
+    }
+
+    for (size_t i = 0; i < object.layerActions.size(); ++i) {
+        const LayerAction& action = object.layerActions[i];
+        ImGui::PushID(static_cast<int>(i) + 10000);
+        ImGui::Text("Layer %d: %s (%s)", action.layer, action.label.c_str(), action.krlText.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Remove")) {
+            undoStack.snapshotBeforeChange(scene);
+            object.layerActions.erase(object.layerActions.begin() + static_cast<long>(i));
+            dirty = true;
+            ImGui::PopID();
+            break; // vector shrank -- stop iterating this frame
+        }
+        ImGui::PopID();
     }
 }
 

@@ -12,3 +12,6 @@ std::optional<std::string> showOpenSrcDialog(GLFWwindow* window);
 
 std::optional<std::string> showSaveBedDialog(GLFWwindow* window);
 std::optional<std::string> showOpenBedDialog(GLFWwindow* window);
+
+// suggestedName pre-fills the save dialog (e.g. the active object's name + ".src").
+std::optional<std::string> showSaveSrcDialog(GLFWwindow* window, const std::string& suggestedName);

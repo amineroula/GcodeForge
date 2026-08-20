@@ -43,6 +43,16 @@ struct Path {
     // eventually be written back to the right place.
     int srcLine = -1;
 
+    // Tool orientation (A/B/C, degrees) at the END of this motion, as
+    // found in the source. Added specifically so SRC export can
+    // reconstruct a real, safe robot pose -- exporting X/Y/Z alone and
+    // dropping orientation would silently produce an incomplete/invalid
+    // motion command for a real KUKA controller. std::nullopt if the
+    // source line didn't specify that axis.
+    std::optional<double> a;
+    std::optional<double> b;
+    std::optional<double> c;
+
     double effectiveSpeed() const {
         if (speedOverride.has_value()) return *speedOverride;
         return speed.value_or(0.0);

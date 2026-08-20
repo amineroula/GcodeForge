@@ -1,6 +1,7 @@
 #pragma once
 
 #include "model/Layer.h"
+#include "model/LayerAction.h"
 #include "model/Path.h"
 #include "model/SelectionGroup.h"
 #include "model/Transform.h"
@@ -16,7 +17,7 @@
 struct SceneObject {
     int id = 0;
     std::string name;
-    std::vector<std::string> sourceLines; // the original file's lines, kept for future write-back / export
+    std::vector<std::string> sourceLines; // the original file's lines -- editor/SrcExporter patches specific lines of a COPY of this, never mutates it directly
     std::vector<Path> paths;
     std::vector<Layer> layers;
     bool visible = true;
@@ -31,6 +32,11 @@ struct SceneObject {
     std::set<int> selectedPaths;
 
     std::vector<SelectionGroup> selectionGroups;
+
+    // Operator-inserted commands at the start of specific layers (HALT,
+    // part cooling on/off, etc.) -- see model/LayerAction.h and
+    // editor/SrcExporter.h.
+    std::vector<LayerAction> layerActions;
 
     Path* findPath(int number) {
         for (auto& p : paths) {

@@ -15,6 +15,34 @@ float pointToSegmentDistance(const glm::vec2& p, const glm::vec2& a, const glm::
     return glm::length(p - closest);
 }
 
+// Liang-Barsky segment-vs-axis-aligned-rectangle clipping: true if any
+// part of [a,b] falls inside [rectMin,rectMax] -- the segment just needs
+// to TOUCH the box, not have its midpoint fully inside it (that was the
+// original, overly strict behavior: a long path only grazing a corner of
+// the marquee wouldn't get picked even though visually it's "in the box").
+// Handles a zero-length segment (a==b) correctly too: it reduces to a
+// plain point-in-rect test.
+bool segmentIntersectsRect(const glm::vec2& a, const glm::vec2& b, const glm::vec2& rectMin, const glm::vec2& rectMax) {
+    float dx = b.x - a.x;
+    float dy = b.y - a.y;
+    float tMin = 0.0f, tMax = 1.0f;
+
+    float p[4] = {-dx, dx, -dy, dy};
+    float q[4] = {a.x - rectMin.x, rectMax.x - a.x, a.y - rectMin.y, rectMax.y - a.y};
+
+    for (int i = 0; i < 4; ++i) {
+        if (std::abs(p[i]) < 1e-9f) {
+            if (q[i] < 0.0f) return false; // segment parallel to this edge and entirely on the outside
+        } else {
+            float t = q[i] / p[i];
+            if (p[i] < 0.0f) tMin = std::max(tMin, t);
+            else tMax = std::min(tMax, t);
+            if (tMin > tMax) return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 std::optional<glm::vec3> ScreenProjector::project(const glm::vec3& worldPoint) const {
@@ -27,9 +55,10 @@ std::optional<glm::vec3> ScreenProjector::project(const glm::vec3& worldPoint) c
 }
 
 std::optional<PathRef> pickNearestPath(const Scene& scene, const ScreenProjector& projector,
-                                        glm::vec2 screenPoint, float pickRadiusPixels) {
+                                        glm::vec2 screenPoint, float pickRadiusPixels,
+                                        bool selectBackfacing) {
     std::optional<PathRef> best;
-    float bestDistance = pickRadiusPixels;
+    float bestDistance = std::numeric_limits<float>::max();
     float bestDepth = std::numeric_limits<float>::max();
 
     for (const auto& object : scene.objects) {
@@ -42,9 +71,19 @@ std::optional<PathRef> pickNearestPath(const Scene& scene, const ScreenProjector
             if (!fromScreen || !toScreen) continue;
 
             float distance = pointToSegmentDistance(screenPoint, glm::vec2(*fromScreen), glm::vec2(*toScreen));
+            if (distance > pickRadiusPixels) continue;
             float depth = (fromScreen->z + toScreen->z) * 0.5f;
 
-            if (distance <= bestDistance && (distance < bestDistance - 1e-4f || depth < bestDepth)) {
+            bool better;
+            if (selectBackfacing) {
+                better = distance < bestDistance;
+            } else if (std::abs(depth - bestDepth) < 1e-4f) {
+                better = distance < bestDistance; // near-identical depth: fall back to 2D proximity
+            } else {
+                better = depth < bestDepth; // prefer whichever is closer to the camera
+            }
+
+            if (better) {
                 bestDistance = distance;
                 bestDepth = depth;
                 best = PathRef{object.id, path.number};
@@ -63,12 +102,16 @@ std::vector<PathRef> pickPathsInRect(const Scene& scene, const ScreenProjector& 
         for (const auto& path : object.paths) {
             glm::vec3 fromWorld(applyTransform(object.transform, path.from));
             glm::vec3 toWorld(applyTransform(object.transform, path.to));
-            glm::vec3 midWorld = (fromWorld + toWorld) * 0.5f;
-            auto midScreen = projector.project(midWorld);
-            if (!midScreen) continue;
+            auto fromScreen = projector.project(fromWorld);
+            auto toScreen = projector.project(toWorld);
+            // If either endpoint is behind the camera, fall back to just
+            // the one that's valid (still lets a partially-offscreen path
+            // get picked); skip only if BOTH are invalid.
+            if (!fromScreen && !toScreen) continue;
+            glm::vec2 a = fromScreen ? glm::vec2(*fromScreen) : glm::vec2(*toScreen);
+            glm::vec2 b = toScreen ? glm::vec2(*toScreen) : glm::vec2(*fromScreen);
 
-            if (midScreen->x >= rectMin.x && midScreen->x <= rectMax.x &&
-                midScreen->y >= rectMin.y && midScreen->y <= rectMax.y) {
+            if (segmentIntersectsRect(a, b, rectMin, rectMax)) {
                 results.push_back(PathRef{object.id, path.number});
             }
         }

@@ -94,14 +94,22 @@ Editor is architecturally a compiler, and the module boundaries should match:
    draw a print-head marker, mirrors the JS `stepAnimation` loop. Includes
    manual step forward/back and a configurable **Next Path by N** control to
    jump N path segments at a time when reviewing long programs.
-9. **SRC export + verification** — re-serialize edited paths to `.src`, port
-   `export-verification-v481.js`'s round-trip check with its core design
-   principle preserved: **structural/coordinate corruption is a hard failure
-   that blocks export; small speed-verification numeric drift is a warning
-   that still exports**, with a warning comment written into the generated
-   SRC as an audit trail. Getting this distinction wrong in either direction
-   (too strict → blocks good exports; too loose → ships corrupted programs)
-   defeats the point of the feature.
+9. **SRC export + verification** — ✅ core export done (`editor/SrcExporter`):
+   patches the original source lines (X/Y/Z via `applyTransform()`, `$VEL.CP`
+   insertions via a two-timeline divergence check) rather than regenerating
+   from the model, so anything the model doesn't fully capture (E1-E6,
+   `C_VEL`, custom interrupt/safety logic, comments) is preserved
+   byte-for-byte because it's never touched. Verified against a real
+   24k-line production file: untouched round-trip is byte-identical. Layer
+   actions (`model/LayerAction`) let the operator insert HALT/cooling/custom
+   KRL commands at a layer boundary. **Not yet done**: the explicit
+   hard-fail-vs-warning STRUCTURAL validation gate from the original
+   (`export-verification-v481.js`) — NaN/Infinity/malformed-structure
+   detection before allowing export. Current export trusts the in-memory
+   model is structurally sound (reasonable today since nothing in the app
+   can currently produce a malformed Path), but doesn't yet defend against
+   it explicitly. Worth adding before this is treated as fully
+   production-hardened.
 10. **Object linking + Bake Links to Travels** — `objectLinks` generates a
     procedural travel connecting one object's end point to the next object's
     start point; this must be *cached*, not recomputed every frame (the

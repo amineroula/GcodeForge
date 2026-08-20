@@ -42,7 +42,7 @@ public:
     GeometryRenderer& operator=(const GeometryRenderer&) = delete;
 
     void rebuild(const Scene& scene, ColorMode colorMode, float beadWidthMm, float beadHeightMm);
-    void draw(const glm::mat4& viewProj, const glm::vec3& lightDir) const;
+    void draw(const glm::mat4& viewProj, const glm::vec3& lightDir, bool backfaceCulling) const;
 
     size_t triangleCount() const { return static_cast<size_t>(indexCount_) / 3; }
 

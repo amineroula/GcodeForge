@@ -17,10 +17,13 @@
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <map>
 #include <optional>
+#include <tuple>
 
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
@@ -29,6 +32,7 @@
 #include "editor/Gizmo.h"
 #include "editor/Picking.h"
 #include "editor/Selection.h"
+#include "editor/SrcExporter.h"
 #include "editor/UndoStack.h"
 #include "io/BedIO.h"
 #include "io/FileIO.h"
@@ -151,6 +155,7 @@ void clearAllSelections(Scene& scene) {
 } // namespace
 
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0); // unbuffered -- so redirected/killed-early output is still visible (debugging real-file loads)
     glfwSetErrorCallback(onGlfwError);
 
     if (!glfwInit()) {
@@ -161,6 +166,12 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    // 4x MSAA for smoother line/edge rendering ("sampling options for
+    // better line drawing"). This is a window-creation-time hint in
+    // vanilla GLFW -- changing the sample count at runtime would require
+    // destroying and recreating the window/context, so this is fixed for
+    // now rather than a live UI toggle.
+    glfwWindowHint(GLFW_SAMPLES, 4);
 
     GLFWwindow* window = glfwCreateWindow(1280, 800, "Gcode Editor (C++)", nullptr, nullptr);
     if (!window) {
@@ -254,6 +265,55 @@ int main() {
                     geometryRenderer.triangleCount(), static_cast<int>(geometryGlError));
     }
 
+    // Debug/testing convenience: load an extra file at startup if
+    // GCODEFORGE_TEST_FILE is set, and time parse+rebuild for both
+    // renderers. Not part of the UI -- purely for validating against real,
+    // large files from a script without needing to click File > Open.
+    if (const char* extraFile = std::getenv("GCODEFORGE_TEST_FILE")) {
+        auto t0 = std::chrono::steady_clock::now();
+        loadFileIntoScene(extraFile, scene);
+        auto t1 = std::chrono::steady_clock::now();
+        sceneRenderer.rebuild(scene, colorMode);
+        auto t2 = std::chrono::steady_clock::now();
+        geometryRenderer.rebuild(scene, colorMode, renderSettings.beadWidthMm, renderSettings.beadHeightMm);
+        auto t3 = std::chrono::steady_clock::now();
+        auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+        std::printf("GCODEFORGE_TEST_FILE: parse=%.1fms  lines-rebuild=%.1fms  geometry-rebuild=%.1fms\n",
+                    ms(t0, t1), ms(t1, t2), ms(t2, t3));
+        std::printf("  lines: %zu segments, geometry: %zu triangles\n",
+                    sceneRenderer.lineCount(), geometryRenderer.triangleCount());
+
+        // Real-world round-trip validation: export the untouched object
+        // and diff it against the original file line-by-line. Should be
+        // byte-identical (zero patches, zero insertions) since nothing
+        // was edited -- this is the actual production file, not the
+        // synthetic hand-written test snippet.
+        if (!scene.objects.empty()) {
+            auto t4 = std::chrono::steady_clock::now();
+            ExportResult exportResult;
+            std::vector<std::string> exportedLines = buildExportedLines(scene.objects.back(), exportResult);
+            auto t5 = std::chrono::steady_clock::now();
+            std::vector<std::string> originalLines = readLinesFromFile(extraFile);
+            bool identical = (exportedLines == originalLines);
+            std::printf("Round-trip export: %.1fms, patched=%d, insertedSpeed=%d, insertedActions=%d, "
+                        "lineCountMatch=%s, byteIdentical=%s\n",
+                        std::chrono::duration<double, std::milli>(t5 - t4).count(),
+                        exportResult.patchedCoordinateLines, exportResult.insertedSpeedLines, exportResult.insertedLayerActions,
+                        (exportedLines.size() == originalLines.size()) ? "yes" : "no",
+                        identical ? "yes" : "no");
+            if (!identical) {
+                for (size_t i = 0; i < std::min(exportedLines.size(), originalLines.size()); ++i) {
+                    if (exportedLines[i] != originalLines[i]) {
+                        std::printf("  first diff at line %zu:\n    original: %s\n    exported: %s\n",
+                                    i, originalLines[i].c_str(), exportedLines[i].c_str());
+                        break;
+                    }
+                }
+            }
+        }
+        std::fflush(stdout);
+    }
+
     int fbWidth = 0, fbHeight = 0;
     glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
     camera.setViewportSize(static_cast<float>(fbWidth), static_cast<float>(fbHeight));
@@ -268,6 +328,7 @@ int main() {
 
     glfwGetCursorPos(window, &g_lastCursorX, &g_lastCursorY);
     glEnable(GL_DEPTH_TEST);
+    glEnable(GL_MULTISAMPLE);
     glLineWidth(1.0f);
 
     // Selection input state (plain click = pick nearest path, plain drag =
@@ -282,14 +343,19 @@ int main() {
     bool ctrlZWasDown = false;
     bool ctrlYWasDown = false;
 
-    // Move-gizmo drag state. axisOrigin/StartValue/StartT are all captured
-    // ONCE at drag start and held fixed for the whole drag -- see the
-    // comment on closestPointOnAxisToRay in editor/Gizmo.h for why a fixed
-    // reference point is required, not a per-frame recomputed one.
+    // Move-gizmo drag state. axisOrigin/StartT are captured ONCE at drag
+    // start and held fixed for the whole drag -- see the comment on
+    // closestPointOnAxisToRay in editor/Gizmo.h for why a fixed reference
+    // point is required, not a per-frame recomputed one.
     std::optional<GizmoAxis> gizmoDragAxis;
+    GizmoTargetMode gizmoDragMode = GizmoTargetMode::Object;
     glm::vec3 gizmoDragAxisOrigin(0.0f);
     float gizmoDragStartT = 0.0f;
-    double gizmoDragStartValue = 0.0;
+    double gizmoDragStartValue = 0.0; // Object mode only
+    // Start/End/Whole modes only: each selected path's from/to as they
+    // were at drag start, so the delta is always applied from a fixed
+    // base rather than accumulated frame-to-frame (which would drift).
+    std::vector<std::tuple<int, glm::dvec3, glm::dvec3>> gizmoDragPathSnapshots;
     constexpr float kGizmoPickRadiusPixels = 10.0f;
 
     while (!glfwWindowShouldClose(window)) {
@@ -331,6 +397,21 @@ int main() {
                     bedDirty = true;
                 } else {
                     std::fprintf(stderr, "Could not load bed settings from: %s\n", path->c_str());
+                }
+            }
+        }
+        if (editorUi.saveSrcRequested()) {
+            editorUi.clearSaveSrcRequest();
+            if (SceneObject* active = scene.activeObject()) {
+                if (auto path = showSaveSrcDialog(window, active->name + ".src")) {
+                    ExportResult exportResult = exportSrcToFile(*active, *path);
+                    if (exportResult.success) {
+                        std::printf("Exported %s: %d coordinate patch(es), %d speed insertion(s), %d layer action(s)\n",
+                                    path->c_str(), exportResult.patchedCoordinateLines,
+                                    exportResult.insertedSpeedLines, exportResult.insertedLayerActions);
+                    } else {
+                        std::fprintf(stderr, "Export failed: %s\n", exportResult.errorMessage.c_str());
+                    }
                 }
             }
         }
@@ -376,36 +457,54 @@ int main() {
         } else if (viewportInputActive) {
             glm::vec2 current(static_cast<float>(cursorX), static_cast<float>(cursorY));
             SceneObject* active = scene.activeObject();
+            // Start/End/Whole only actually apply with a non-empty
+            // selection; otherwise there's nothing for them to edit, so
+            // fall back to moving the whole object -- matches
+            // computeGizmoOrigin's own fallback, keeping "where the gizmo
+            // is drawn" and "what dragging it does" in agreement.
+            GizmoTargetMode effectiveMode = (active && !active->selectedPaths.empty())
+                ? renderSettings.gizmoMode : GizmoTargetMode::Object;
 
             // The move gizmo takes priority over path selection: if the
-            // click lands on an arrow, drag the object; only fall through
-            // to click/marquee-select when it doesn't.
+            // click lands on an arrow, drag the object/paths; only fall
+            // through to click/marquee-select when it doesn't.
             if (leftPressed && !leftWasPressed) {
                 bool gizmoHit = false;
                 if (active) {
-                    glm::vec3 origin(active->transform.x, active->transform.y, active->transform.z);
-                    ScreenProjector projector{viewProj, static_cast<float>(width), static_cast<float>(height)};
-                    std::vector<GizmoAxisScreenSegment> segments;
-                    for (GizmoAxis axis : {GizmoAxis::X, GizmoAxis::Y, GizmoAxis::Z}) {
-                        glm::vec3 tip = origin + gizmoAxisDirection(axis) * GizmoRenderer::kAxisLengthMm;
-                        auto originScreen = projector.project(origin);
-                        auto tipScreen = projector.project(tip);
-                        if (originScreen && tipScreen) {
-                            segments.push_back({axis, glm::vec2(*originScreen), glm::vec2(*tipScreen)});
+                    if (auto origin = computeGizmoOrigin(*active, effectiveMode)) {
+                        ScreenProjector projector{viewProj, static_cast<float>(width), static_cast<float>(height)};
+                        std::vector<GizmoAxisScreenSegment> segments;
+                        for (GizmoAxis axis : {GizmoAxis::X, GizmoAxis::Y, GizmoAxis::Z}) {
+                            glm::vec3 tip = *origin + gizmoAxisDirection(axis) * GizmoRenderer::kAxisLengthMm;
+                            auto originScreen = projector.project(*origin);
+                            auto tipScreen = projector.project(tip);
+                            if (originScreen && tipScreen) {
+                                segments.push_back({axis, glm::vec2(*originScreen), glm::vec2(*tipScreen)});
+                            }
                         }
-                    }
-                    if (auto axisHit = pickGizmoAxis(segments, current, kGizmoPickRadiusPixels)) {
-                        Ray ray = unprojectRay(viewProj, current, static_cast<float>(width), static_cast<float>(height));
-                        glm::vec3 axisDir = gizmoAxisDirection(*axisHit);
-                        if (auto t = closestPointOnAxisToRay(origin, axisDir, ray)) {
-                            gizmoDragAxis = axisHit;
-                            gizmoDragAxisOrigin = origin;
-                            gizmoDragStartT = *t;
-                            gizmoDragStartValue = (*axisHit == GizmoAxis::X) ? active->transform.x
-                                                 : (*axisHit == GizmoAxis::Y) ? active->transform.y
-                                                                               : active->transform.z;
-                            undoStack.beginContinuousEdit(scene);
-                            gizmoHit = true;
+                        if (auto axisHit = pickGizmoAxis(segments, current, kGizmoPickRadiusPixels)) {
+                            Ray ray = unprojectRay(viewProj, current, static_cast<float>(width), static_cast<float>(height));
+                            glm::vec3 axisDir = gizmoAxisDirection(*axisHit);
+                            if (auto t = closestPointOnAxisToRay(*origin, axisDir, ray)) {
+                                gizmoDragAxis = axisHit;
+                                gizmoDragMode = effectiveMode;
+                                gizmoDragAxisOrigin = *origin;
+                                gizmoDragStartT = *t;
+                                gizmoDragPathSnapshots.clear();
+                                if (effectiveMode == GizmoTargetMode::Object) {
+                                    gizmoDragStartValue = (*axisHit == GizmoAxis::X) ? active->transform.x
+                                                         : (*axisHit == GizmoAxis::Y) ? active->transform.y
+                                                                                       : active->transform.z;
+                                } else {
+                                    for (const auto& path : active->paths) {
+                                        if (active->selectedPaths.count(path.number)) {
+                                            gizmoDragPathSnapshots.emplace_back(path.number, path.from, path.to);
+                                        }
+                                    }
+                                }
+                                undoStack.beginContinuousEdit(scene);
+                                gizmoHit = true;
+                            }
                         }
                     }
                 }
@@ -418,10 +517,29 @@ int main() {
                     Ray ray = unprojectRay(viewProj, current, static_cast<float>(width), static_cast<float>(height));
                     glm::vec3 axisDir = gizmoAxisDirection(*gizmoDragAxis);
                     if (auto t = closestPointOnAxisToRay(gizmoDragAxisOrigin, axisDir, ray)) {
-                        double newValue = gizmoDragStartValue + (*t - gizmoDragStartT);
-                        if (*gizmoDragAxis == GizmoAxis::X) active->transform.x = newValue;
-                        else if (*gizmoDragAxis == GizmoAxis::Y) active->transform.y = newValue;
-                        else active->transform.z = newValue;
+                        float deltaScalar = *t - gizmoDragStartT;
+                        if (gizmoDragMode == GizmoTargetMode::Object) {
+                            double newValue = gizmoDragStartValue + deltaScalar;
+                            if (*gizmoDragAxis == GizmoAxis::X) active->transform.x = newValue;
+                            else if (*gizmoDragAxis == GizmoAxis::Y) active->transform.y = newValue;
+                            else active->transform.z = newValue;
+                        } else {
+                            // The gizmo's axes are WORLD axes, but Path::from/to
+                            // are stored in the object's LOCAL space -- convert
+                            // the world-space drag delta back before applying it.
+                            glm::vec3 worldDelta = axisDir * deltaScalar;
+                            glm::dvec3 localDelta = inverseTransformDelta(active->transform, glm::dvec3(worldDelta));
+                            for (const auto& [pathNumber, startFrom, startTo] : gizmoDragPathSnapshots) {
+                                if (Path* path = active->findPath(pathNumber)) {
+                                    if (gizmoDragMode == GizmoTargetMode::Start || gizmoDragMode == GizmoTargetMode::Whole) {
+                                        path->from = startFrom + localDelta;
+                                    }
+                                    if (gizmoDragMode == GizmoTargetMode::End || gizmoDragMode == GizmoTargetMode::Whole) {
+                                        path->to = startTo + localDelta;
+                                    }
+                                }
+                            }
+                        }
                         sceneDirty = true;
                     }
                 } else if (glm::length(current - mouseDownPos) > kDragThresholdPixels) {
@@ -431,6 +549,7 @@ int main() {
                 if (gizmoDragAxis) {
                     undoStack.commitContinuousEdit();
                     gizmoDragAxis.reset();
+                    gizmoDragPathSnapshots.clear();
                 } else {
                     ScreenProjector projector{viewProj, static_cast<float>(width), static_cast<float>(height)};
                     SelectionCompose compose = currentSelectionCompose();
@@ -449,7 +568,7 @@ int main() {
                             }
                         }
                     } else {
-                        auto hit = pickNearestPath(scene, projector, current, kClickPickRadiusPixels);
+                        auto hit = pickNearestPath(scene, projector, current, kClickPickRadiusPixels, renderSettings.selectBackfacing);
                         if (hit) {
                             scene.activeObjectId = hit->objectId;
                             if (SceneObject* object = scene.findObject(hit->objectId)) {
@@ -516,14 +635,21 @@ int main() {
             if (renderSettings.mode == RenderMode::Lines) {
                 sceneRenderer.draw(viewProj);
             } else {
-                geometryRenderer.draw(viewProj, lightDir);
+                geometryRenderer.draw(viewProj, lightDir, renderSettings.backfaceCulling);
             }
             selectionHighlight.draw(viewProj);
 
             if (SceneObject* active = scene.activeObject()) {
-                glm::vec3 origin(active->transform.x, active->transform.y, active->transform.z);
-                gizmoRenderer.rebuild(origin); // cheap (3 arrows) -- rebuilding every frame is fine
-                gizmoRenderer.draw(viewProj);
+                // NOT active->transform.x/y/z -- that raw pivot can be
+                // arbitrarily far from the actual geometry (a freshly-
+                // loaded real KUKA file typically has transform=={0,0,0}
+                // while its coordinates are in the thousands of mm),
+                // which was the root cause of "can't see the gizmo."
+                GizmoTargetMode drawMode = (!active->selectedPaths.empty()) ? renderSettings.gizmoMode : GizmoTargetMode::Object;
+                if (auto origin = computeGizmoOrigin(*active, drawMode)) {
+                    gizmoRenderer.rebuild(*origin); // cheap (3 arrows) -- rebuilding every frame is fine
+                    gizmoRenderer.draw(viewProj);
+                }
             }
         }
 

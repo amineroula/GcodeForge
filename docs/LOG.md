@@ -486,3 +486,121 @@ lands at exactly the expected world-space X; a ray parallel to the axis
 correctly reports "no unique closest point" instead of returning nonsense;
 axis picking finds the near arrow and correctly finds nothing when the
 point isn't near any of them). All pass. Full app builds and runs cleanly.
+
+## Post-milestone-7 batch 4 — marquee tolerance, culling, gizmo redesign, milestone 9 (SRC export)
+
+The biggest batch yet, triggered by a real production file (a 24,268-line
+Eidos-sliced KUKA SRC, `LEG_INNER_REV_A`) the user shared partway through --
+used as a genuine stress test throughout, not just a stated goal.
+
+**Marquee "touches" instead of "fully inside":** `pickPathsInRect` used to
+require a path's MIDPOINT inside the drag rectangle. Replaced with
+Liang-Barsky segment-vs-rectangle clipping -- a path only grazing a corner
+of the marquee is now selected, matching how marquee-select conventionally
+feels.
+
+**A genuine winding bug, found by trying to add backface culling.**
+Deriving the box mesh's face normals by hand (to check whether
+`GL_CULL_FACE` could safely be enabled) turned up that 5 of 6 faces had
+inverted winding -- likely from an index-order mistake when the mesh code
+was first written, silently harmless only because culling was disabled.
+Rather than re-deriving the fix by hand (proven error-prone by the
+original bug), rewrote triangle emission around a self-correcting
+`appendQuad()`: it computes the actual face normal from the vertices and
+picks winding order to match a stated expected-outward direction, so
+correctness no longer depends on getting index order right by hand.
+`RenderSettings::backfaceCulling` (default on) now safely hides the tube's
+inside surface in Geometry mode -- "depth culling for a better preview."
+
+**"Select backfacing geometry" toggle:** picking now prefers the
+camera-nearest candidate among on-screen-plausible matches by default,
+with a toggle to fall back to pure 2D-nearest (letting a click reach
+something behind/inside other geometry). A screen-space approximation of
+occlusion, not a real depth-buffer test -- deliberately: it only compares
+candidates already close enough on screen to plausibly be the intended
+click, which is cheap and sufficient without adding a whole depth-readback
+pipeline.
+
+**4x MSAA** (`GLFW_SAMPLES`) for smoother line/edge rendering -- fixed at
+window-creation time; a runtime toggle would need to destroy and recreate
+the GL context in vanilla GLFW, out of scope here.
+
+**Gizmo redesign -- fixes the reported "can't see it" bug AND adds
+Start/End/Whole path editing.** Root cause of the visibility bug: the
+gizmo drew at the object's raw `Transform.x/y/z`, which is `{0,0,0}` for
+any freshly-loaded file whose own coordinates are far from local-space
+origin (exactly the real KUKA file's case -- 300-2700mm range while
+Transform stays at zero) -- the gizmo was rendering in genuinely empty
+space, off-screen relative to the actual geometry. Fixed by
+`computeGizmoOrigin()`: the gizmo now always sits at the world-space
+centroid of whatever it would actually move, never the raw pivot. This
+also unlocked the requested feature: `GizmoTargetMode` (Object/Start/End/
+Whole) lets the gizmo edit the CURRENT PATH SELECTION directly -- Start/
+End move just one endpoint of each selected path (can break connectivity
+with an unselected neighbor, an accepted trade-off, same as moving one
+vertex of a polyline in any curve editor), Whole translates each rigidly.
+Dragging math converts the gizmo's world-space delta back into each path's
+local space via a new `inverseTransformDelta()` (Transform.h) -- the
+inverse of `applyTransform()`'s rotation+flip, deltas don't need the
+translation component.
+
+**A/B/C orientation was being silently dropped.** The parser had
+`kARe`/`kBRe`/`kCRe` regexes defined but never used -- `Path` had nowhere
+to put the values. Added `Path::a/b/c` and wired the parser to actually
+capture them. This wasn't cosmetic: a real KUKA LIN motion needs full pose
+to be a valid, safe command -- an exporter built without this would have
+silently produced incomplete robot programs.
+
+**Milestone 9 -- SRC export, `editor/SrcExporter`.** Deliberately PATCHES
+the original source lines rather than regenerating them from the model.
+The real file has fields the model still doesn't fully capture (external
+axes E1-E6, the `C_VEL` continuous-blend flag) plus custom
+interrupt/safety logic, disclaimers, and comments -- regenerating from
+scratch would silently drop all of it. Patching means anything not
+specifically touched is preserved byte-for-byte, because it's literally
+never read past being copied. Two things get patched:
+- A motion line's X/Y/Z, replaced via `applyTransform()`'s current result,
+  only when the value actually changed (an untouched line stays
+  byte-identical).
+- `$VEL.CP` insertions, computed by walking paths in order and tracking
+  TWO separate timelines -- what the untouched original lines already
+  establish at each point, versus what's actually in effect in the edited
+  output. Only insert when they diverge. Getting this right took a real
+  bug fix: the first version compared against "whatever we last declared"
+  instead of "what this path's own original line establishes," which
+  caused it to insert a spurious correction at every ALREADY-EXISTING
+  speed change in the file (a natural transition the original already
+  handles correctly needs no insertion) -- caught immediately by the test
+  suite (an untouched round-trip should produce zero insertions, and
+  didn't). The fixed two-timeline model produces exactly the right
+  insertions: none for an untouched file, an override + automatic restore
+  for a single-path speed edit (the restore isn't special-cased -- it just
+  falls out of the same divergence check once the override region ends).
+
+**Layer actions** (`model/LayerAction`): operator-inserted KRL commands at
+the start of a specific layer (HALT, part cooling on/off, or custom text).
+The actual command text is always operator-supplied, never hardcoded --
+this app has no way to know a given robot cell's real I/O mapping (which
+`$OUT[n]` controls cooling on THIS system), and guessing would risk
+generating a command that does the wrong thing on a real machine. Presets
+in the UI pre-fill common boilerplate as a starting point; the operator
+must confirm/edit the real command before export.
+
+**Verified, extensively, including against the real file:**
+- 27 new unit tests (101 total, up from 74): A/B/C capture, transform-delta
+  inversion, gizmo-origin modes, and four `SrcExporter` scenarios (byte-
+  identical untouched round-trip, transform patch, speed override +
+  auto-restore with exact insertion count, layer action insertion).
+- Debug-only `GCODEFORGE_TEST_FILE` env var added to `main.cpp`, timing
+  parse/rebuild/export against a real file without needing the UI.
+- Real-file finding: Debug-build parsing took 21.4s (MSVC's Debug STL,
+  especially `std::regex`, carries heavy iterator-checking overhead) vs.
+  **641ms in the actual shipped Release build** -- a reminder to always
+  benchmark the configuration that ships, not the one used for day-to-day
+  building. Rendering scaled cleanly too: 23,991 line segments / 191,684
+  geometry triangles built in single-digit milliseconds.
+- Real-file round-trip: exporting the untouched 24,268-line file produced
+  0 patched coordinates, 0 inserted speed lines, 0 inserted layer actions,
+  and output byte-identical to the original -- the strongest available
+  evidence the patch-based design actually holds up on production data,
+  not just the hand-written test snippet.

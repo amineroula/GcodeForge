@@ -23,6 +23,26 @@ glm::vec3 crossSectionRight(const glm::vec3& incomingDir, const glm::vec3& outgo
     return glm::normalize(right);
 }
 
+// Appends two triangles for a planar quad (v0,v1,v2,v3 in order around the
+// perimeter), choosing winding order so the resulting face normal points
+// toward `expectedOutward` -- rather than hardcoding an index order and
+// hoping it's outward-facing (an earlier version of this function did
+// exactly that and got it wrong for 5 of the box's 6 faces; verified by
+// hand-deriving the actual winding it produced). This makes correctness
+// self-verifying at build time instead of resting on manual derivation.
+void appendQuad(std::vector<MeshVertex>& vertices, std::vector<uint32_t>& indices,
+                 uint32_t v0, uint32_t v1, uint32_t v2, uint32_t v3, const glm::vec3& expectedOutward) {
+    glm::vec3 edge1 = vertices[v1].position - vertices[v0].position;
+    glm::vec3 edge2 = vertices[v2].position - vertices[v0].position;
+    glm::vec3 faceNormal = glm::cross(edge1, edge2);
+
+    if (glm::dot(faceNormal, expectedOutward) >= 0.0f) {
+        indices.insert(indices.end(), {v0, v1, v2, v0, v2, v3});
+    } else {
+        indices.insert(indices.end(), {v0, v2, v1, v0, v3, v2});
+    }
+}
+
 // Appends one continuous "bead" run as a single mitered tube: N segments
 // share N+1 cross-sections (4 vertices each, 8 total for the whole run's
 // two ends plus interior joints), rather than each segment getting its own
@@ -68,16 +88,21 @@ void appendRun(std::vector<MeshVertex>& vertices, std::vector<uint32_t>& indices
     for (size_t i = 0; i < segmentCount; ++i) {
         uint32_t a = base + static_cast<uint32_t>(i * 4);
         uint32_t b = base + static_cast<uint32_t>((i + 1) * 4);
+        glm::vec3 approxRight = (rightUnits[i] + rightUnits[i + 1]);
+        if (glm::length(approxRight) > 1e-6f) approxRight = glm::normalize(approxRight);
         // Corner order per cross-section: 0=(-right,-up) 1=(+right,-up) 2=(+right,+up) 3=(-right,+up)
-        indices.insert(indices.end(), {a + 0, a + 1, b + 1, a + 0, b + 1, b + 0}); // bottom
-        indices.insert(indices.end(), {a + 3, b + 3, b + 2, a + 3, b + 2, a + 2}); // top
-        indices.insert(indices.end(), {a + 1, a + 2, b + 2, a + 1, b + 2, b + 1}); // +right side
-        indices.insert(indices.end(), {a + 0, b + 0, b + 3, a + 0, b + 3, a + 3}); // -right side
+        appendQuad(vertices, indices, a + 0, a + 1, b + 1, b + 0, -kWorldUp);    // bottom, outward = -up
+        appendQuad(vertices, indices, a + 3, b + 3, b + 2, a + 2, kWorldUp);     // top, outward = +up
+        appendQuad(vertices, indices, a + 1, a + 2, b + 2, b + 1, approxRight);  // +right side, outward = +right
+        appendQuad(vertices, indices, a + 0, b + 0, b + 3, a + 3, -approxRight); // -right side, outward = -right
     }
 
-    indices.insert(indices.end(), {base + 0, base + 1, base + 2, base + 0, base + 2, base + 3}); // start cap
+    glm::vec3 startDir = glm::normalize(runPoints[1] - runPoints[0]);
+    appendQuad(vertices, indices, base + 0, base + 1, base + 2, base + 3, -startDir); // start cap, outward = backward
+
     uint32_t last = base + static_cast<uint32_t>(segmentCount * 4);
-    indices.insert(indices.end(), {last + 0, last + 1, last + 2, last + 0, last + 2, last + 3}); // end cap
+    glm::vec3 endDir = glm::normalize(runPoints[segmentCount] - runPoints[segmentCount - 1]);
+    appendQuad(vertices, indices, last + 0, last + 1, last + 2, last + 3, endDir); // end cap, outward = forward
 }
 
 } // namespace
@@ -211,8 +236,13 @@ void GeometryRenderer::rebuild(const Scene& scene, ColorMode colorMode, float be
     glBindVertexArray(0);
 }
 
-void GeometryRenderer::draw(const glm::mat4& viewProj, const glm::vec3& lightDir) const {
-    glDisable(GL_CULL_FACE);
+void GeometryRenderer::draw(const glm::mat4& viewProj, const glm::vec3& lightDir, bool backfaceCulling) const {
+    if (backfaceCulling) {
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+    } else {
+        glDisable(GL_CULL_FACE);
+    }
 
     if (indexCount_ > 0) {
         glUseProgram(meshShaderProgram_);
@@ -222,6 +252,8 @@ void GeometryRenderer::draw(const glm::mat4& viewProj, const glm::vec3& lightDir
         glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
         glBindVertexArray(0);
     }
+
+    glDisable(GL_CULL_FACE); // don't leak culling state into travel-line/other draw calls below
 
     if (travelVertexCount_ > 0) {
         glUseProgram(travelShaderProgram_);

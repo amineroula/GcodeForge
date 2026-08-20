@@ -13,6 +13,13 @@ std::string wideBufferToUtf8(const wchar_t* buffer) {
     WideCharToMultiByte(CP_UTF8, 0, buffer, -1, result.data(), sizeNeeded, nullptr, nullptr);
     return result;
 }
+
+std::wstring utf8ToWide(const std::string& utf8) {
+    int sizeNeeded = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+    std::wstring result(static_cast<size_t>(sizeNeeded) - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, result.data(), sizeNeeded);
+    return result;
+}
 } // namespace
 #endif
 
@@ -76,6 +83,31 @@ std::optional<std::string> showOpenBedDialog(GLFWwindow* window) {
     return wideBufferToUtf8(fileBuffer);
 #else
     (void)window;
+    return std::nullopt;
+#endif
+}
+
+std::optional<std::string> showSaveSrcDialog(GLFWwindow* window, const std::string& suggestedName) {
+#ifdef _WIN32
+    wchar_t fileBuffer[MAX_PATH] = L"";
+    std::wstring suggested = utf8ToWide(suggestedName);
+    wcsncpy_s(fileBuffer, MAX_PATH, suggested.c_str(), _TRUNCATE);
+
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = glfwGetWin32Window(window);
+    ofn.lpstrFilter = L"KUKA SRC\0*.src\0All files\0*.*\0";
+    ofn.lpstrFile = fileBuffer;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrTitle = L"Save SRC file";
+    ofn.lpstrDefExt = L"src";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+
+    if (!GetSaveFileNameW(&ofn)) return std::nullopt;
+    return wideBufferToUtf8(fileBuffer);
+#else
+    (void)window;
+    (void)suggestedName;
     return std::nullopt;
 #endif
 }

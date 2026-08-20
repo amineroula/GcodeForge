@@ -70,3 +70,41 @@ std::optional<GizmoAxis> pickGizmoAxis(const std::vector<GizmoAxisScreenSegment>
     }
     return best;
 }
+
+namespace {
+glm::vec3 wholeObjectCentroid(const SceneObject& object) {
+    glm::dvec3 sum(0.0);
+    int count = 0;
+    for (const auto& path : object.paths) {
+        sum += applyTransform(object.transform, path.from);
+        sum += applyTransform(object.transform, path.to);
+        count += 2;
+    }
+    if (count == 0) return glm::vec3(object.transform.x, object.transform.y, object.transform.z);
+    return glm::vec3(sum / static_cast<double>(count));
+}
+} // namespace
+
+std::optional<glm::vec3> computeGizmoOrigin(const SceneObject& object, GizmoTargetMode mode) {
+    if (object.paths.empty()) return std::nullopt;
+
+    if (mode == GizmoTargetMode::Object || object.selectedPaths.empty()) {
+        return wholeObjectCentroid(object);
+    }
+
+    glm::dvec3 sum(0.0);
+    int count = 0;
+    for (const auto& path : object.paths) {
+        if (!object.selectedPaths.count(path.number)) continue;
+        if (mode == GizmoTargetMode::Start || mode == GizmoTargetMode::Whole) {
+            sum += applyTransform(object.transform, path.from);
+            ++count;
+        }
+        if (mode == GizmoTargetMode::End || mode == GizmoTargetMode::Whole) {
+            sum += applyTransform(object.transform, path.to);
+            ++count;
+        }
+    }
+    if (count == 0) return wholeObjectCentroid(object); // selection didn't actually match any path (shouldn't normally happen)
+    return glm::vec3(sum / static_cast<double>(count));
+}

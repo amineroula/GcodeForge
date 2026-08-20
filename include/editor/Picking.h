@@ -32,15 +32,27 @@ struct PathRef {
 
 // The single nearest path (across all visible objects) whose projected
 // screen-space segment passes within pickRadiusPixels of screenPoint.
-// Ties broken by nearest NDC depth (closer to camera wins).
+//
+// selectBackfacing controls how ties/near-ties are resolved: false
+// (default) prefers whichever candidate is nearest the CAMERA (smallest
+// NDC depth) among those within the pick radius -- clicking where a solid
+// bead's surface is in front of a hidden path behind it picks the visible
+// one. true ignores depth entirely and picks by 2D screen distance alone,
+// letting you reach a path that's behind/inside other geometry ("select
+// backfacing geometry"). This is a screen-space approximation of
+// occlusion, not a true depth-buffer test -- it only compares candidates
+// that are already close enough on screen to be plausibly what was
+// clicked, not every occluder in the scene.
 std::optional<PathRef> pickNearestPath(const Scene& scene, const ScreenProjector& projector,
-                                        glm::vec2 screenPoint, float pickRadiusPixels);
+                                        glm::vec2 screenPoint, float pickRadiusPixels,
+                                        bool selectBackfacing = false);
 
 // Every path (across all visible objects) whose projected screen-space
-// midpoint falls inside the rectangle [rectMin, rectMax] -- used for
-// drag/marquee selection. Using the midpoint (not "either endpoint")
-// means a segment has to be substantially inside the rectangle, not just
-// grazed at one end, which matches how marquee-select conventionally
-// feels in CAD/DCC tools.
+// segment intersects the rectangle [rectMin, rectMax] at all (not
+// required to have its midpoint inside -- a path only grazing a corner of
+// the marquee still counts, matching how marquee-select conventionally
+// feels: if you can see part of it in the box, it gets selected).
+// Not affected by selectBackfacing -- marquee-select conventionally grabs
+// everything in the box regardless of what's in front of what.
 std::vector<PathRef> pickPathsInRect(const Scene& scene, const ScreenProjector& projector,
                                       glm::vec2 rectMin, glm::vec2 rectMax);

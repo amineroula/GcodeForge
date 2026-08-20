@@ -32,3 +32,22 @@ inline glm::dvec3 applyTransform(const Transform& t, const glm::dvec3& local) {
 
     return glm::dvec3(xr + t.x, yr + t.y, local.z + t.z);
 }
+
+// Converts a world-space DELTA (a direction/offset, not a point -- so
+// translation doesn't apply) back into the object's local space. This is
+// the inverse of applyTransform()'s rotation+flip only. Needed when a
+// world-space drag (e.g. the move gizmo, which operates in world space)
+// needs to be applied to Path::from/to, which are stored in local space:
+// worldDelta -> inverseTransformDelta(t, worldDelta) -> localDelta.
+inline glm::dvec3 inverseTransformDelta(const Transform& t, const glm::dvec3& worldDelta) {
+    const double radians = -t.rotZDegrees * 3.14159265358979323846 / 180.0;
+    const double c = std::cos(radians);
+    const double s = std::sin(radians);
+    const double xr = worldDelta.x * c - worldDelta.y * s;
+    const double yr = worldDelta.x * s + worldDelta.y * c;
+
+    const double x = xr * (t.flipX ? -1.0 : 1.0);
+    const double y = yr * (t.flipY ? -1.0 : 1.0);
+
+    return glm::dvec3(x, y, worldDelta.z);
+}

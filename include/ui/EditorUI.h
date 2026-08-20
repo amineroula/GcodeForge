@@ -40,6 +40,9 @@ public:
     bool openFileRequested() const { return openFileRequested_; }
     void clearOpenFileRequest() { openFileRequested_ = false; }
 
+    bool saveSrcRequested() const { return saveSrcRequested_; }
+    void clearSaveSrcRequest() { saveSrcRequested_ = false; }
+
     bool saveBedRequested() const { return saveBedRequested_; }
     void clearSaveBedRequest() { saveBedRequested_ = false; }
     bool loadBedRequested() const { return loadBedRequested_; }
@@ -59,7 +62,7 @@ private:
     void drawBedPanel(BedSettings& bedSettings, bool& bedDirty);
     void drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dirty);
     void drawTransformPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty);
-    void drawLayerTablePanel(SceneObject& object, bool& selectionDirty);
+    void drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty, bool& selectionDirty);
     void drawSelectionGroupPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty, bool& selectionDirty);
     void drawSpeedPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty);
     void drawColorModePanel(ColorMode& colorMode, bool& dirty);
@@ -68,12 +71,20 @@ private:
     bool openFileRequested_ = false;
     bool saveBedRequested_ = false;
     bool loadBedRequested_ = false;
+    bool saveSrcRequested_ = false;
 
     double speedExact_ = 0.040;
     double speedPercent_ = 10.0;
 
     char groupNameBuffer_[64] = "Group";
     float groupColor_[3] = {0.212f, 0.663f, 1.0f};
+
+    // Layer-action input state: which preset is selected and its editable
+    // KRL text, kept live so switching presets pre-fills a sane starting
+    // point the operator can still edit before adding it.
+    int layerActionPresetIndex_ = 0;
+    char layerActionTextBuffer_[256] = "";
+    int layerActionTargetLayer_ = 1;
 
     ImFont* boldFont_ = nullptr;
 };
