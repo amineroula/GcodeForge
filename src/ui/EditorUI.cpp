@@ -1,4 +1,5 @@
 #include "ui/EditorUI.h"
+#include "editor/PathSplit.h"
 #include "editor/Selection.h"
 #include "editor/SpeedEditing.h"
 
@@ -621,6 +622,16 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
         object.selectedPaths.clear();
         selectionDirty = true;
     }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(object.selectedPaths.empty());
+    if (ImGui::SmallButton("Split selected")) {
+        undoStack.snapshotBeforeChange(scene);
+        splitSelectedPaths(object);
+        dirty = true; // structural change (paths vector grew) -- needs a full rebuild, not just a selection refresh
+    }
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("Split inserts a new vertex at each selected path's midpoint -- handy for");
+    ImGui::TextDisabled("giving half of a long travel/print move its own speed.");
 
     ImGui::Spacing();
     sectionLabel("Layer actions");

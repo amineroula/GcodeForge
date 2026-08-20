@@ -984,3 +984,66 @@ in case the invariant is ever violated again some other way.
 **Verified:** all 106 tests pass (confirmed via a hard-timeout run after
 the fix, not just "it returned"); full Debug rebuild clean; startup
 sanity checks report a 10x5/72-triangle default grid with `glGetError=0`.
+
+## Path splitting
+
+First of four larger requested features (path split, object linking, bed-
+based speed/Z conform, interleaved multi-object print order), tackled
+one at a time since the remaining three all touch the SRC exporter --
+the code that writes real robot motion commands.
+
+**`editor/PathSplit.h/.cpp`, `splitSelectedPaths(SceneObject&)`.** For
+each selected path A->B: the path itself is shortened in place to
+midpoint->B (keeping its number, srcLine, and layer, so its selection
+membership and layer-table entry stay valid), and a NEW path A->midpoint
+is inserted into the paths vector immediately before it, with a fresh
+unique number. Requested specifically for giving half of a long
+travel/print move its own speed override.
+
+**The real design problem: the new half doesn't correspond to any line
+in the original file.** `SrcExporter`'s whole model is "patch existing
+lines, never invent one" -- every prior insertion (speed lines, layer
+actions) was inserted RELATIVE to an existing path's `srcLine`, but a
+split path has no `srcLine` of its own to patch OR anchor to. Solved
+with a new `Path::cloneTemplateSrcLine` field: the synthetic half points
+at its sibling's real `srcLine`, and `SrcExporter` clones that line's
+FULL text (motion command, E1-E6, C_VEL, trailing comment -- everything
+`replaceAxisValue()` already leaves alone) with just its own X/Y/Z
+substituted in, inserted immediately before the sibling's real line --
+so a split reads in the export as two consecutive motion commands with
+the same shape as the original one, not a mystery line.
+
+**Rewrote `buildExportedLines()`'s speed-insertion loop as a single pass
+in file order instead of three independent passes.** The old structure
+(patch coordinates, THEN layer actions, THEN speed tracking, each its
+own loop over `object.paths`) worked because every path had a real
+`srcLine` to key insertions off of. A synthetic path breaks that: its
+speed needs tracking in the SAME two-timeline model as any other path
+(so overriding its speed still auto-restores afterward), but it has no
+original `$VEL.CP` line of its own to ever "naturally assert" a speed --
+it just inherits whatever's currently in effect. Introduced
+`exportTargetLine()` (a path's own `srcLine` if it has one, otherwise
+its `cloneTemplateSrcLine`) and merged the speed-tracking walk with the
+new-line-synthesis step into one pass over `object.paths` in vector
+order (which already IS final file order, since `splitSelectedPaths()`
+inserts the synthetic half directly before its sibling) -- this keeps
+relative ordering correct (speed line before its motion line, both
+before the next path's content) without a redesign of the insertion
+mechanism itself, and produces byte-identical output to before on any
+file with no split paths (verified by the existing round-trip tests
+still passing unchanged).
+
+**6 new tests:** model-level (`testPathSplitModel`) verifies path count,
+which half keeps the original number/srcLine, the new half's
+from/to/number/srcLine/cloneTemplateSrcLine; export-level
+(`testPathSplitExport`) verifies the exported file actually gains a new
+line (not silently dropped), and that re-parsing the export finds a
+motion line ending exactly at the midpoint AND one still reaching the
+original endpoint.
+
+**UI:** "Split selected" button next to Select all/Clear in the Layers
+panel, disabled with no selection, undoable via the same
+`snapshotBeforeChange()` pattern as every other discrete edit.
+
+**Verified:** all tests pass including the 6 new ones; full Debug
+rebuild clean; startup sanity checks still report `glGetError=0`.

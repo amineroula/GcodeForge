@@ -14,6 +14,7 @@
 #include "editor/SrcExporter.h"
 #include "editor/ConnectedDrag.h"
 #include "editor/Framing.h"
+#include "editor/PathSplit.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstdio>
@@ -662,6 +663,79 @@ void testSrcExporterLayerAction() {
     check(joined.find("Part cooling ON") != std::string::npos, "SrcExporter: layer action's label is present as a traceability comment");
 }
 
+// Splits path index 3 (LIN {X 1020,Y 510,Z 82}) and checks the model
+// side only: path count, which path keeps its original number/srcLine,
+// and where the new synthetic path lands in the vector.
+void testPathSplitModel() {
+    std::vector<std::string> lines = sampleSrcLinesForExport();
+    SceneObject object = parseSrc("Chair_01", lines);
+
+    size_t originalCount = object.paths.size();
+    int targetNumber = object.paths[3].number;
+    glm::dvec3 originalFrom = object.paths[3].from;
+    glm::dvec3 originalTo = object.paths[3].to;
+    int originalSrcLine = object.paths[3].srcLine;
+
+    object.selectedPaths.insert(targetNumber);
+    splitSelectedPaths(object);
+
+    check(object.paths.size() == originalCount + 1, "PathSplit: splitting one path adds exactly one path");
+
+    auto it = std::find_if(object.paths.begin(), object.paths.end(),
+                            [&](const Path& p) { return p.number == targetNumber; });
+    check(it != object.paths.end(), "PathSplit: the original path number still exists after split");
+    if (it == object.paths.end()) return;
+
+    glm::dvec3 midpoint = (originalFrom + originalTo) * 0.5;
+    checkNear(it->from.x, midpoint.x, "PathSplit: original path's FROM moved to the midpoint (X)");
+    checkNear(it->to.x, originalTo.x, "PathSplit: original path's TO is unchanged (still the real endpoint)");
+    check(it->srcLine == originalSrcLine, "PathSplit: original path keeps its own srcLine");
+
+    check(it != object.paths.begin(), "PathSplit: a new path precedes the original one in the vector");
+    if (it == object.paths.begin()) return;
+
+    const Path& newHalf = *(it - 1);
+    checkNear(newHalf.from.x, originalFrom.x, "PathSplit: new first-half path's FROM is the original FROM");
+    checkNear(newHalf.to.x, midpoint.x, "PathSplit: new first-half path's TO is the midpoint");
+    check(newHalf.number != targetNumber, "PathSplit: new first-half path got a distinct number");
+    check(newHalf.srcLine == -1, "PathSplit: new first-half path has no source line of its own");
+    check(newHalf.cloneTemplateSrcLine == originalSrcLine, "PathSplit: new first-half path's clone template points at the original srcLine");
+}
+
+// Same split, but through the exporter: confirms the synthetic path
+// actually produces a real motion line in the exported file, not a
+// silently-dropped vertex.
+void testPathSplitExport() {
+    std::vector<std::string> lines = sampleSrcLinesForExport();
+    SceneObject object = parseSrc("Chair_01", lines);
+
+    int targetNumber = object.paths[3].number;
+    glm::dvec3 originalFrom = object.paths[3].from;
+    glm::dvec3 originalTo = object.paths[3].to;
+    object.selectedPaths.insert(targetNumber);
+    splitSelectedPaths(object);
+
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(object, result);
+
+    check(result.success, "SrcExporter: split-path export succeeds");
+    check(exported.size() == lines.size() + 1, "SrcExporter: splitting one path inserts exactly one new line");
+
+    SceneObject reparsed = parseSrc("Chair_01_split_reparsed", exported);
+    check(reparsed.paths.size() == object.paths.size(),
+          "SrcExporter: re-parsed split export has the same path count as the in-memory split");
+
+    glm::dvec3 midpoint = (originalFrom + originalTo) * 0.5;
+    bool foundMidpointVertex = false;
+    bool foundOriginalEndpoint = false;
+    for (const auto& p : reparsed.paths) {
+        if (glm::length(p.to - midpoint) < 1e-6) foundMidpointVertex = true;
+        if (glm::length(p.to - originalTo) < 1e-6) foundOriginalEndpoint = true;
+    }
+    check(foundMidpointVertex, "SrcExporter: re-parsed split export contains a motion line ending exactly at the midpoint");
+    check(foundOriginalEndpoint, "SrcExporter: re-parsed split export still reaches the original endpoint");
+}
+
 } // namespace
 
 int main() {
@@ -681,6 +755,8 @@ int main() {
     testSrcExporterTransform();
     testSrcExporterSpeedOverride();
     testSrcExporterLayerAction();
+    testPathSplitModel();
+    testPathSplitExport();
     testConnectedDragWhole();
     testConnectedDragStart();
     testConnectedDragGap();

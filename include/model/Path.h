@@ -43,6 +43,16 @@ struct Path {
     // eventually be written back to the right place.
     int srcLine = -1;
 
+    // Set ONLY on a synthetic path created by editor::splitSelectedPaths()
+    // (srcLine stays -1 for these -- there's no existing source line that
+    // is this path). Points at the srcLine of the sibling half that DOES
+    // own a real line, so SrcExporter can synthesize a brand-new motion
+    // line: clone that line's full text (motion command, E1-E6, C_VEL,
+    // trailing comment -- everything replaceAxisValue() doesn't touch)
+    // and just substitute this path's own X/Y/Z, inserted right before
+    // the template line. -1 (the default) means "not a synthetic path."
+    int cloneTemplateSrcLine = -1;
+
     // Tool orientation (A/B/C, degrees) at the END of this motion, as
     // found in the source. Added specifically so SRC export can
     // reconstruct a real, safe robot pose -- exporting X/Y/Z alone and

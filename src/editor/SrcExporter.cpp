@@ -35,6 +35,15 @@ std::string formatSpeedLine(double speed) {
     return buffer;
 }
 
+// A synthetic path (created by editor::splitSelectedPaths(), srcLine ==
+// -1) has no source line of its own to patch -- its position gets baked
+// straight into a brand-new line instead (see the main insertion loop
+// below). This is the line index that new content should attach to:
+// the path's own srcLine when it has one, otherwise its clone template's.
+int exportTargetLine(const Path& path) {
+    return path.srcLine >= 0 ? path.srcLine : path.cloneTemplateSrcLine;
+}
+
 } // namespace
 
 std::vector<std::string> buildExportedLines(const SceneObject& object, ExportResult& result) {
@@ -44,7 +53,11 @@ std::vector<std::string> buildExportedLines(const SceneObject& object, ExportRes
     result.insertedLayerActions = 0;
 
     // --- 1. Patch coordinates in place (doesn't change line count, so
-    //        order doesn't matter and this can happen before insertions). ---
+    //        order doesn't matter and this can happen before insertions).
+    //        Synthetic (split) paths are skipped here on purpose -- they
+    //        don't own an existing line to patch; step 3 below bakes
+    //        their position straight into a brand-new inserted line
+    //        instead. ---
     for (const auto& path : object.paths) {
         if (path.srcLine < 0 || path.srcLine >= static_cast<int>(output.size())) continue;
 
@@ -60,58 +73,77 @@ std::vector<std::string> buildExportedLines(const SceneObject& object, ExportRes
         ++result.patchedCoordinateLines;
     }
 
-    // --- 2. Collect insertions (speed changes + layer actions), grouped
-    //        by target line index, THEN apply from the highest index down
-    //        so earlier insertions never shift the position of a later
-    //        one we haven't applied yet. ---
+    // --- 2. Collect insertions (speed changes + layer actions + synthetic
+    //        split-path motion lines), grouped by target line index, THEN
+    //        apply from the highest index down so earlier insertions
+    //        never shift the position of a later one we haven't applied
+    //        yet. ---
     std::map<int, std::vector<std::string>> insertionsByLine;
 
     // Layer actions: one KRL block inserted before the first motion line
-    // of the target layer.
+    // of the target layer. Uses exportTargetLine() (not raw srcLine) so a
+    // layer whose very first path happens to be a synthetic split piece
+    // still finds a valid line to attach to.
     for (const auto& action : object.layerActions) {
         auto it = std::find_if(object.paths.begin(), object.paths.end(), [&](const Path& p) {
             return p.type == PathType::Print && p.layer == action.layer;
         });
-        if (it == object.paths.end() || it->srcLine < 0) continue;
+        if (it == object.paths.end()) continue;
+        int targetLine = exportTargetLine(*it);
+        if (targetLine < 0) continue;
 
-        insertionsByLine[it->srcLine].push_back("; GCODEFORGE LAYER ACTION: " + action.label);
-        insertionsByLine[it->srcLine].push_back(action.krlText);
+        insertionsByLine[targetLine].push_back("; GCODEFORGE LAYER ACTION: " + action.label);
+        insertionsByLine[targetLine].push_back(action.krlText);
         ++result.insertedLayerActions;
     }
 
-    // Speed changes: walk paths in file order tracking TWO things
-    // separately -- what the untouched original $VEL.CP lines naturally
-    // establish at this point (they're never deleted, so they keep firing
-    // in our output exactly as they always did), and what's ACTUALLY in
-    // effect in our edited output stream at this point (which can diverge
-    // from the original once we've inserted an override, and stays
-    // diverged until either the original file naturally re-asserts a
-    // different speed on its own, or we insert an explicit restore).
-    //
-    // Only insert a $VEL.CP line when the path's desired (effective)
-    // speed doesn't match what's actually in effect in the output. This
-    // is what makes an untouched file produce ZERO insertions (the
-    // original lines already do the job) while still correctly restoring
-    // speed after a single-path override ends.
+    // --- 3. Walk paths in FINAL FILE ORDER (object.paths' own vector
+    //        order -- splitSelectedPaths() already inserts a synthetic
+    //        path immediately before the sibling it was split from, so
+    //        this order is exactly the order they should appear in the
+    //        output) tracking the same two-timeline speed model as
+    //        before: what the untouched original $VEL.CP lines naturally
+    //        establish (a synthetic path has no such line of its own, so
+    //        it never "asserts" a speed -- it just inherits whatever's
+    //        currently in effect), and what's ACTUALLY in effect in the
+    //        edited output stream. A synthetic path ALSO gets its own
+    //        motion line synthesized here -- cloning its template's full
+    //        line text (motion command, E1-E6, C_VEL, trailing comment --
+    //        everything replaceAxisValue() doesn't touch) with just its
+    //        own X/Y/Z substituted in, same as any coordinate patch. ---
     std::optional<double> previousOriginalSpeed;
     std::optional<double> outputSpeed;
     for (const auto& path : object.paths) {
-        if (path.srcLine < 0) continue;
-        if (path.motion == "PTP") continue; // $VEL.CP doesn't control PTP motion
+        int targetLine = exportTargetLine(path);
+        bool isSynthetic = path.srcLine < 0;
 
-        double original = path.speed.value_or(0.0);
-        double effective = path.effectiveSpeed();
+        if (path.motion != "PTP") { // $VEL.CP doesn't control PTP motion
+            if (!isSynthetic) {
+                double original = path.speed.value_or(0.0);
+                bool originalLineAssertsHere = !previousOriginalSpeed.has_value() || std::abs(original - *previousOriginalSpeed) > 1e-9;
+                if (originalLineAssertsHere) {
+                    outputSpeed = original; // the untouched file's own (still-present) line will set this, for free
+                }
+                previousOriginalSpeed = original;
+            }
 
-        bool originalLineAssertsHere = !previousOriginalSpeed.has_value() || std::abs(original - *previousOriginalSpeed) > 1e-9;
-        if (originalLineAssertsHere) {
-            outputSpeed = original; // the untouched file's own (still-present) line will set this, for free
+            if (targetLine >= 0) {
+                double effective = path.effectiveSpeed();
+                if (!outputSpeed.has_value() || std::abs(effective - *outputSpeed) > 1e-9) {
+                    insertionsByLine[targetLine].push_back(formatSpeedLine(effective));
+                    ++result.insertedSpeedLines;
+                    outputSpeed = effective;
+                }
+            }
         }
-        previousOriginalSpeed = original;
 
-        if (!outputSpeed.has_value() || std::abs(effective - *outputSpeed) > 1e-9) {
-            insertionsByLine[path.srcLine].push_back(formatSpeedLine(effective));
-            ++result.insertedSpeedLines;
-            outputSpeed = effective;
+        if (isSynthetic && targetLine >= 0 && targetLine < static_cast<int>(object.sourceLines.size())) {
+            glm::dvec3 exportPos = applyTransform(object.transform, path.to);
+            std::string newLine = object.sourceLines[static_cast<size_t>(targetLine)];
+            newLine = replaceAxisValue(newLine, kXRe, 'X', exportPos.x);
+            newLine = replaceAxisValue(newLine, kYRe, 'Y', exportPos.y);
+            newLine = replaceAxisValue(newLine, kZRe, 'Z', exportPos.z);
+            insertionsByLine[targetLine].push_back(newLine);
         }
     }
 
