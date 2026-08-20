@@ -5,6 +5,7 @@
 #include "render/LineShader.h"
 #include "render/MeshShader.h"
 #include "render/PathColorizer.h"
+#include "render/RenderSettings.h"
 
 #include <GL/glew.h>
 #include <glm/glm.hpp>
@@ -43,7 +44,8 @@ public:
     GeometryRenderer& operator=(const GeometryRenderer&) = delete;
 
     void rebuild(const Scene& scene, ColorMode colorMode, float beadWidthMm, float beadHeightMm);
-    void draw(const glm::mat4& viewProj, const LightingSettings& lighting, bool backfaceCulling) const;
+    void draw(const glm::mat4& viewProj, const LightingSettings& lighting, bool backfaceCulling,
+              SelectionStyle selectionStyle, float timeSeconds) const;
 
     size_t triangleCount() const { return static_cast<size_t>(indexCount_) / 3; }
     size_t outlineTriangleCount() const { return static_cast<size_t>(outlineIndexCount_) / 3; }
@@ -58,9 +60,13 @@ private:
     GLint meshLightDirsLoc_ = -1;
     GLint meshLightColorsLoc_ = -1;
     GLint meshLightCountLoc_ = -1;
+    GLint meshSelectionStyleLoc_ = -1;
+    GLint meshTimeLoc_ = -1;
+    GLint meshHasSelectionLoc_ = -1;
     GLsizei indexCount_ = 0;
     GLsizei vboCapacityVertices_ = 0;
     GLsizei eboCapacityIndices_ = 0;
+    bool hasSelection_ = false; // true when rebuild() found at least one selected print path -- gates the Pulse style's dimming
 
     // Travel-only lines: reuses the shared line shader/vertex layout.
     GLuint travelVao_ = 0;

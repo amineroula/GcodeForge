@@ -12,8 +12,26 @@ enum class RenderMode {
                // (GeometryRenderer)
 };
 
+// How selected geometry is highlighted in Geometry mode (Lines mode always
+// uses the wide-centerline technique in SelectionHighlightRenderer, which
+// doesn't have this ambiguity -- there's no 3D volume to wrap). Exposed as
+// a dropdown so the operator can pick whichever reads best on their eyes/
+// monitor rather than being stuck with one hardcoded choice.
+enum class SelectionStyle {
+    // "Inverted hull": a second, enlarged copy of the selected mesh drawn
+    // with front-face culling before the real mesh, producing a rim right
+    // at the silhouette edge from any angle. See GeometryRenderer::draw().
+    Outline,
+    // Selected geometry pulses toward white over time; everything else in
+    // Geometry mode dims down so the pulsing selection reads clearly
+    // against it. No extra mesh, just a per-vertex flag and a uTime
+    // uniform in the mesh shader.
+    Pulse,
+};
+
 struct RenderSettings {
     RenderMode mode = RenderMode::Lines;
+    SelectionStyle selectionStyle = SelectionStyle::Outline;
     float beadWidthMm = 8.0f;   // cross-section width of the simulated extrusion bead
     float beadHeightMm = 4.0f;  // cross-section height (roughly: layer height)
 

@@ -143,6 +143,16 @@ void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, boo
         ImGui::TextDisabled("Print paths render as mitered solid bead tubes; travel paths stay as thin lines.");
         // Rendering-only toggle -- no rebuild needed, just checked at draw time.
         ImGui::Checkbox("Backface culling (hide inside of tubes)", &renderSettings.backfaceCulling);
+
+        // Selection style is a pure draw-time choice too -- no rebuild
+        // needed, GeometryRenderer already builds both the outline mesh
+        // and the per-vertex selected flag every rebuild regardless of
+        // which style is currently active, so switching is instant.
+        static const char* kSelectionStyleNames[] = {"Outline", "Pulse (glow selected, dim rest)"};
+        int styleIndex = static_cast<int>(renderSettings.selectionStyle);
+        if (ImGui::Combo("Selection style", &styleIndex, kSelectionStyleNames, 2)) {
+            renderSettings.selectionStyle = static_cast<SelectionStyle>(styleIndex);
+        }
     }
 
     ImGui::Spacing();
@@ -202,6 +212,20 @@ void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, bool& 
     ImGui::Spacing();
     sectionLabel("Environment / Lighting");
     ImGui::TextDisabled("Affects Geometry view mode shading only.");
+
+    if (ImGui::Button("Three-point lighting preset")) {
+        // Classic film/photography three-point setup: a bright key light
+        // from one upper-front side, a dimmer fill from the other side to
+        // soften the key's shadows without erasing them, and a subtle rim
+        // light from behind to separate the geometry from the background.
+        lighting.lights = {
+            Light{glm::vec3(0.5f, -0.6f, 0.8f), glm::vec3(1.0f, 1.0f, 1.0f), true},   // key
+            Light{glm::vec3(-0.6f, -0.3f, 0.4f), glm::vec3(0.5f, 0.55f, 0.6f), true}, // fill
+            Light{glm::vec3(0.0f, 0.9f, 0.3f), glm::vec3(0.4f, 0.35f, 0.3f), true},   // rim/back
+        };
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(key + fill + rim)");
 
     int lightToRemove = -1;
     for (size_t i = 0; i < lighting.lights.size(); ++i) {

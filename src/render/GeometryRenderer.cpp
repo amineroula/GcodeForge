@@ -51,7 +51,7 @@ void appendQuad(std::vector<MeshVertex>& vertices, std::vector<uint32_t>& indice
 // exactly 2, one at each true end.
 void appendRun(std::vector<MeshVertex>& vertices, std::vector<uint32_t>& indices,
                const std::vector<glm::vec3>& runPoints, const std::vector<glm::vec3>& runColors,
-               float halfWidth, float halfHeight) {
+               const std::vector<float>& runSelected, float halfWidth, float halfHeight) {
     size_t segmentCount = runColors.size();
     if (segmentCount == 0) return;
 
@@ -72,8 +72,9 @@ void appendRun(std::vector<MeshVertex>& vertices, std::vector<uint32_t>& indices
         glm::vec3 up = kWorldUp * halfHeight;
         glm::vec3 p = runPoints[i];
         // The very last cross-section has no "owning" segment (it's the
-        // end of the last one) -- reuse that segment's color.
+        // end of the last one) -- reuse that segment's color/selection.
         glm::vec3 color = runColors[i < segmentCount ? i : segmentCount - 1];
+        float selected = runSelected[i < segmentCount ? i : segmentCount - 1];
 
         glm::vec3 corners[4] = {p - right - up, p + right - up, p + right + up, p - right + up};
         glm::vec3 normals[4] = {
@@ -82,7 +83,7 @@ void appendRun(std::vector<MeshVertex>& vertices, std::vector<uint32_t>& indices
             glm::normalize(rightUnits[i] + kWorldUp),
             glm::normalize(-rightUnits[i] + kWorldUp),
         };
-        for (int c = 0; c < 4; ++c) vertices.push_back({corners[c], normals[c], color});
+        for (int c = 0; c < 4; ++c) vertices.push_back({corners[c], normals[c], color, selected});
     }
 
     for (size_t i = 0; i < segmentCount; ++i) {
@@ -113,6 +114,9 @@ GeometryRenderer::GeometryRenderer() {
     meshLightDirsLoc_ = glGetUniformLocation(meshShaderProgram_, "uLightDirs");
     meshLightColorsLoc_ = glGetUniformLocation(meshShaderProgram_, "uLightColors");
     meshLightCountLoc_ = glGetUniformLocation(meshShaderProgram_, "uLightCount");
+    meshSelectionStyleLoc_ = glGetUniformLocation(meshShaderProgram_, "uSelectionStyle");
+    meshTimeLoc_ = glGetUniformLocation(meshShaderProgram_, "uTime");
+    meshHasSelectionLoc_ = glGetUniformLocation(meshShaderProgram_, "uHasSelection");
 
     glGenVertexArrays(1, &meshVao_);
     glGenBuffers(1, &meshVbo_);
@@ -126,6 +130,8 @@ GeometryRenderer::GeometryRenderer() {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, normal)));
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, color)));
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, selected)));
     glBindVertexArray(0);
 
     travelShaderProgram_ = createLineShaderProgram();
@@ -154,6 +160,8 @@ GeometryRenderer::GeometryRenderer() {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, normal)));
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, color)));
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, selected)));
     glBindVertexArray(0);
 }
 
@@ -181,10 +189,12 @@ void GeometryRenderer::rebuild(const Scene& scene, ColorMode colorMode, float be
 
     float halfWidth = beadWidthMm * 0.5f;
     float halfHeight = beadHeightMm * 0.5f;
+    hasSelection_ = false;
 
     for (const auto& object : scene.objects) {
         if (!object.visible) continue;
         const auto& paths = object.paths;
+        if (!object.selectedPaths.empty()) hasSelection_ = true;
 
         size_t i = 0;
         while (i < paths.size()) {
@@ -213,12 +223,14 @@ void GeometryRenderer::rebuild(const Scene& scene, ColorMode colorMode, float be
 
             std::vector<glm::vec3> runPoints;
             std::vector<glm::vec3> runColors;
+            std::vector<float> runSelected;
             runPoints.push_back(glm::vec3(applyTransform(object.transform, paths[i].from)));
             for (size_t k = i; k <= runEnd; ++k) {
                 runPoints.push_back(glm::vec3(applyTransform(object.transform, paths[k].to)));
                 runColors.push_back(pathColor(object, paths[k], colorMode, speedColors_));
+                runSelected.push_back(object.selectedPaths.count(paths[k].number) > 0 ? 1.0f : 0.0f);
             }
-            appendRun(meshVertices, meshIndices, runPoints, runColors, halfWidth, halfHeight);
+            appendRun(meshVertices, meshIndices, runPoints, runColors, runSelected, halfWidth, halfHeight);
 
             i = runEnd + 1;
         }
@@ -288,12 +300,14 @@ void GeometryRenderer::rebuild(const Scene& scene, ColorMode colorMode, float be
 
             std::vector<glm::vec3> runPoints;
             std::vector<glm::vec3> runColors;
+            std::vector<float> runSelected; // unused by the shader for the outline mesh, but appendRun's signature needs it
             runPoints.push_back(glm::vec3(applyTransform(object.transform, paths[i].from)));
             for (size_t k = i; k <= runEnd; ++k) {
                 runPoints.push_back(glm::vec3(applyTransform(object.transform, paths[k].to)));
                 runColors.push_back(highlightColor);
+                runSelected.push_back(0.0f);
             }
-            appendRun(outlineVertices, outlineIndices, runPoints, runColors,
+            appendRun(outlineVertices, outlineIndices, runPoints, runColors, runSelected,
                       halfWidth + kOutlineMarginMm, halfHeight + kOutlineMarginMm);
 
             i = runEnd + 1;
@@ -340,21 +354,27 @@ void uploadLights(GLint dirsLoc, GLint colorsLoc, GLint countLoc, const Lighting
 }
 } // namespace
 
-void GeometryRenderer::draw(const glm::mat4& viewProj, const LightingSettings& lighting, bool backfaceCulling) const {
+void GeometryRenderer::draw(const glm::mat4& viewProj, const LightingSettings& lighting, bool backfaceCulling,
+                             SelectionStyle selectionStyle, float timeSeconds) const {
     // Outline first: cull FRONT faces of the enlarged selection shell, so
     // only its back faces render. The normal mesh (drawn next, always
     // closer to camera on its own front surface than the shell's far
     // side) then occludes the shell's center via ordinary depth testing,
     // leaving only a rim visible right at the silhouette edge -- the
     // classic "inverted hull" outline technique. Works from any viewing
-    // angle, unlike a fixed-pixel-width centerline (the previous
-    // approach, which only looked like an outline from some angles).
-    if (outlineIndexCount_ > 0) {
+    // angle, unlike a fixed-pixel-width centerline (an earlier approach,
+    // which only looked like an outline from some angles). Only drawn for
+    // the Outline selection style -- Pulse doesn't use a second mesh at
+    // all, it tints the real mesh's own vertices instead.
+    if (selectionStyle == SelectionStyle::Outline && outlineIndexCount_ > 0) {
         glEnable(GL_CULL_FACE);
         glCullFace(GL_FRONT);
         glUseProgram(meshShaderProgram_);
         glUniformMatrix4fv(meshMvpLoc_, 1, GL_FALSE, glm::value_ptr(viewProj));
         uploadLights(meshLightDirsLoc_, meshLightColorsLoc_, meshLightCountLoc_, lighting);
+        glUniform1i(meshSelectionStyleLoc_, static_cast<int>(SelectionStyle::Outline));
+        glUniform1f(meshTimeLoc_, timeSeconds);
+        glUniform1i(meshHasSelectionLoc_, hasSelection_ ? 1 : 0);
         glBindVertexArray(outlineVao_);
         glDrawElements(GL_TRIANGLES, outlineIndexCount_, GL_UNSIGNED_INT, nullptr);
         glBindVertexArray(0);
@@ -371,6 +391,9 @@ void GeometryRenderer::draw(const glm::mat4& viewProj, const LightingSettings& l
         glUseProgram(meshShaderProgram_);
         glUniformMatrix4fv(meshMvpLoc_, 1, GL_FALSE, glm::value_ptr(viewProj));
         uploadLights(meshLightDirsLoc_, meshLightColorsLoc_, meshLightCountLoc_, lighting);
+        glUniform1i(meshSelectionStyleLoc_, static_cast<int>(selectionStyle));
+        glUniform1f(meshTimeLoc_, timeSeconds);
+        glUniform1i(meshHasSelectionLoc_, hasSelection_ ? 1 : 0);
         glBindVertexArray(meshVao_);
         glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
         glBindVertexArray(0);

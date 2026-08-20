@@ -677,7 +677,8 @@ int main() {
             if (renderSettings.mode == RenderMode::Lines) {
                 sceneRenderer.draw(viewProj);
             } else {
-                geometryRenderer.draw(viewProj, lightingSettings, renderSettings.backfaceCulling);
+                geometryRenderer.draw(viewProj, lightingSettings, renderSettings.backfaceCulling,
+                                       renderSettings.selectionStyle, static_cast<float>(glfwGetTime()));
             }
 
             if (SceneObject* active = scene.activeObject()) {

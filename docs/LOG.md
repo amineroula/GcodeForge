@@ -720,3 +720,49 @@ panels, it doesn't touch `bedDirty`/`sceneDirty` at all.
 sanity checks (Geometry mesh, outline mesh) both report `glGetError=0`
 after the lighting-signature change; full Debug rebuild of both
 `gcode_editor` and `parser_smoke_test` succeeded cleanly.
+
+## Selection style dropdown + three-point lighting preset
+
+Immediate follow-up to the outline-selection work above. The operator's
+own framing of the request was sharp enough to design directly from:
+"flipped normals, over-extruded" was their read of the inverted-hull
+outline on a screenshot, and their suggested alternative -- brighten the
+selected thing over time, keep the real geometry dark so it stays visible
+-- described a completely different technique (per-vertex color tinting,
+no second mesh at all), not a fix to the existing one. Rather than
+guessing which one they'd actually prefer, both now exist behind a
+**Selection style** dropdown (View panel, Geometry mode section) so it's
+a one-click A/B instead of another round-trip.
+
+- **`RenderSettings::SelectionStyle`** (`Outline` / `Pulse`), defaulting
+  to `Outline` (unchanged prior behavior).
+- **`Outline`** is exactly the existing inverted-hull technique from the
+  previous entry, now gated behind this enum instead of always running.
+- **`Pulse`** (the operator's suggestion): `MeshVertex` gained a 4th
+  attribute, `selected` (0.0/1.0 per vertex, set at `rebuild()` time from
+  `object.selectedPaths`), uploaded to a new vertex attribute location 3.
+  The mesh fragment shader now takes `uSelectionStyle`, `uTime`, and
+  `uHasSelection` uniforms: when the style is Pulse and something is
+  actually selected, selected vertices smoothly blend toward white on a
+  `sin(uTime)`-driven cycle, while everything else in Geometry mode is
+  multiplied down to 25% brightness -- exactly the "selected glows, the
+  rest goes dark so the glow reads clearly" effect requested. No second
+  mesh, no extra draw call -- purely a per-frame uniform + an existing
+  per-vertex attribute, which is why `uHasSelection` matters: without it,
+  an empty selection (every vertex's `selected` = 0) would incorrectly
+  dim the *entire* scene rather than just not-highlighting anything.
+  `GeometryRenderer::draw()` now takes the active `SelectionStyle` and the
+  current time (`glfwGetTime()`, threaded from `main.cpp`) to drive this.
+- **Three-point lighting preset**, added to the Environment/Lighting
+  section from the previous entry per a follow-up request ("make three
+  light setup option"): one button sets `lighting.lights` to the classic
+  photography/film rig -- a bright key light, a dimmer fill from the
+  opposite side (softens the key's shadows without erasing them), and a
+  subtle rim/back light for separation from the background. Doesn't
+  disable manual per-light editing afterward -- it's a starting point,
+  not a locked mode.
+
+**Verified:** all 101 tests still pass; full Debug rebuild clean; startup
+Geometry/outline sanity checks still report `glGetError=0` (Outline style
+is still the default, so this is confirming the new gating didn't break
+the existing path, not just the new one).
