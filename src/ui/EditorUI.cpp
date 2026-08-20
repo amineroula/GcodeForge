@@ -300,6 +300,17 @@ void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHei
         bedDirty = true;
     }
 
+    // Save/Load Bed already exist up in the "Bed size" section above, but
+    // this panel is tall enough now (lighting + a 100+ field grid) that
+    // scrolling back up just to save entered measurements is annoying --
+    // duplicate the same two buttons here. saveBedRequested_/
+    // loadBedRequested_ are the exact same request flags the top buttons
+    // set; main.cpp's handling already saves/loads the heightmap alongside
+    // the rest of the bed settings.
+    if (ImGui::Button("Save Bed...##heightmap")) saveBedRequested_ = true;
+    ImGui::SameLine();
+    if (ImGui::Button("Load Bed...##heightmap")) loadBedRequested_ = true;
+
     if (heightmap.cols >= 2 && heightmap.rows >= 2) {
         ImGui::Text("%d x %d grid (%d points)", heightmap.cols, heightmap.rows, heightmap.cols * heightmap.rows);
         ImGui::TextDisabled("Drag a value to scrub it, or double-click/Ctrl+click to type an exact number.");
@@ -309,10 +320,17 @@ void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHei
         // rest of the Bed panel.
         ImGui::BeginChild("heightmapGrid", ImVec2(0, 220), true, ImGuiWindowFlags_HorizontalScrollbar);
         if (ImGui::BeginTable("heightmapTable", heightmap.cols, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
-            // Row heightmap.rows-1 (the far/+Y edge) drawn FIRST, so the
-            // table reads top-to-bottom the same way the bed looks from
-            // Top view (higher Y = further "up" on screen there).
-            for (int row = heightmap.rows - 1; row >= 0; --row) {
+            // Row 0 (the -Y edge) drawn FIRST. Counterintuitive but
+            // correct: Camera's Top preset looks straight down -Z with its
+            // "up" vector derived from the SAME orbit quaternion as every
+            // other view (see Camera::viewMatrix/orientation) -- at that
+            // preset's yaw/pitch, screen-up works out to world -Y, not
+            // +Y. So the row that reads at the TOP of this table (and
+            // should look like the top of the bed in Top view) is the one
+            // at the smallest Y, i.e. row 0. Getting this backwards was a
+            // real reported bug: an operator's entered values rendered
+            // mirrored top-to-bottom versus where they expected them.
+            for (int row = 0; row < heightmap.rows; ++row) {
                 ImGui::TableNextRow();
                 for (int col = 0; col < heightmap.cols; ++col) {
                     ImGui::TableNextColumn();
@@ -539,6 +557,7 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
                 if (object.selectedPaths.count(p)) { anySelected = true; break; }
             }
             if (ImGui::Selectable(label, anySelected, ImGuiSelectableFlags_SpanAllColumns)) {
+                undoStack.snapshotBeforeChange(scene);
                 SelectionCompose compose = currentSelectionCompose();
                 if (compose == SelectionCompose::Add && layerSelectionAnchor_ >= 0) {
                     // Shift-click: select every layer between the last
@@ -579,11 +598,13 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
     ImGui::Text("Selected paths: %zu", object.selectedPaths.size());
     ImGui::SameLine();
     if (ImGui::SmallButton("Select all visible")) {
+        undoStack.snapshotBeforeChange(scene);
         applySelectionCompose(object.selectedPaths, allPathNumbers(object), currentSelectionCompose());
         selectionDirty = true;
     }
     ImGui::SameLine();
     if (ImGui::SmallButton("Clear")) {
+        undoStack.snapshotBeforeChange(scene);
         object.selectedPaths.clear();
         selectionDirty = true;
     }
@@ -652,6 +673,7 @@ void EditorUI::drawSelectionGroupPanel(Scene& scene, SceneObject& object, UndoSt
         ImGui::Text("%s (%zu paths)", group.name.c_str(), group.pathNumbers.size());
         ImGui::SameLine();
         if (ImGui::SmallButton("Select")) {
+            undoStack.snapshotBeforeChange(scene);
             applySelectionCompose(object.selectedPaths, group.pathNumbers, currentSelectionCompose());
             selectionDirty = true;
         }

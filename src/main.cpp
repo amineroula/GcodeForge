@@ -615,6 +615,7 @@ int main() {
                 } else {
                     ScreenProjector projector{viewProj, static_cast<float>(width), static_cast<float>(height)};
                     SelectionCompose compose = currentSelectionCompose();
+                    undoStack.snapshotBeforeChange(scene); // selection changes are undoable too, same as any other edit
 
                     if (isDraggingMarquee) {
                         glm::vec2 rectMin(std::min(mouseDownPos.x, current.x), std::min(mouseDownPos.y, current.y));

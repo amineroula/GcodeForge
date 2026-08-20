@@ -853,3 +853,58 @@ warped bed before it ruins a print.
 Debug rebuild clean; startup sanity checks extended with a bed-heightmap
 check (11x11 grid at the default 1000mm bed / 100mm spacing -> 200
 triangles, `glGetError=0`) alongside the existing Geometry/outline checks.
+
+## Heightmap Y-flip fix, undoable selection, heightmap Save/Load convenience
+
+The operator tested the heightmap feature immediately (screenshot of the
+Bed panel with real values entered) and found a real orientation bug
+within minutes.
+
+**Heightmap Top-view Y-axis flip -- real bug, found via first real use.**
+Reported precisely: entering 6.66 in the grid table's top-left cell and
+-6.66 in its top-right cell rendered them mirrored top-to-bottom from
+where they were expected. Root cause, found in `Camera::viewMatrix()`/
+`orientation()`: the Top preset's "up" vector is derived from the SAME
+orbit quaternion as every other view (`q * kBaseUp`), and at Top's
+yaw=0/pitch=+89.5 deg, that resolves to world **-Y**, not +Y -- i.e. this
+camera's Top view has -Y pointing up on screen, the opposite of the usual
+CAD convention I'd assumed when writing the heightmap table's row order
+(`EditorUI.cpp`'s heightmap grid deliberately drew row=rows-1, the +Y
+edge, as the table's first/top-displayed row, intending it to match "up
+on screen in Top view"). The X axis was independently verified correct
+(rotation around the X axis doesn't move a vector already along X, so
+"right on screen" is exactly world +X regardless of pitch) -- this was a
+single-axis bug, not a wholesale mirroring. Fixed by reversing the loop
+so row 0 (the -Y edge) is what's drawn first/top in the table, matching
+what Top view actually shows.
+
+**Selection changes are now undoable.** Previously `UndoStack` was wired
+to every scene-mutating action (transform, speed, color, layer actions,
+gizmo drags) but not to selection changes -- clicking a path, marquee-
+select, layer-table clicks/range-select, selection-group apply, "Select
+all visible", and "Clear" all mutated `selectedPaths` directly without
+recording anything. Since `UndoStack` already does whole-`Scene` value
+copies (and `SceneObject::selectedPaths` is plain data, copied along with
+everything else), no new storage or copy logic was needed -- every one of
+those call sites just needed a `snapshotBeforeChange()` call added before
+the mutation, the same one-line pattern already used for every other
+discrete action in the codebase.
+
+**Heightmap Save/Load convenience buttons.** The Bed panel is now long
+enough (Environment/Lighting section plus a 100+ field measurement grid)
+that the existing Save Bed/Load Bed buttons, up in the "Bed size"
+section, were easy to lose track of while scrolled down editing
+measurements. Duplicated the same two buttons (same request flags,
+already wired in `main.cpp` to save/load the heightmap alongside the rest
+of the bed) directly below the heightmap grid controls.
+
+Two more requested items turned out to already be correct/implemented:
+elevation was already moving each grid point's Z position (not just its
+color) in `BedHeightmapRenderer::rebuild()`, and the heatmap's color
+ramp already mapped high values to red / zero to green / negative to
+blue as specified -- both confirmed by re-reading the existing code
+against the operator's description rather than needing a new change.
+
+**Verified:** all 106 tests still pass; full Debug rebuild clean; startup
+sanity checks (Geometry, outline, bed heightmap) all still report
+`glGetError=0`.
