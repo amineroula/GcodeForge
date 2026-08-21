@@ -51,4 +51,11 @@ struct SceneObject {
         }
         return nullptr;
     }
+
+    const Path* findPath(int number) const {
+        for (const auto& p : paths) {
+            if (p.number == number) return &p;
+        }
+        return nullptr;
+    }
 };

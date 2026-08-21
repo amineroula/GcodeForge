@@ -28,4 +28,13 @@ std::vector<int> pathNumbersForLayer(const SceneObject& object, int layerNumber)
 // visibility filters).
 std::vector<int> allPathNumbers(const SceneObject& object);
 
+// All TRAVEL paths, and all PRINT paths, respectively. Travels can be
+// selected, split, and speed-edited exactly like print paths -- the only
+// thing that ever excluded them was that nothing offered a way to grab
+// them as a group (the layer table is print-only by definition, since
+// travels carry no layer). A long travel is a common thing to want to
+// slow down or split, which is exactly why these exist.
+std::vector<int> travelPathNumbers(const SceneObject& object);
+std::vector<int> printPathNumbers(const SceneObject& object);
+
 SelectionGroup& createSelectionGroupFromSelection(SceneObject& object, const std::string& name, glm::vec3 color);

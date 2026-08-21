@@ -423,6 +423,11 @@ int main() {
 
     bool ctrlZWasDown = false;
     bool ctrlYWasDown = false;
+    bool tabWasDown = false;
+
+    // Whatever path the cursor is currently over (not selected -- just
+    // hovered), recomputed every frame for the status-bar readout.
+    std::optional<PathRef> hoveredPath;
 
     // Move-gizmo drag state. axisOrigin/StartT are captured ONCE at drag
     // start and held fixed for the whole drag -- see the comment on
@@ -515,6 +520,41 @@ int main() {
         bool altHeld = glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
                        glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
         bool viewportInputActive = !ImGui::GetIO().WantCaptureMouse;
+
+        // Hover readout: pick (without selecting) whatever path is under
+        // the cursor, so the status bar can report its layer and speed.
+        // Reuses the exact same picking call a click would make, so what
+        // the readout names is guaranteed to be what a click would grab --
+        // a separate "close enough to hover" rule would eventually
+        // disagree with the click and be worse than no readout at all.
+        hoveredPath.reset();
+        if (viewportInputActive && !altHeld && height > 0) {
+            ScreenProjector hoverProjector{viewProj, static_cast<float>(width), static_cast<float>(height)};
+            glm::vec2 cursor(static_cast<float>(cursorX), static_cast<float>(cursorY));
+            hoveredPath = pickNearestPath(scene, hoverProjector, cursor, kClickPickRadiusPixels,
+                                           renderSettings.selectBackfacing);
+        }
+
+        // Resolve the hovered PathRef into displayable values here (where
+        // the Scene is in hand) rather than handing EditorUI a raw ref and
+        // making it do scene lookups. Set now, drawn next frame -- a
+        // one-frame lag nobody can perceive on a hover readout.
+        EditorUI::HoverInfo hoverInfo;
+        if (hoveredPath) {
+            if (const SceneObject* object = scene.findObject(hoveredPath->objectId)) {
+                for (const auto& p : object->paths) {
+                    if (p.number != hoveredPath->pathNumber) continue;
+                    hoverInfo.valid = true;
+                    hoverInfo.objectName = object->name;
+                    hoverInfo.pathNumber = p.number;
+                    hoverInfo.layer = p.layer;
+                    hoverInfo.speed = p.effectiveSpeed();
+                    hoverInfo.isTravel = (p.type == PathType::Travel);
+                    break;
+                }
+            }
+        }
+        editorUi.setHoverInfo(hoverInfo);
 
         // leftPressed/leftWasPressed are tracked unconditionally, every
         // frame, regardless of altHeld or viewportInputActive -- if this
@@ -676,6 +716,15 @@ int main() {
             bool yDown = glfwGetKey(window, GLFW_KEY_Y) == GLFW_PRESS;
             if (ctrlHeld && zDown && !ctrlZWasDown) { undoStack.undo(scene); sceneDirty = true; }
             if (ctrlHeld && yDown && !ctrlYWasDown) { undoStack.redo(scene); sceneDirty = true; }
+
+            // Tab toggles all panels. Edge-detected (fires once per
+            // press, not once per frame held) like the undo/redo keys.
+            // Guarded by WantCaptureKeyboard so it can't fire while
+            // ImGui is using Tab to move between text fields.
+            bool tabDown = glfwGetKey(window, GLFW_KEY_TAB) == GLFW_PRESS;
+            if (tabDown && !tabWasDown) editorUi.togglePanels();
+            tabWasDown = tabDown;
+
             ctrlZWasDown = ctrlHeld && zDown;
             ctrlYWasDown = ctrlHeld && yDown;
         }

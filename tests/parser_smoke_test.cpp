@@ -1079,6 +1079,53 @@ void testStartPointJointMove() {
     check(exported == lines, "StartPoint: a file with a joint-space PTP still round-trips byte-identically");
 }
 
+// Travels must be selectable, splittable and speed-editable as a group --
+// the layer table can never reach them (they carry no layer), so these
+// selectors are the only way in.
+void testTravelSelectionAndSpeed() {
+    SceneObject object = parseSrc("Part", sampleSrcLinesForExport());
+
+    std::vector<int> travels = travelPathNumbers(object);
+    std::vector<int> prints = printPathNumbers(object);
+    check(!travels.empty(), "TravelEdit: the sample has travel paths to select");
+    check(!prints.empty(), "TravelEdit: the sample has print paths to select");
+    check(travels.size() + prints.size() == object.paths.size(),
+          "TravelEdit: every path is either a travel or a print, none double-counted");
+
+    for (int n : travels) {
+        const Path* p = object.findPath(n);
+        check(p && p->type == PathType::Travel, "TravelEdit: travelPathNumbers returns only travels");
+        if (!p || p->type != PathType::Travel) break;
+    }
+
+    // Speed edits must actually land on travels -- only PTP is skipped.
+    SpeedApplyResult result = applySpeedToPaths(object, travels, SpeedApplyMode::Exact, 0.25);
+    check(result.appliedCount > 0, "TravelEdit: applying a speed to travels changes at least one");
+    for (int n : travels) {
+        const Path* p = object.findPath(n);
+        if (!p || p->motion == "PTP") continue; // PTP is correctly skipped
+        checkNear(p->effectiveSpeed(), 0.25, "TravelEdit: a non-PTP travel picks up the new speed");
+    }
+
+    // And a travel must be splittable, same as a print path.
+    SceneObject splitTarget = parseSrc("Part2", sampleSrcLinesForExport());
+    std::vector<int> splitTravels = travelPathNumbers(splitTarget);
+    int firstTravel = splitTravels.front();
+    const Path* before = splitTarget.findPath(firstTravel);
+    glm::dvec3 originalFrom = before->from;
+    glm::dvec3 originalTo = before->to;
+    size_t originalCount = splitTarget.paths.size();
+
+    splitTarget.selectedPaths.insert(firstTravel);
+    splitSelectedPaths(splitTarget);
+    check(splitTarget.paths.size() == originalCount + 1, "TravelEdit: splitting a travel adds one path");
+
+    const Path* after = splitTarget.findPath(firstTravel);
+    glm::dvec3 midpoint = (originalFrom + originalTo) * 0.5;
+    checkNear(after->from.x, midpoint.x, "TravelEdit: split travel's second half starts at the midpoint");
+    checkNear(after->to.x, originalTo.x, "TravelEdit: split travel's second half still ends at the original endpoint");
+}
+
 // A program with no joint-space PTP at all must not sprout a phantom one.
 void testStartPointAbsent() {
     SceneObject object = parseSrc("NoStart", sampleSrcLinesForExport());
@@ -1115,6 +1162,7 @@ int main() {
     testInterleaveUnevenLayers();
     testStartPointJointMove();
     testStartPointAbsent();
+    testTravelSelectionAndSpeed();
     testConnectedDragWhole();
     testConnectedDragStart();
     testConnectedDragGap();

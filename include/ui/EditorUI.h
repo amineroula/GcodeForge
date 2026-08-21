@@ -2,6 +2,7 @@
 
 #include "editor/UndoStack.h"
 #include "model/BedHeightmap.h"
+#include <string>
 #include "model/Scene.h"
 #include "render/BedSettings.h"
 #include "render/Camera.h"
@@ -56,10 +57,29 @@ public:
     // still works, it's a cosmetic upgrade, not a dependency.
     void setBoldFont(ImFont* font) { boldFont_ = font; }
 
+    // Show/hide both floating panels. Driven by the menu-bar button and
+    // by the Tab key (see main.cpp's key handling).
+    void togglePanels() { panelsVisible_ = !panelsVisible_; }
+    bool panelsVisible() const { return panelsVisible_; }
+
+    // Status-bar readout: what the cursor is currently over. Passing the
+    // resolved layer/speed rather than a PathRef keeps EditorUI free of
+    // the picking/scene-lookup logic that main.cpp already does.
+    struct HoverInfo {
+        bool valid = false;
+        std::string objectName;
+        int pathNumber = 0;
+        int layer = -1;
+        double speed = 0.0;
+        bool isTravel = false;
+    };
+    void setHoverInfo(const HoverInfo& info) { hoverInfo_ = info; }
+
 private:
     void sectionLabel(const char* text); // bold if boldFont_ is set, plain otherwise
 
     void drawMenuBar(Scene& scene, UndoStack& undoStack, bool& sceneDirty);
+    void drawStatusBar();
     void drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty);
     void drawBedPanel(BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& heightmap, bool& bedDirty);
     void drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dirty);
@@ -91,6 +111,13 @@ private:
     char layerActionTextBuffer_[256] = "";
     int layerActionTargetLayer_ = 1;
 
+    // Which digital output drives part cooling / air on this cell.
+    // Default 5 matches the mapping an Eidos program states for the
+    // operator's cell ("; AIR COMMAND" immediately above "$OUT[5]=FALSE"
+    // in its shutdown block). Editable because I/O assignment is
+    // per-cell, and firing the wrong output elsewhere could do harm.
+    int coolingOutputIndex_ = 5;
+
     // Last layer-table row clicked WITHOUT shift (plain or ctrl) -- the
     // anchor a subsequent shift-click ranges from. -1 = no anchor yet.
     // Not reset on active-object switch: a stale anchor from a different
@@ -104,6 +131,8 @@ private:
     // false, draw() returns right after drawing the menu bar, skipping
     // the Editor and Bed windows entirely for an unobstructed viewport.
     bool panelsVisible_ = true;
+
+    HoverInfo hoverInfo_;
 
     // Bed Conform input state -- see editor/BedConform.h's
     // BedConformOptions (mirrored here since ImGui widgets need plain

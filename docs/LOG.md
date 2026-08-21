@@ -1332,3 +1332,82 @@ A4=0.000 A5=-9.410 A6=0.000` with the anchor at the true first Cartesian
 point (X 291.12, Y 2027.09, Z 4.20) -- and that file still round-trips
 `byteIdentical=yes`. 15 new tests (192 total), Debug and Release both
 clean.
+
+## Part cooling silently did nothing -- a real production bug
+
+First real robot run of a GcodeForge-exported program: the motion was
+correct, but part cooling never switched on.
+
+**Root cause, and it was mine.** The "Part cooling ON" layer-action preset
+inserted this text:
+
+    ; TODO: set the correct output for this cell, e.g. $OUT[12] = TRUE
+
+That leading `;` makes it a KRL **comment**. It exported cleanly, the
+robot ran cleanly, and the cooling output was never touched. I wrote it
+as a placeholder specifically to avoid guessing the cell's I/O map -- but
+the failure mode was the worst possible one: silent, and
+indistinguishable from success until you're standing at the machine
+watching a part not get cooled.
+
+**The mapping was in the file all along.** The Eidos program's own
+shutdown block labels its outputs:
+
+    ;AIR COMMAND
+    $OUT[5]=FALSE
+    ;ULTRARESPONSIVE MODE
+    $OUT[9]=FALSE
+    ;EXTRUDER MOTOR COMMAND
+    $OUT[7]=FALSE
+    ;HITT TURNING BED HEAT OFF
+    $OUT[6]=FALSE
+
+So cooling/air is `$OUT[5]` on this cell.
+
+**Two fixes, because fixing only the preset would leave the trap open:**
+1. Presets now emit real commands (`$OUT[5]=TRUE`), with the output index
+   as an **editable field** rather than a hardcoded 5 -- I/O assignment is
+   per-cell, and firing an arbitrary output on a different machine could
+   do something genuinely unwanted, so the operator confirms it up front
+   instead of discovering it.
+2. **A layer action whose text is empty or entirely a comment can no
+   longer be added.** The Add button disables and says why. This is the
+   part that actually prevents a recurrence: any future placeholder,
+   typo, or half-finished custom command that couldn't possibly do
+   anything gets caught at entry rather than at the robot.
+
+## Layer speeds, hover readout, travel editing, Tab shortcut
+
+**Speeds in the layer table.** Two new columns: a distinct-speed COUNT and
+the min-max RANGE, with the full list on hover. A real sliced layer
+usually mixes perimeter and infill speeds, so a single number would be a
+lie; the count is highlighted when >1 because that's both normal
+(perimeter vs infill) and exactly how a half-applied speed edit looks.
+
+**Hover readout.** A proper bottom-of-screen status strip (fixed, no
+decoration, `NoInputs` so it can never eat a viewport click) showing the
+hovered path's object, path number, layer and speed. It reuses the exact
+same `pickNearestPath()` call a click makes -- a separate "close enough
+to hover" rule would eventually disagree with the click and be worse than
+no readout. Resolved to plain values in `main.cpp` where the Scene is in
+hand, rather than handing `EditorUI` a raw ref and making it do lookups.
+
+**Travel editing.** Splitting and speed edits already worked on travels
+(`applySpeedToPaths` only ever skipped PTP, correctly -- `$VEL.CP`
+doesn't control point-to-point motion). The real gap was SELECTION: the
+layer table is print-only by definition, since travels carry no layer, so
+nothing offered a way to grab travels as a group. Added
+`travelPathNumbers()`/`printPathNumbers()` and "Select travels" /
+"Select prints" buttons. The speed panel now also states the print/travel
+split of the current selection, plus a PTP-skip note -- "12 paths
+selected" doesn't tell you whether you're about to change a print speed,
+a travel speed, or both.
+
+**Tab hides all panels**, edge-detected like undo/redo and guarded by
+`WantCaptureKeyboard` so it can't fire while ImGui is using Tab to move
+between text fields. The status bar deliberately stays visible when
+panels are hidden -- the hover readout is most useful precisely then.
+
+**Verified:** 202 tests (10 new covering travel selection, travel speed
+application, and travel splitting); Debug and Release clean; the real
+24,268-line file still round-trips `byteIdentical=yes`.

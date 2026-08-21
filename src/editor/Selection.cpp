@@ -21,6 +21,24 @@ std::vector<int> pathNumbersForLayer(const SceneObject& object, int layerNumber)
     return result;
 }
 
+std::vector<int> travelPathNumbers(const SceneObject& object) {
+    std::vector<int> result;
+    if (!object.visible) return result;
+    for (const auto& path : object.paths) {
+        if (path.type == PathType::Travel) result.push_back(path.number);
+    }
+    return result;
+}
+
+std::vector<int> printPathNumbers(const SceneObject& object) {
+    std::vector<int> result;
+    if (!object.visible) return result;
+    for (const auto& path : object.paths) {
+        if (path.type == PathType::Print) result.push_back(path.number);
+    }
+    return result;
+}
+
 std::vector<int> allPathNumbers(const SceneObject& object) {
     std::vector<int> result;
     if (!object.visible) return result;

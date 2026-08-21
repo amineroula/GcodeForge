@@ -47,11 +47,13 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
                      BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& bedHeightmap,
                      UndoStack& undoStack, size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty) {
     drawMenuBar(scene, undoStack, sceneDirty);
+    drawStatusBar();
 
     // Panels collapsed: skip both floating windows entirely, leaving an
-    // unobstructed view of the viewport. The toggle button itself lives in
-    // the menu bar (drawMenuBar), which stays visible either way, so it's
-    // always reachable to bring the panels back.
+    // unobstructed view of the viewport. The menu bar and status bar stay
+    // visible either way -- the toggle button lives in the menu bar, so
+    // it's always reachable to bring the panels back, and the hover
+    // readout is most useful precisely when the panels are out of the way.
     if (!panelsVisible_) return;
 
     ImGui::SetNextWindowPos(ImVec2(12, 32), ImGuiCond_FirstUseEver);
@@ -126,6 +128,37 @@ void EditorUI::drawMenuBar(Scene& scene, UndoStack& undoStack, bool& sceneDirty)
         }
         ImGui::EndMainMenuBar();
     }
+}
+
+void EditorUI::drawStatusBar() {
+    // A real bottom-of-screen status strip, not a floating window: fixed
+    // to the full display width at the bottom, no decoration, no input
+    // capture -- so it never steals a click meant for the viewport
+    // underneath it.
+    const float kHeight = 28.0f;
+    ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(0.0f, io.DisplaySize.y - kHeight));
+    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, kHeight));
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                              ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 5.0f));
+    if (ImGui::Begin("##statusbar", nullptr, flags)) {
+        if (hoverInfo_.valid) {
+            if (hoverInfo_.isTravel) {
+                ImGui::Text("%s   path %d   TRAVEL   speed %.4f",
+                            hoverInfo_.objectName.c_str(), hoverInfo_.pathNumber, hoverInfo_.speed);
+            } else {
+                ImGui::Text("%s   path %d   layer %d   speed %.4f",
+                            hoverInfo_.objectName.c_str(), hoverInfo_.pathNumber,
+                            hoverInfo_.layer, hoverInfo_.speed);
+            }
+        } else {
+            ImGui::TextDisabled("Hover a path to see its layer and speed.   Tab: hide/show panels");
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
 }
 
 void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty) {
@@ -703,13 +736,15 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
     ImGui::TextWrapped("Click a row to select that layer's print paths "
                         "(Shift = range-select from the last clicked layer, Ctrl = subtract).");
 
-    if (ImGui::BeginTable("layers", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
-                           ImVec2(0, 180))) {
+    if (ImGui::BeginTable("layers", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
+                           ImVec2(0, 200))) {
         ImGui::TableSetupColumn("Layer");
         ImGui::TableSetupColumn("Z");
         ImGui::TableSetupColumn("Start");
         ImGui::TableSetupColumn("End");
         ImGui::TableSetupColumn("Paths");
+        ImGui::TableSetupColumn("Speeds", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+        ImGui::TableSetupColumn("Speed range", ImGuiTableColumnFlags_WidthFixed, 130.0f);
         ImGui::TableHeadersRow();
 
         for (const auto& layer : object.layers) {
@@ -757,6 +792,51 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
             ImGui::TableNextColumn();
             ImGui::Text("%d", layer.endPath - layer.startPath + 1);
 
+            // A layer is rarely one single speed -- a real sliced layer
+            // mixes perimeter/infill speeds, and an operator edit can
+            // split it further. Showing the DISTINCT COUNT plus the
+            // min-max range answers both "is this layer uniform?" and
+            // "what is it actually running at?" without needing a row
+            // per path.
+            std::vector<double> layerSpeeds;
+            for (const auto& p : object.paths) {
+                if (p.type != PathType::Print || p.layer != layer.layer) continue;
+                double s = p.effectiveSpeed();
+                bool seen = false;
+                for (double existing : layerSpeeds) {
+                    if (std::abs(existing - s) < 1e-9) { seen = true; break; }
+                }
+                if (!seen) layerSpeeds.push_back(s);
+            }
+            std::sort(layerSpeeds.begin(), layerSpeeds.end());
+
+            ImGui::TableNextColumn();
+            if (layerSpeeds.empty()) {
+                ImGui::TextDisabled("--");
+            } else if (layerSpeeds.size() == 1) {
+                ImGui::Text("1");
+            } else {
+                // Mixed speeds are worth spotting at a glance -- it's
+                // usually intentional (perimeter vs infill) but it's also
+                // how a half-applied speed edit shows up.
+                ImGui::TextColored(ImVec4(1.0f, 0.80f, 0.35f, 1.0f), "%zu", layerSpeeds.size());
+            }
+
+            ImGui::TableNextColumn();
+            if (layerSpeeds.empty()) {
+                ImGui::TextDisabled("--");
+            } else if (layerSpeeds.size() == 1) {
+                ImGui::Text("%.4f", layerSpeeds.front());
+            } else {
+                ImGui::Text("%.4f - %.4f", layerSpeeds.front(), layerSpeeds.back());
+                if (ImGui::IsItemHovered()) {
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted("Distinct speeds in this layer:");
+                    for (double s : layerSpeeds) ImGui::Text("  %.4f", s);
+                    ImGui::EndTooltip();
+                }
+            }
+
             ImGui::PopID();
         }
         ImGui::EndTable();
@@ -775,6 +855,21 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
         object.selectedPaths.clear();
         selectionDirty = true;
     }
+    // Travels carry no layer, so the layer table can never select them --
+    // these are the only way to grab them as a group, which matters
+    // because a long travel is a common thing to want to slow down or
+    // split. Both respect Shift/Ctrl compose like every other selector.
+    if (ImGui::SmallButton("Select travels")) {
+        undoStack.snapshotBeforeChange(scene);
+        applySelectionCompose(object.selectedPaths, travelPathNumbers(object), currentSelectionCompose());
+        selectionDirty = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Select prints")) {
+        undoStack.snapshotBeforeChange(scene);
+        applySelectionCompose(object.selectedPaths, printPathNumbers(object), currentSelectionCompose());
+        selectionDirty = true;
+    }
     ImGui::SameLine();
     ImGui::BeginDisabled(object.selectedPaths.empty());
     if (ImGui::SmallButton("Split selected")) {
@@ -791,9 +886,24 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
     ImGui::TextWrapped("Insert a command before a layer's first motion line on export "
                         "(HALT, part cooling, or custom KRL text).");
 
-    static const char* kPresetLabels[] = {"Halt", "Part cooling ON", "Part cooling OFF", "Custom"};
-    static const char* kPresetText[] = {"HALT", "; TODO: set the correct output for this cell, e.g. $OUT[12] = TRUE",
-                                         "; TODO: set the correct output for this cell, e.g. $OUT[12] = FALSE", ""};
+    // Output indices are EDITABLE, not hardcoded: these default to the
+    // mapping an Eidos-generated program uses for this cell (its
+    // end-of-program block labels $OUT[5] "AIR COMMAND", $OUT[6] bed
+    // heat, $OUT[7] extruder motor), but I/O assignment is per-cell and
+    // firing the wrong output on a different machine could do something
+    // genuinely unwanted. Surfaced up front so the operator confirms it
+    // rather than discovers it.
+    ImGui::TextDisabled("Cell I/O mapping -- confirm this matches YOUR cell:");
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::InputInt("Cooling/air $OUT", &coolingOutputIndex_);
+    coolingOutputIndex_ = std::clamp(coolingOutputIndex_, 1, 4096);
+
+    char coolingOn[128], coolingOff[128];
+    std::snprintf(coolingOn, sizeof(coolingOn), "$OUT[%d]=TRUE", coolingOutputIndex_);
+    std::snprintf(coolingOff, sizeof(coolingOff), "$OUT[%d]=FALSE", coolingOutputIndex_);
+
+    const char* kPresetLabels[] = {"Halt", "Part cooling ON", "Part cooling OFF", "Custom"};
+    const char* kPresetText[] = {"HALT", coolingOn, coolingOff, ""};
     if (ImGui::Combo("Preset", &layerActionPresetIndex_, kPresetLabels, 4)) {
         std::snprintf(layerActionTextBuffer_, sizeof(layerActionTextBuffer_), "%s", kPresetText[layerActionPresetIndex_]);
     }
@@ -801,6 +911,22 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
     layerActionTargetLayer_ = std::clamp(layerActionTargetLayer_, 1, object.layers.empty() ? 1 : object.layers.back().layer);
     ImGui::InputText("KRL text", layerActionTextBuffer_, sizeof(layerActionTextBuffer_));
 
+    // The bug this guards against, found the hard way on a real print:
+    // the old presets inserted "; TODO: set the correct output..." --
+    // which is a KRL COMMENT. It exported fine, the robot ran fine, and
+    // part cooling simply never switched on, with nothing anywhere
+    // saying why. Text that is empty or entirely a comment cannot DO
+    // anything on the robot, so refuse to add it rather than let it look
+    // like it worked.
+    std::string trimmedAction = layerActionTextBuffer_;
+    trimmedAction.erase(0, trimmedAction.find_first_not_of(" \t"));
+    bool actionIsNoOp = trimmedAction.empty() || trimmedAction[0] == ';';
+
+    if (actionIsNoOp) {
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.30f, 1.0f),
+                            "Empty or comment-only -- this would do NOTHING on the robot.");
+    }
+    ImGui::BeginDisabled(actionIsNoOp);
     if (ImGui::Button("Add layer action")) {
         undoStack.snapshotBeforeChange(scene);
         LayerAction action;
@@ -810,6 +936,7 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
         object.layerActions.push_back(action);
         dirty = true;
     }
+    ImGui::EndDisabled();
 
     for (size_t i = 0; i < object.layerActions.size(); ++i) {
         const LayerAction& action = object.layerActions[i];
@@ -878,6 +1005,24 @@ void EditorUI::drawSpeedPanel(Scene& scene, SceneObject& object, UndoStack& undo
     }
 
     std::vector<int> targets(object.selectedPaths.begin(), object.selectedPaths.end());
+
+    // Spell out WHAT is about to be edited. Speed edits apply to travels
+    // and print paths alike (only PTP is skipped -- $VEL.CP doesn't
+    // control point-to-point motion), so "12 paths selected" alone
+    // doesn't tell you whether you're about to change a print speed, a
+    // travel speed, or both.
+    int printCount = 0, travelCount = 0, ptpCount = 0;
+    for (int number : targets) {
+        const Path* p = static_cast<const SceneObject&>(object).findPath(number);
+        if (!p) continue;
+        if (p->motion == "PTP") ++ptpCount;
+        else if (p->type == PathType::Travel) ++travelCount;
+        else ++printCount;
+    }
+    ImGui::Text("Selected: %d print, %d travel", printCount, travelCount);
+    if (ptpCount > 0) {
+        ImGui::TextDisabled("(%d PTP path(s) will be skipped -- $VEL.CP doesn't control PTP motion)", ptpCount);
+    }
 
     ImGui::InputDouble("Exact speed (m/s)", &speedExact_, 0.001, 0.01, "%.4f");
     if (ImGui::Button("Apply exact")) {
