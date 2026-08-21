@@ -4,6 +4,7 @@
 #include "editor/MirrorObject.h"
 #include "editor/ObjectLinking.h"
 #include "editor/PathSplit.h"
+#include "editor/RotatePaths.h"
 #include "editor/Selection.h"
 #include "editor/SpeedEditing.h"
 
@@ -281,6 +282,8 @@ void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, boo
     ImGui::TextDisabled("Object moves the whole object. Start/End/Whole edit the CURRENT PATH SELECTION directly");
     ImGui::TextDisabled("(with no selection, these fall back to Object mode). Start/End can break connectivity with");
     ImGui::TextDisabled("an unselected neighbor; Whole translates each selected path rigidly, so it never does.");
+    ImGui::TextDisabled("Press R in the viewport to switch the gizmo between Move (arrows) and Rotate (ring) --");
+    ImGui::TextDisabled("rotation always spins around the same Object/Start/End/Whole target set above.");
 }
 
 void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHeightmap& heightmap, bool& bedDirty) {
@@ -936,6 +939,21 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
     ImGui::TextDisabled("Split inserts a new vertex at each selected path's midpoint -- handy for");
     ImGui::TextDisabled("giving half of a long travel/print move its own speed. Turn on");
     ImGui::TextDisabled("View > Display > Vertices to see the new point appear.");
+
+    ImGui::Spacing();
+    ImGui::SetNextItemWidth(100.0f);
+    ImGui::DragFloat("##rotateAngle", &rotateSelectedAngleDeg_, 0.5f, -360.0f, 360.0f, "%.1f deg");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(object.selectedPaths.empty());
+    if (ImGui::SmallButton("Rotate selected")) {
+        undoStack.snapshotBeforeChange(scene);
+        rotateSelectedPaths(object, rotateSelectedAngleDeg_);
+        dirty = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("Spins the selected paths around THEIR OWN centroid (not the object's pivot).");
+    ImGui::TextDisabled("Can leave a gap where a rotated path used to touch an unselected neighbor --");
+    ImGui::TextDisabled("same trade-off as Start/End gizmo dragging.");
 
     ImGui::Spacing();
     sectionLabel("Layer actions");

@@ -565,6 +565,29 @@ int main() {
     std::vector<PathDragSnapshot> gizmoDragPathSnapshots;
     constexpr float kGizmoPickRadiusPixels = 10.0f;
 
+    // Move vs Rotate, toggled by R (edge-detected, like Tab). The gizmo
+    // occupies this fraction of the viewport HEIGHT regardless of zoom or
+    // distance -- see Camera::gizmoWorldRadius(). Shared by the move
+    // arrows' length and the rotate ring's radius so switching modes
+    // doesn't change the gizmo's apparent size.
+    GizmoInteractionMode gizmoInteractionMode = GizmoInteractionMode::Move;
+    bool rWasDown = false;
+    constexpr float kGizmoScreenFraction = 0.15f;
+
+    // Rotate-ring drag state. Like the move gizmo, everything needed to
+    // compute a frame's result is captured ONCE at drag start and the
+    // rotation is re-applied from that fixed snapshot every frame (not
+    // accumulated), for the same reason closestPointOnAxisToRay requires
+    // a fixed axisOrigin: incremental updates compound floating-point
+    // drift and make each frame's delta relative to a different basis.
+    bool gizmoRotateDragActive = false;
+    GizmoTargetMode gizmoRotateDragMode = GizmoTargetMode::Object;
+    glm::vec3 gizmoRotateDragPivot(0.0f);   // world space, fixed
+    glm::vec2 gizmoRotateDragOriginScreen(0.0f);
+    float gizmoRotateDragStartAngle = 0.0f; // radians
+    Transform gizmoRotateDragStartTransform; // Object mode only
+    std::vector<PathDragSnapshot> gizmoRotateDragPathSnapshots; // Start/End/Whole only
+
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
@@ -736,6 +759,7 @@ int main() {
             }
             isDraggingMarquee = false; // Alt is for camera nav -- never leave a marquee armed while it's held
             gizmoDragAxis.reset(); // and never leave a gizmo drag armed either
+            gizmoRotateDragActive = false;
         } else if (viewportInputActive) {
             glm::vec2 current(static_cast<float>(cursorX), static_cast<float>(cursorY));
             SceneObject* active = scene.activeObject();
@@ -747,44 +771,71 @@ int main() {
             GizmoTargetMode effectiveMode = (active && !active->selectedPaths.empty())
                 ? renderSettings.gizmoMode : GizmoTargetMode::Object;
 
-            // The move gizmo takes priority over path selection: if the
-            // click lands on an arrow, drag the object/paths; only fall
+            // The move/rotate gizmo takes priority over path selection: if
+            // the click lands on it, drag the object/paths; only fall
             // through to click/marquee-select when it doesn't.
             if (leftPressed && !leftWasPressed) {
                 bool gizmoHit = false;
                 if (active) {
                     if (auto origin = computeGizmoOrigin(*active, effectiveMode)) {
                         ScreenProjector projector{viewProj, static_cast<float>(width), static_cast<float>(height)};
-                        std::vector<GizmoAxisScreenSegment> segments;
-                        for (GizmoAxis axis : {GizmoAxis::X, GizmoAxis::Y, GizmoAxis::Z}) {
-                            glm::vec3 tip = *origin + gizmoAxisDirection(axis) * GizmoRenderer::kAxisLengthMm;
-                            auto originScreen = projector.project(*origin);
-                            auto tipScreen = projector.project(tip);
-                            if (originScreen && tipScreen) {
-                                segments.push_back({axis, glm::vec2(*originScreen), glm::vec2(*tipScreen)});
-                            }
-                        }
-                        if (auto axisHit = pickGizmoAxis(segments, current, kGizmoPickRadiusPixels)) {
-                            Ray ray = unprojectRay(viewProj, current, static_cast<float>(width), static_cast<float>(height));
-                            glm::vec3 axisDir = gizmoAxisDirection(*axisHit);
-                            if (auto t = closestPointOnAxisToRay(*origin, axisDir, ray)) {
-                                gizmoDragAxis = axisHit;
-                                gizmoDragMode = effectiveMode;
-                                gizmoDragAxisOrigin = *origin;
-                                gizmoDragStartT = *t;
-                                gizmoDragPathSnapshots.clear();
-                                if (effectiveMode == GizmoTargetMode::Object) {
-                                    gizmoDragStartValue = (*axisHit == GizmoAxis::X) ? active->transform.x
-                                                         : (*axisHit == GizmoAxis::Y) ? active->transform.y
-                                                                                       : active->transform.z;
-                                } else {
-                                    // Includes the selected paths AND any connected
-                                    // unselected neighbor, so the drag doesn't tear
-                                    // the path away from what it was touching.
-                                    gizmoDragPathSnapshots = buildDragSnapshots(*active, effectiveMode);
+                        // Same world-size formula the renderer uses (see
+                        // the draw-side rebuild() call below) -- picking
+                        // geometry that doesn't match rendered geometry
+                        // would mean clicking exactly on the visible
+                        // gizmo sometimes misses it.
+                        float gizmoSize = camera.gizmoWorldRadius(*origin, kGizmoScreenFraction);
+
+                        if (gizmoInteractionMode == GizmoInteractionMode::Move) {
+                            std::vector<GizmoAxisScreenSegment> segments;
+                            for (GizmoAxis axis : {GizmoAxis::X, GizmoAxis::Y, GizmoAxis::Z}) {
+                                glm::vec3 tip = *origin + gizmoAxisDirection(axis) * gizmoSize;
+                                auto originScreen = projector.project(*origin);
+                                auto tipScreen = projector.project(tip);
+                                if (originScreen && tipScreen) {
+                                    segments.push_back({axis, glm::vec2(*originScreen), glm::vec2(*tipScreen)});
                                 }
-                                undoStack.beginContinuousEdit(scene);
-                                gizmoHit = true;
+                            }
+                            if (auto axisHit = pickGizmoAxis(segments, current, kGizmoPickRadiusPixels)) {
+                                Ray ray = unprojectRay(viewProj, current, static_cast<float>(width), static_cast<float>(height));
+                                glm::vec3 axisDir = gizmoAxisDirection(*axisHit);
+                                if (auto t = closestPointOnAxisToRay(*origin, axisDir, ray)) {
+                                    gizmoDragAxis = axisHit;
+                                    gizmoDragMode = effectiveMode;
+                                    gizmoDragAxisOrigin = *origin;
+                                    gizmoDragStartT = *t;
+                                    gizmoDragPathSnapshots.clear();
+                                    if (effectiveMode == GizmoTargetMode::Object) {
+                                        gizmoDragStartValue = (*axisHit == GizmoAxis::X) ? active->transform.x
+                                                             : (*axisHit == GizmoAxis::Y) ? active->transform.y
+                                                                                           : active->transform.z;
+                                    } else {
+                                        // Includes the selected paths AND any connected
+                                        // unselected neighbor, so the drag doesn't tear
+                                        // the path away from what it was touching.
+                                        gizmoDragPathSnapshots = buildDragSnapshots(*active, effectiveMode);
+                                    }
+                                    undoStack.beginContinuousEdit(scene);
+                                    gizmoHit = true;
+                                }
+                            }
+                        } else { // Rotate
+                            if (auto originScreen = projector.project(*origin)) {
+                                float screenRadiusPixels = kGizmoScreenFraction * static_cast<float>(height) * 0.5f;
+                                if (pickGizmoRing(*originScreen, screenRadiusPixels, current, kGizmoPickRadiusPixels)) {
+                                    gizmoRotateDragActive = true;
+                                    gizmoRotateDragMode = effectiveMode;
+                                    gizmoRotateDragPivot = *origin;
+                                    gizmoRotateDragOriginScreen = *originScreen;
+                                    gizmoRotateDragStartAngle = angleAroundScreenPoint(*originScreen, current);
+                                    if (effectiveMode == GizmoTargetMode::Object) {
+                                        gizmoRotateDragStartTransform = active->transform;
+                                    } else {
+                                        gizmoRotateDragPathSnapshots = buildDragSnapshots(*active, effectiveMode);
+                                    }
+                                    undoStack.beginContinuousEdit(scene);
+                                    gizmoHit = true;
+                                }
                             }
                         }
                     }
@@ -824,14 +875,50 @@ int main() {
                         }
                         sceneDirty = true;
                     }
+                } else if (gizmoRotateDragActive && active) {
+                    float currentAngle = angleAroundScreenPoint(gizmoRotateDragOriginScreen, current);
+                    double deltaDegrees = (currentAngle - gizmoRotateDragStartAngle) * (180.0 / 3.14159265358979323846);
+
+                    if (gizmoRotateDragMode == GizmoTargetMode::Object) {
+                        // Reset-then-apply from the fixed start snapshot,
+                        // same reasoning as the move gizmo's
+                        // gizmoDragStartValue: re-deriving from a fixed
+                        // basis every frame avoids compounding drift.
+                        active->transform = gizmoRotateDragStartTransform;
+                        rotateObjectAroundPivot(active->transform, glm::dvec3(gizmoRotateDragPivot), deltaDegrees);
+                    } else {
+                        // Rotate each affected endpoint (selected paths
+                        // AND any connected unselected neighbor, same set
+                        // the move gizmo uses) around the fixed WORLD
+                        // pivot, converting through the object's
+                        // transform on the way in and out since
+                        // Path::from/to are stored in local space.
+                        for (const auto& snap : gizmoRotateDragPathSnapshots) {
+                            Path* path = active->findPath(snap.pathNumber);
+                            if (!path) continue;
+                            if (snap.moveFrom) {
+                                glm::dvec3 world = applyTransform(active->transform, snap.startFrom);
+                                glm::dvec3 rotated = rotatePointAroundPivotZ(world, glm::dvec3(gizmoRotateDragPivot), deltaDegrees);
+                                path->from = inverseApplyTransform(active->transform, rotated);
+                            }
+                            if (snap.moveTo) {
+                                glm::dvec3 world = applyTransform(active->transform, snap.startTo);
+                                glm::dvec3 rotated = rotatePointAroundPivotZ(world, glm::dvec3(gizmoRotateDragPivot), deltaDegrees);
+                                path->to = inverseApplyTransform(active->transform, rotated);
+                            }
+                        }
+                    }
+                    sceneDirty = true;
                 } else if (glm::length(current - mouseDownPos) > kDragThresholdPixels) {
                     isDraggingMarquee = true;
                 }
             } else if (!leftPressed && leftWasPressed) {
-                if (gizmoDragAxis) {
+                if (gizmoDragAxis || gizmoRotateDragActive) {
                     undoStack.commitContinuousEdit();
                     gizmoDragAxis.reset();
                     gizmoDragPathSnapshots.clear();
+                    gizmoRotateDragActive = false;
+                    gizmoRotateDragPathSnapshots.clear();
                 } else {
                     ScreenProjector projector{viewProj, static_cast<float>(width), static_cast<float>(height)};
                     SelectionCompose compose = currentSelectionCompose();
@@ -883,6 +970,19 @@ int main() {
             bool tabDown = glfwGetKey(window, GLFW_KEY_TAB) == GLFW_PRESS;
             if (tabDown && !tabWasDown) editorUi.togglePanels();
             tabWasDown = tabDown;
+
+            // R switches the gizmo between Move and Rotate. Doesn't fire
+            // mid-drag (a drag in progress finishes in whichever mode it
+            // started in -- switching mode under an active drag would
+            // mean the mouse-up code no longer matches what mouse-down
+            // armed).
+            bool rDown = glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS;
+            if (rDown && !rWasDown && !gizmoDragAxis && !gizmoRotateDragActive) {
+                gizmoInteractionMode = (gizmoInteractionMode == GizmoInteractionMode::Move)
+                                           ? GizmoInteractionMode::Rotate
+                                           : GizmoInteractionMode::Move;
+            }
+            rWasDown = rDown;
 
             ctrlZWasDown = ctrlHeld && zDown;
             ctrlYWasDown = ctrlHeld && yDown;
@@ -960,7 +1060,8 @@ int main() {
                 // which was the root cause of "can't see the gizmo."
                 GizmoTargetMode drawMode = (!active->selectedPaths.empty()) ? renderSettings.gizmoMode : GizmoTargetMode::Object;
                 if (auto origin = computeGizmoOrigin(*active, drawMode)) {
-                    gizmoRenderer.rebuild(*origin); // cheap (3 arrows) -- rebuilding every frame is fine
+                    float gizmoSize = camera.gizmoWorldRadius(*origin, kGizmoScreenFraction);
+                    gizmoRenderer.rebuild(*origin, gizmoSize, gizmoInteractionMode); // cheap -- rebuilding every frame is fine
                     gizmoRenderer.draw(viewProj);
                 }
             }

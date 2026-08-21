@@ -1716,3 +1716,68 @@ editing.
 interleave-speed bug end-to-end into exported text, and the speed
 gradient's pivot/edge cases); Debug and Release clean; the real file: 195
 non-zero `$VEL.CP` commands, still `ABABABABABAB`, still `byteIdentical=yes`.
+
+## Rotate: a button and an interactive gizmo
+
+**"I want the option to rotate the paths."** Two ways in:
+
+**`editor/RotatePaths.h/.cpp`** -- a "Rotate selected" button (Object tab,
+next to Split) that spins every selected path some entered angle around
+the SELECTION's own centroid (not the object's pivot -- "rotate this
+group in place" is what "rotate the paths" means, not "swing them around
+wherever the object's origin happens to be"). Z-axis only, matching
+`Transform::rotZDegrees`' own convention and every other rotation in this
+app -- robotic print objects sit on a flat bed and spin around the
+vertical axis, they don't tumble. A/B/C tool orientation is left
+untouched, same as the existing whole-object transform (re-deriving
+orientation from a rotated position would produce an unverified pose).
+
+**A real interactive gizmo**, per the follow-up request ("make a gizmo
+for it... size relative to camera distance... always half size"):
+
+- **R** toggles the gizmo between Move (the existing arrows) and Rotate
+  (a single ring). Deliberately one ring, not a 3ds-Max-style 3-axis
+  ball -- a second or third rotation axis would just be two controls that
+  do nothing in an app whose whole rotation model is Z-only.
+- **Constant screen size**, not constant world size. `Camera::
+  gizmoWorldRadius()` computes the world-space length that currently maps
+  to a fixed fraction of the viewport height -- distance*tan(halfFovY) in
+  perspective (the standard "world units per screen height at this depth"
+  relation), the current ortho half-extent in orthographic. A fixed world
+  size would shrink to invisible zoomed out, or dwarf the model zoomed in
+  close; this is what "always half size" asked for. Picking geometry is
+  built from the SAME formula the renderer uses (previously the move
+  gizmo's own pick test used a hardcoded `kAxisLengthMm` while the
+  request was already pushing toward a dynamic size -- fixed together, or
+  clicking exactly on the visible gizmo could miss it once size started
+  varying).
+- Dragging the ring measures the on-screen angle around the gizmo's
+  screen-space center (`angleAroundScreenPoint`, with the Y flip that
+  makes clockwise-on-screen a NEGATIVE angle -- matching
+  `rotZDegrees`' documented counterclockwise-positive convention, so
+  a drag rotation and a typed angle turn the same way) and applies the
+  accumulated delta from a FIXED start snapshot every frame, not
+  incrementally -- the same reasoning `closestPointOnAxisToRay`'s doc
+  comment already gives for the move gizmo: a moving reference basis
+  makes frame-to-frame deltas meaningless.
+- **Object mode** pivots the whole object's `Transform` around the
+  gizmo's own origin (the geometry centroid, not the raw `x/y/z` pivot)
+  via a closed-form `rotateObjectAroundPivot()`: composing an existing
+  transform with an additional world rotation about an arbitrary point
+  only needs adding to `rotZDegrees` and re-deriving the translation that
+  keeps the pivot fixed -- one `rotatePointAroundPivotZ()` call, not an
+  iterative solve.
+- **Start/End/Whole modes** reuse `buildDragSnapshots()` -- the exact
+  same connectivity-aware snapshot the move gizmo already uses -- so a
+  connected unselected neighbor's touching endpoint rotates around the
+  SAME pivot too, staying attached under rotation exactly like it stays
+  attached under translation.
+
+**Verified:** 283 tests (13 new: `rotateSelectedPaths()`'s centroid math
+and no-op-on-empty-selection, plus the pivot-rotation primitives'
+fixed-point and object/point-agreement properties -- one of these caught
+my own test-authoring mistake, a from==to path whose "centroid" was
+trivially itself and couldn't move under any rotation, exactly the kind
+of self-cancelling test worth catching before it hides a real bug behind
+a false pass); Debug and Release clean; real file still round-trips
+`byteIdentical=yes`.

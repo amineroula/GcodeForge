@@ -140,6 +140,24 @@ glm::mat4 Camera::projectionMatrix(float viewportWidth, float viewportHeight) co
     return glm::ortho(-halfWidth, halfWidth, -halfHeight, halfHeight, -200000.0f, 200000.0f);
 }
 
+float Camera::gizmoWorldRadius(const glm::vec3& worldPoint, float screenFraction) const {
+    if (projection_ == Projection::Perspective) {
+        // Half the viewport height, in world units, at the depth of
+        // worldPoint: distance * tan(halfFovY) (the standard "how big is
+        // one screen-height in world space at this depth" perspective
+        // relation). Multiplying by screenFraction gives the desired
+        // fraction of that.
+        float distance = glm::length(worldPoint - eyePosition());
+        float halfHeightAtDepth = distance * std::tan(glm::radians(kFovYDegrees * 0.5f));
+        return halfHeightAtDepth * screenFraction;
+    }
+    // Orthographic: no perspective foreshortening, so "world units per
+    // screen height" is the same at every depth -- just the current
+    // view's half-extent, which already tracks zoom via zoomFactor_.
+    float halfHeight = kBaseHalfExtentMm / zoomFactor_;
+    return halfHeight * screenFraction;
+}
+
 void Camera::setViewportSize(float width, float height) {
     viewportWidth_ = width;
     viewportHeight_ = height;

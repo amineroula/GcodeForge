@@ -21,6 +21,7 @@
 #include "editor/MirrorObject.h"
 #include "editor/ObjectLinking.h"
 #include "editor/PathSplit.h"
+#include "editor/RotatePaths.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
@@ -1476,6 +1477,88 @@ void testSpeedColorGradient() {
           "SpeedColor: a file with every speed above the pivot doesn't produce NaN/Inf");
 }
 
+// rotateSelectedPaths(): a single path from (10,0,0) to (10,0,0) -- i.e.
+// its centroid IS the point (10,0,0) -- rotated 90 degrees must land the
+// point at (0,10,0), matching Transform::rotZDegrees' documented
+// counterclockwise-looking-down-+Z convention (same one applyTransform()
+// uses), so a path rotate and an object rotate agree on which way
+// "positive" spins.
+void testRotateSelectedPaths() {
+    // TWO selected paths, so the centroid (0,0,5) is a real point distinct
+    // from either endpoint being checked -- a single path with from==to
+    // makes the point its own centroid, which trivially can't move under
+    // any rotation (an earlier version of this test made exactly that
+    // mistake and "failed" on correct code).
+    SceneObject object;
+    Path p1;
+    p1.number = 1;
+    p1.type = PathType::Print;
+    p1.motion = "LIN";
+    p1.from = glm::dvec3(-10.0, 0.0, 5.0);
+    p1.to = glm::dvec3(-10.0, 0.0, 5.0);
+    Path p2;
+    p2.number = 2;
+    p2.type = PathType::Print;
+    p2.motion = "LIN";
+    p2.from = glm::dvec3(10.0, 0.0, 5.0);
+    p2.to = glm::dvec3(10.0, 0.0, 5.0);
+    object.paths = {p1, p2};
+    object.selectedPaths.insert(1);
+    object.selectedPaths.insert(2);
+
+    rotateSelectedPaths(object, 90.0);
+
+    // Centroid is (0,0,5). Path 2's point was 10 units to the +X of the
+    // centroid; after 90 degrees it should be 10 units to the +Y of it.
+    checkNear(object.paths[1].to.x, 0.0, "RotatePaths: 90-degree rotation moves (10,0) to (0,10) in X");
+    checkNear(object.paths[1].to.y, 10.0, "RotatePaths: 90-degree rotation moves (10,0) to (0,10) in Y");
+    checkNear(object.paths[1].to.z, 5.0, "RotatePaths: Z is untouched by a Z-axis rotation");
+
+    // An unselected path must not move at all.
+    SceneObject object2;
+    Path selected; selected.number = 1; selected.type = PathType::Print; selected.motion = "LIN";
+    selected.from = glm::dvec3(10.0, 0.0, 0.0); selected.to = glm::dvec3(10.0, 0.0, 0.0);
+    Path untouched; untouched.number = 2; untouched.type = PathType::Print; untouched.motion = "LIN";
+    untouched.from = glm::dvec3(50.0, 50.0, 0.0); untouched.to = glm::dvec3(60.0, 60.0, 0.0);
+    object2.paths = {selected, untouched};
+    object2.selectedPaths.insert(1);
+    rotateSelectedPaths(object2, 45.0);
+    checkNear(object2.paths[1].from.x, 50.0, "RotatePaths: an unselected path's FROM doesn't move");
+    checkNear(object2.paths[1].to.y, 60.0, "RotatePaths: an unselected path's TO doesn't move");
+
+    // Empty selection is a no-op, not a crash.
+    SceneObject object3;
+    object3.paths = {selected};
+    rotateSelectedPaths(object3, 90.0);
+    checkNear(object3.paths[0].to.x, 10.0, "RotatePaths: an empty selection is a no-op");
+}
+
+// The gizmo's pivot-rotation primitives: rotating a point 90 degrees
+// around an arbitrary (non-origin) pivot, and the closed-form whole-
+// object version agreeing with it for a pure-translation transform.
+void testRotatePivotMath() {
+    glm::dvec3 pivot(100.0, 100.0, 0.0);
+    glm::dvec3 point(110.0, 100.0, 0.0); // 10 units to the +X of the pivot
+    glm::dvec3 rotated = rotatePointAroundPivotZ(point, pivot, 90.0);
+    checkNear(rotated.x, 100.0, "RotatePivot: 90 degrees around a non-origin pivot -- X lands back on the pivot");
+    checkNear(rotated.y, 110.0, "RotatePivot: 90 degrees around a non-origin pivot -- Y is 10 above the pivot");
+
+    Transform t;
+    t.x = 110.0;
+    t.y = 100.0;
+    t.z = 0.0;
+    rotateObjectAroundPivot(t, pivot, 90.0);
+    checkNear(t.x, 100.0, "RotatePivot: object-transform version agrees with the point primitive (X)");
+    checkNear(t.y, 110.0, "RotatePivot: object-transform version agrees with the point primitive (Y)");
+    checkNear(t.rotZDegrees, 90.0, "RotatePivot: rotZDegrees accumulates the applied delta");
+
+    // The pivot itself must never move -- that's the whole point of
+    // pivoting.
+    glm::dvec3 pivotRotated = rotatePointAroundPivotZ(pivot, pivot, 37.0);
+    checkNear(pivotRotated.x, pivot.x, "RotatePivot: the pivot point itself is a fixed point of its own rotation (X)");
+    checkNear(pivotRotated.y, pivot.y, "RotatePivot: the pivot point itself is a fixed point of its own rotation (Y)");
+}
+
 // A program with no joint-space PTP at all must not sprout a phantom one.
 void testStartPointAbsent() {
     SceneObject object = parseSrc("NoStart", sampleSrcLinesForExport());
@@ -1519,6 +1602,8 @@ int main() {
     testProjectRoundTrip();
     testDirectPathEditExports();
     testSpeedColorGradient();
+    testRotateSelectedPaths();
+    testRotatePivotMath();
     testConnectedDragWhole();
     testConnectedDragStart();
     testConnectedDragGap();

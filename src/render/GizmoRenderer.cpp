@@ -1,6 +1,7 @@
 #include "render/GizmoRenderer.h"
 
 #include <glm/gtc/type_ptr.hpp>
+#include <cmath>
 #include <vector>
 
 namespace {
@@ -8,6 +9,7 @@ namespace {
 const glm::vec3 kRed(1.0f, 0.2f, 0.2f);
 const glm::vec3 kGreen(0.2f, 1.0f, 0.2f);
 const glm::vec3 kBlue(0.25f, 0.5f, 1.0f);
+const glm::vec3 kRingColor(1.0f, 0.85f, 0.15f); // amber, distinct from all three axis colors -- reads as "this is the rotate control", not a fourth axis
 
 void appendArrow(std::vector<LineVertex>& vertices, const glm::vec3& origin, const glm::vec3& axisDir,
                   const glm::vec3& headPerp, const glm::vec3& color, float length) {
@@ -15,23 +17,36 @@ void appendArrow(std::vector<LineVertex>& vertices, const glm::vec3& origin, con
     vertices.push_back({origin, color});
     vertices.push_back({tip, color});
 
-    constexpr float kHeadLength = 20.0f;
-    constexpr float kHeadWidth = 8.0f;
-    glm::vec3 headBase = tip - axisDir * kHeadLength;
+    float headLength = length * 0.1f;
+    float headWidth = length * 0.04f;
+    glm::vec3 headBase = tip - axisDir * headLength;
     vertices.push_back({tip, color});
-    vertices.push_back({headBase + headPerp * kHeadWidth, color});
+    vertices.push_back({headBase + headPerp * headWidth, color});
     vertices.push_back({tip, color});
-    vertices.push_back({headBase - headPerp * kHeadWidth, color});
+    vertices.push_back({headBase - headPerp * headWidth, color});
 }
 
-std::vector<LineVertex> buildVertices(const glm::vec3& origin) {
+std::vector<LineVertex> buildMoveVertices(const glm::vec3& origin, float length) {
     std::vector<LineVertex> vertices;
-    float length = GizmoRenderer::kAxisLengthMm;
-
     appendArrow(vertices, origin, glm::vec3(1, 0, 0), glm::vec3(0, 1, 0), kRed, length);
     appendArrow(vertices, origin, glm::vec3(0, 1, 0), glm::vec3(0, 0, 1), kGreen, length);
     appendArrow(vertices, origin, glm::vec3(0, 0, 1), glm::vec3(1, 0, 0), kBlue, length);
+    return vertices;
+}
 
+std::vector<LineVertex> buildRotateVertices(const glm::vec3& origin, float radius) {
+    std::vector<LineVertex> vertices;
+    // A ring in the XY plane -- this app's ONLY rotation axis is Z (see
+    // GizmoInteractionMode's doc comment), so one ring is the whole
+    // rotate gizmo, not one of three.
+    for (int i = 0; i < GizmoRenderer::kRingSegmentCount; ++i) {
+        float a0 = (static_cast<float>(i) / GizmoRenderer::kRingSegmentCount) * 6.28318530718f;
+        float a1 = (static_cast<float>(i + 1) / GizmoRenderer::kRingSegmentCount) * 6.28318530718f;
+        glm::vec3 p0 = origin + glm::vec3(std::cos(a0), std::sin(a0), 0.0f) * radius;
+        glm::vec3 p1 = origin + glm::vec3(std::cos(a1), std::sin(a1), 0.0f) * radius;
+        vertices.push_back({p0, kRingColor});
+        vertices.push_back({p1, kRingColor});
+    }
     return vertices;
 }
 
@@ -58,8 +73,10 @@ GizmoRenderer::~GizmoRenderer() {
     glDeleteProgram(shaderProgram_);
 }
 
-void GizmoRenderer::rebuild(const glm::vec3& origin) {
-    std::vector<LineVertex> vertices = buildVertices(origin);
+void GizmoRenderer::rebuild(const glm::vec3& origin, float armLength, GizmoInteractionMode mode) {
+    std::vector<LineVertex> vertices = (mode == GizmoInteractionMode::Move)
+                                            ? buildMoveVertices(origin, armLength)
+                                            : buildRotateVertices(origin, armLength);
     vertexCount_ = static_cast<GLsizei>(vertices.size());
 
     glBindVertexArray(vao_);

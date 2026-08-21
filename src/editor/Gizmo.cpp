@@ -1,6 +1,7 @@
 #include "editor/Gizmo.h"
 
 #include <glm/gtc/matrix_inverse.hpp>
+#include <cmath>
 
 namespace {
 float pointToSegmentDistance(const glm::vec2& p, const glm::vec2& a, const glm::vec2& b) {
@@ -107,4 +108,45 @@ std::optional<glm::vec3> computeGizmoOrigin(const SceneObject& object, GizmoTarg
     }
     if (count == 0) return wholeObjectCentroid(object); // selection didn't actually match any path (shouldn't normally happen)
     return glm::vec3(sum / static_cast<double>(count));
+}
+
+float angleAroundScreenPoint(glm::vec2 originScreen, glm::vec2 screenPoint) {
+    glm::vec2 d = screenPoint - originScreen;
+    // Screen Y is down, so negate it here to get a conventional
+    // mathematical (counterclockwise-positive) angle on screen -- this is
+    // what makes dragging clockwise on screen produce a NEGATIVE delta
+    // matching Transform::rotZDegrees' own convention (positive =
+    // counterclockwise looking down +Z, and looking down +Z from above IS
+    // what the screen shows in Top view).
+    return std::atan2(-d.y, d.x);
+}
+
+bool pickGizmoRing(glm::vec2 originScreen, float screenRadiusPixels, glm::vec2 screenPoint, float pickRadiusPixels) {
+    float distFromCenter = glm::length(screenPoint - originScreen);
+    return std::abs(distFromCenter - screenRadiusPixels) <= pickRadiusPixels;
+}
+
+glm::dvec3 rotatePointAroundPivotZ(const glm::dvec3& point, const glm::dvec3& pivot, double deltaDegrees) {
+    double radians = deltaDegrees * 3.14159265358979323846 / 180.0;
+    double c = std::cos(radians), s = std::sin(radians);
+    double relX = point.x - pivot.x;
+    double relY = point.y - pivot.y;
+    return glm::dvec3(pivot.x + relX * c - relY * s, pivot.y + relX * s + relY * c, point.z);
+}
+
+void rotateObjectAroundPivot(Transform& transform, const glm::dvec3& pivotWorld, double deltaDegrees) {
+    // Closed form for "add a world-space rotation about an arbitrary
+    // pivot to an existing translate+rotate transform":
+    //   world' = pivot + R_delta * (world - pivot)
+    //          = pivot + R_delta * (R_old(local) + T_old - pivot)
+    //          = R_delta*R_old(local) + [R_delta*(T_old - pivot) + pivot]
+    // So the new rotation is just the sum of angles (composing two
+    // Z-axis rotations always is), and the new translation is whatever
+    // keeps the pivot point itself fixed under that combined rotation --
+    // i.e. exactly rotatePointAroundPivotZ() applied to the OLD
+    // translation, reusing the same primitive rather than re-deriving it.
+    glm::dvec3 rotatedTranslation = rotatePointAroundPivotZ(glm::dvec3(transform.x, transform.y, transform.z), pivotWorld, deltaDegrees);
+    transform.x = rotatedTranslation.x;
+    transform.y = rotatedTranslation.y;
+    transform.rotZDegrees += deltaDegrees;
 }

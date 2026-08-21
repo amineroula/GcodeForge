@@ -1,15 +1,23 @@
 #pragma once
 
+#include "editor/Gizmo.h"
 #include "render/LineShader.h"
 
 #include <GL/glew.h>
 #include <glm/glm.hpp>
 
-// Draws the translate gizmo: three colored arrows (X=red, Y=green, Z=blue,
-// the same convention as the axis gizmo at the world origin) at a given
-// world-space origin -- the active object's pivot. Fixed world-space
-// length rather than constant screen-size; consistent with how the origin
-// axis gizmo already behaves.
+// Draws the active gizmo at a given world-space origin: three colored
+// arrows (X=red, Y=green, Z=blue, matching the axis gizmo at the world
+// origin) in Move mode, or a single ring in the XY plane (Z-axis
+// rotation only -- see GizmoInteractionMode's doc comment for why not a
+// full 3-axis ball) in Rotate mode.
+//
+// Size is passed in by the caller as a world-space length, NOT a fixed
+// constant -- see Camera::gizmoWorldRadius(), which computes that length
+// so the gizmo occupies a constant fraction of the viewport regardless of
+// zoom or distance ("always half size" as requested). A truly fixed
+// world size would shrink to invisible when zoomed out or dwarf the
+// model zoomed in close.
 class GizmoRenderer {
 public:
     GizmoRenderer();
@@ -18,10 +26,13 @@ public:
     GizmoRenderer(const GizmoRenderer&) = delete;
     GizmoRenderer& operator=(const GizmoRenderer&) = delete;
 
-    void rebuild(const glm::vec3& origin);
+    void rebuild(const glm::vec3& origin, float armLength, GizmoInteractionMode mode);
     void draw(const glm::mat4& viewProj) const;
 
-    static constexpr float kAxisLengthMm = 200.0f;
+    // Number of straight segments approximating the rotate ring's circle
+    // -- exposed so picking code (main.cpp) builds screen-space geometry
+    // that matches what's actually drawn.
+    static constexpr int kRingSegmentCount = 64;
 
 private:
     GLuint vao_ = 0;

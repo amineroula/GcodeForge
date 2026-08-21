@@ -59,6 +59,18 @@ public:
     glm::vec3 eyePosition() const;
     glm::vec3 forwardVector() const;
 
+    // World-space size a gizmo should be drawn at so it occupies a
+    // constant fraction of the viewport HEIGHT regardless of zoom or
+    // distance -- "always half size" as requested, meaning constant
+    // on-screen size, not constant world size (a fixed world size would
+    // make the gizmo shrink to invisible when zoomed out, or dwarf the
+    // model when zoomed in close). `screenFraction` is that fraction (0.1
+    // = gizmo spans ~10% of the viewport height). Perspective scales with
+    // distance to `worldPoint` (further = bigger in world units, same as
+    // any perspective gizmo); orthographic has no such foreshortening, so
+    // it scales with the current view half-extent instead.
+    float gizmoWorldRadius(const glm::vec3& worldPoint, float screenFraction) const;
+
 private:
     glm::quat orientation() const;
     float currentDistance() const; // orbit radius, shrinks/grows with zoomFactor_
