@@ -1592,3 +1592,55 @@ grid dimensions. Fixed by clearing before reading.
 **Verified:** 252 tests (11 new, each asserting a specific thing a `.src`
 cannot hold); Debug and Release clean; the real file still round-trips
 `byteIdentical=yes` and still interleaves ABABAB.
+
+## Flat cross-part travels, and vertex display
+
+**"The travels go up, move forward, then go down. I don't want any
+movement in Z when moving."** The operator was right, and the lift was
+over-engineering on my part.
+
+I had built the cross-part transition as up-to-clearance, across,
+down -- reasoning about collisions in the abstract. What that missed is
+the defining property of interleaving: **every part is printed to the
+SAME layer height simultaneously.** At the moment of any cross-part move,
+every part is exactly as tall as the nozzle is high, so a straight
+horizontal move passes through the empty gap BETWEEN parts and never over
+material. The lift bought nothing and cost travel time plus another
+chance to string.
+
+Replaced with a direct horizontal move at the current layer height. The
+one genuine hazard the operator also identified -- 3+ parts in a row,
+where returning from the far part to the first would cut through the
+middle one -- is handled the way they suggested: an intermediate
+waypoint, but routed around in **Y**, still at constant Z. Whether a
+detour is needed is decided per move by Liang-Barsky segment-vs-rectangle
+clipping against each part's world XY footprint (the same technique the
+marquee selection uses), so a direct move is only replaced when it would
+genuinely clip something.
+
+**Measuring the right thing.** The first diagnostic asked "is any travel
+flat?" and reported `2.000mm (HAS Z MOTION!)` -- which looked like a
+failure but wasn't. A layer-to-layer move MUST rise one layer height;
+that's the print advancing, not a lift. On this file one layer is exactly
+2.000mm, so 2.000mm was the floor, not a defect. Reworded to the question
+that actually matters -- "does any travel rise by MORE than a single
+layer step?" -- and the test asserts that bound rather than flatness.
+Asserting the wrong invariant would have failed forever on correct
+output.
+
+**Vertex display** (`render/VertexRenderer`, "Vertices" in the Display
+row, with a size control). Draws a point at every path endpoint. Off by
+default -- on a 24k-path file all vertices at once is noise -- but it's
+the only way to see where one motion command ends and the next begins: a
+single long straight run and twenty short collinear moves look identical
+until the vertices are visible. It's also how you confirm a path split
+landed where you intended. Only each path's END point is emitted (plus
+the very first FROM), since connected paths share vertices and emitting
+both ends would double the buffer to draw every interior point twice.
+Selected paths' vertices use the highlight colour.
+
+**Verified:** 252 tests (the clearance-hop assertion replaces the old
+safe-height one); Debug and Release clean; on the real file:
+`largest travel Z change = 2.000mm (one layer = 2.000mm) (no clearance
+hop -- only the layer step itself)`, still `ABABABABABAB`, still
+`byteIdentical=yes`.

@@ -53,6 +53,12 @@ struct RenderSettings {
     bool showPrintPaths = true;
     bool showTravels = true;
     bool showStartPoint = true; // the joint-space "first safe position", see model/StartPoint.h
+    // Path endpoints as points. Off by default: on a 24k-path file every
+    // vertex at once is visual noise, but it's the only way to see where
+    // one motion command ends and the next begins (and to confirm a split
+    // landed where you meant it to).
+    bool showVertices = false;
+    float vertexSizePixels = 5.0f;
     float beadWidthMm = 7.0f;   // cross-section width of the simulated extrusion bead
     float beadHeightMm = 3.0f;  // cross-section height (roughly: layer height)
 

@@ -6,11 +6,14 @@
 #include <vector>
 
 struct InterleaveOptions {
-    // The transition move between one object's layer and the next
-    // object's same layer lifts to this Z (world space) before crossing,
-    // so the nozzle can never clip a part it's flying over. Computed by
-    // the caller as (highest point of any involved object) + clearance.
-    double safeTravelZMm = 0.0;
+    // Cross-part transitions are FLAT -- they never change Z. Interleaving
+    // keeps every part at the same layer height, so a horizontal move
+    // between them passes through the empty gap, not over material.
+    //
+    // With 3+ parts in a row a direct move can still clip the part in the
+    // middle. Those moves detour around in Y (still at constant Z), this
+    // far clear of every part's footprint.
+    double detourMarginMm = 100.0;
     // $VEL.CP for the generated transition moves. These are non-printing
     // repositioning moves, so they run fast -- the whole point of
     // interleaving is that the OTHER part is cooling while this happens.
@@ -27,13 +30,12 @@ struct InterleaveOptions {
 // after printing, leaving separate finished parts.
 //
 // Where the transition goes: each per-object layer segment is emitted
-// ending at its LAST PRINT path, and the jump to the next object is
-// synthesized as three travel moves -- straight up to safeTravelZMm,
-// across at that height, then straight down to the next segment's start.
+// ending at its LAST PRINT path, and the jump to the next object is a
+// DIRECT horizontal move at the current layer height -- no Z change.
 // This deliberately replaces whatever layer-to-layer travel the source
-// file had at that point (that travel only made sense within one object)
-// rather than printing through it, and guarantees the crossing happens
-// at a known safe height instead of at layer height.
+// file had at that point (that travel only made sense within one object).
+// Only when a direct line would cross a third part does it detour around
+// in Y, still without touching Z.
 //
 // If objects have different layer counts, an object that runs out simply
 // drops out of the rotation; once only one is left, its remaining layers
@@ -49,14 +51,15 @@ struct InterleaveOptions {
 std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std::vector<int>& objectIdsInOrder,
                                                    const InterleaveOptions& options);
 
-// Highest world-space Z across the given objects -- what the caller adds
-// a clearance margin to for InterleaveOptions::safeTravelZMm.
+// Highest world-space Z across the given objects. Kept as a general
+// scene query (the diagnostics use it); cross-part travels no longer
+// need it, since they never leave the current layer height.
 double highestWorldZ(const Scene& scene, const std::vector<int>& objectIds);
 
 struct MirrorInterleaveOptions {
     int copies = 2;                  // TOTAL parts including the original
     double gapMm = 200.0;            // clear space between neighbouring copies
-    double travelClearanceMm = 50.0; // how far above the tallest part cross-part travels fly
+    double detourMarginMm = 100.0;   // Y clearance when a direct move would cross a third part
     double travelSpeed = 0.5;
 };
 

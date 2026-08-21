@@ -936,7 +936,7 @@ void testInterleavePrint() {
     int idB = scene.addObject(std::move(b)).id;
 
     InterleaveOptions options;
-    options.safeTravelZMm = highestWorldZ(scene, {idA, idB}) + 50.0;
+    options.detourMarginMm = 100.0;
     options.travelSpeed = 0.5;
 
     auto merged = buildInterleavedObject(scene, {idA, idB}, options);
@@ -958,15 +958,24 @@ void testInterleavePrint() {
     // travel may cross at a height that could clip a part. Every
     // generated cross-part travel either climbs/descends vertically
     // (same XY) or moves horizontally at >= the safe height.
-    bool allTravelsSafe = true;
+    // Cross-part travels must NOT hop to a clearance height. Interleaving
+    // keeps every part at the same layer height, so a horizontal move
+    // passes through the empty gap between them -- a lift was pure wasted
+    // travel time and an extra stringing opportunity. The only Z change
+    // allowed is the layer step itself (going from layer N to layer N+1
+    // genuinely has to rise one layer).
+    double layerStep = 0.0;
+    {
+        const auto& L = scene.findObject(idA)->layers;
+        if (L.size() >= 2) layerStep = std::abs(L[1].z - L[0].z);
+    }
+    double worstTravelDz = 0.0;
     for (const auto& p : merged->paths) {
         if (p.type != PathType::Travel) continue;
-        bool verticalOnly = std::abs(p.from.x - p.to.x) < 1e-6 && std::abs(p.from.y - p.to.y) < 1e-6;
-        bool atSafeHeight = p.from.z >= options.safeTravelZMm - 1e-6 && p.to.z >= options.safeTravelZMm - 1e-6;
-        bool inLayerReposition = std::abs(p.from.z - p.to.z) < 1e-6 && p.from.z < options.safeTravelZMm;
-        if (!verticalOnly && !atSafeHeight && !inLayerReposition) allTravelsSafe = false;
+        worstTravelDz = std::max(worstTravelDz, std::abs(p.to.z - p.from.z));
     }
-    check(allTravelsSafe, "InterleavePrint: every cross-part travel is either vertical or at the safe clearance height");
+    check(worstTravelDz <= layerStep + 1e-6,
+          "InterleavePrint: no travel hops above the layer step (no clearance lift)");
 
     // Alternation is the whole point: consecutive printed segments must
     // come from different parts. Both parts sit at disjoint X ranges
@@ -1012,7 +1021,7 @@ void testInterleaveUnevenLayers() {
     int idShort = scene.addObject(std::move(shortObj)).id;
 
     InterleaveOptions options;
-    options.safeTravelZMm = highestWorldZ(scene, {idTall, idShort}) + 50.0;
+    options.detourMarginMm = 100.0;
 
     auto merged = buildInterleavedObject(scene, {idTall, idShort}, options);
     check(merged.has_value(), "InterleavePrint: uneven layer counts still build successfully");
@@ -1185,7 +1194,7 @@ void testMirrorAndInterleave() {
     MirrorInterleaveOptions options;
     options.copies = 3;
     options.gapMm = 200.0;
-    options.travelClearanceMm = 50.0;
+    options.detourMarginMm = 100.0;
 
     size_t objectsBefore = scene.objects.size();
     auto merged = mirrorAndInterleave(scene, sourceId, options);

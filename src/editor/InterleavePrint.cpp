@@ -13,7 +13,7 @@ namespace {
 // One object's paths for one layer, already in world space, ending at
 // its last PRINT path -- the trailing/leading travels of the source
 // layer are dropped, since the interleaved sequence generates its own
-// safe-height transitions between segments instead.
+// flat cross-part transitions between segments instead.
 struct LayerSegment {
     std::vector<Path> paths;
 };
@@ -39,6 +39,48 @@ int highestLayer(const SceneObject& object) {
         if (path.type == PathType::Print) highest = std::max(highest, path.layer);
     }
     return highest;
+}
+
+// World-space XY footprint of one object. Z is deliberately ignored:
+// interleaving prints every part up to the SAME layer height together, so
+// at the moment of any cross-part move all parts are the same height and
+// only their XY footprints matter for whether a move would cross one.
+struct Footprint {
+    double minX = 0.0, maxX = 0.0, minY = 0.0, maxY = 0.0;
+};
+
+Footprint footprintOf(const SceneObject& object) {
+    Footprint f;
+    f.minX = f.minY = std::numeric_limits<double>::max();
+    f.maxX = f.maxY = std::numeric_limits<double>::lowest();
+    for (const auto& path : object.paths) {
+        for (const glm::dvec3& local : {path.from, path.to}) {
+            glm::dvec3 w = applyTransform(object.transform, local);
+            f.minX = std::min(f.minX, w.x); f.maxX = std::max(f.maxX, w.x);
+            f.minY = std::min(f.minY, w.y); f.maxY = std::max(f.maxY, w.y);
+        }
+    }
+    return f;
+}
+
+// Does the 2D segment a->b pass through this footprint? Liang-Barsky
+// segment-vs-rectangle clipping, the same technique the marquee selection
+// uses -- a segment intersects the box iff the clip interval survives.
+bool segmentCrossesFootprint(const glm::dvec3& a, const glm::dvec3& b, const Footprint& f) {
+    double t0 = 0.0, t1 = 1.0;
+    double dx = b.x - a.x, dy = b.y - a.y;
+    const double p[4] = {-dx, dx, -dy, dy};
+    const double q[4] = {a.x - f.minX, f.maxX - a.x, a.y - f.minY, f.maxY - a.y};
+    for (int i = 0; i < 4; ++i) {
+        if (std::abs(p[i]) < 1e-12) {
+            if (q[i] < 0.0) return false; // parallel and outside this edge
+            continue;
+        }
+        double r = q[i] / p[i];
+        if (p[i] < 0.0) { if (r > t1) return false; if (r > t0) t0 = r; }
+        else            { if (r < t0) return false; if (r < t1) t1 = r; }
+    }
+    return t0 <= t1;
 }
 
 } // namespace
@@ -106,19 +148,57 @@ std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std:
         cursor = to;
     };
 
-    // Three-move safe transition: up to clearance height, across at that
-    // height, then down to the next segment's first point. Splitting it
-    // into three explicit moves (rather than one diagonal) is what
-    // guarantees the crossing actually happens at safeTravelZMm the
-    // whole way, instead of cutting a diagonal through a part.
-    auto emitSafeTransition = [&](const glm::dvec3& target) {
+    // Footprints of every part, for deciding whether a direct move would
+    // cross one. Computed once -- they don't change during the build.
+    std::vector<Footprint> footprints;
+    footprints.reserve(objects.size());
+    for (const auto* object : objects) footprints.push_back(footprintOf(*object));
+
+    // Overall Y extent, used as the detour lane when a direct move WOULD
+    // cross a part. Routing around in Y keeps the whole move at constant
+    // Z, which is the point.
+    double allMinY = std::numeric_limits<double>::max();
+    double allMaxY = std::numeric_limits<double>::lowest();
+    for (const auto& f : footprints) { allMinY = std::min(allMinY, f.minY); allMaxY = std::max(allMaxY, f.maxY); }
+
+    // FLAT transition -- no Z movement at all.
+    //
+    // The earlier version lifted to a clearance height, crossed, and
+    // descended. That was over-engineering born of not understanding the
+    // process: interleaving prints every part up to the SAME layer height
+    // together, so at the moment of a cross-part move every part is
+    // exactly as tall as the nozzle is high. A straight horizontal move
+    // passes through the empty gap BETWEEN parts, never over material.
+    // The lift only added travel time and another chance to string.
+    //
+    // The one real hazard is 3+ parts in a row: going from the far part
+    // back to the first would pass straight through the middle one. That
+    // case detours around in Y -- still at constant Z -- instead of over
+    // the top.
+    auto emitTransition = [&](const glm::dvec3& target, size_t targetObjectIndex) {
         if (!cursor.has_value()) return;
         glm::dvec3 start = *cursor;
-        double safeZ = std::max({options.safeTravelZMm, start.z, target.z});
         const std::string travelTemplate = "LIN {X 0,Y 0,Z 0} ; GCODEFORGE INTERLEAVE TRAVEL -- cut here after printing";
 
-        emit(start, glm::dvec3(start.x, start.y, safeZ), PathType::Travel, -1, travelTemplate, "LIN", options.travelSpeed);
-        emit(*cursor, glm::dvec3(target.x, target.y, safeZ), PathType::Travel, -1, travelTemplate, "LIN", options.travelSpeed);
+        // Would a straight line clip a part that is neither where we're
+        // leaving from nor where we're going?
+        bool blocked = false;
+        for (size_t i = 0; i < footprints.size() && !blocked; ++i) {
+            if (i == targetObjectIndex) continue;
+            if (segmentCrossesFootprint(start, target, footprints[i])) blocked = true;
+        }
+
+        if (blocked) {
+            // Detour through a lane clear of every part, in Y, at the
+            // SAME Z. Pick whichever side is nearer the current position
+            // so the detour is as short as possible.
+            double margin = std::max(options.detourMarginMm, 1.0);
+            double laneY = (std::abs(start.y - allMinY) < std::abs(allMaxY - start.y))
+                               ? allMinY - margin
+                               : allMaxY + margin;
+            emit(start, glm::dvec3(start.x, laneY, start.z), PathType::Travel, -1, travelTemplate, "LIN", options.travelSpeed);
+            emit(*cursor, glm::dvec3(target.x, laneY, start.z), PathType::Travel, -1, travelTemplate, "LIN", options.travelSpeed);
+        }
         emit(*cursor, target, PathType::Travel, -1, travelTemplate, "LIN", options.travelSpeed);
     };
 
@@ -140,7 +220,7 @@ std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std:
             mergedLayerOf[{objectIndex, layer}] = currentLayerNumber;
             const glm::dvec3& segmentStart = segment->paths.front().from;
             if (cursor.has_value()) {
-                emitSafeTransition(segmentStart);
+                emitTransition(segmentStart, objectIndex);
             }
 
             for (const auto& path : segment->paths) {
@@ -243,7 +323,7 @@ std::optional<SceneObject> mirrorAndInterleave(Scene& scene, int sourceObjectId,
     if (ids.size() < 2) return std::nullopt;
 
     InterleaveOptions interleave;
-    interleave.safeTravelZMm = highestWorldZ(scene, ids) + options.travelClearanceMm;
+    interleave.detourMarginMm = options.detourMarginMm;
     interleave.travelSpeed = options.travelSpeed;
     return buildInterleavedObject(scene, ids, interleave);
 }

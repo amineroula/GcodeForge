@@ -55,6 +55,7 @@
 #include "render/LightingSettings.h"
 #include "render/LinkPreviewRenderer.h"
 #include "render/StartPointRenderer.h"
+#include "render/VertexRenderer.h"
 #include "render/PathColorizer.h"
 #include "render/RenderSettings.h"
 #include "render/SceneRenderer.h"
@@ -268,6 +269,7 @@ int main() {
     BedHeightmapRenderer bedHeightmapRenderer;
     LinkPreviewRenderer linkPreviewRenderer;
     StartPointRenderer startPointRenderer;
+    VertexRenderer vertexRenderer;
     Scene scene;
     g_scene = &scene;
     EditorUI editorUi;
@@ -297,6 +299,7 @@ int main() {
         sceneRenderer.rebuild(scene, colorMode);
         linkPreviewRenderer.rebuild(scene);
         startPointRenderer.rebuild(scene, bedSettings);
+        vertexRenderer.rebuild(scene, renderSettings.showPrintPaths, renderSettings.showTravels);
 
         // Sanity-check the geometry (bead) renderer path at startup too,
         // even though Lines is the default mode -- there's no automated
@@ -398,7 +401,7 @@ int main() {
                         (bMinX >= aMaxX) ? "(clear)" : "(OVERLAP!)");
 
             InterleaveOptions opts;
-            opts.safeTravelZMm = highestWorldZ(mirrorCheck, {idA, idB}) + 50.0;
+            opts.detourMarginMm = 100.0;
             auto t6 = std::chrono::steady_clock::now();
             auto merged = buildInterleavedObject(mirrorCheck, {idA, idB}, opts);
             auto t7 = std::chrono::steady_clock::now();
@@ -437,6 +440,28 @@ int main() {
                             (maxRunA <= 1 && maxRunB <= 1)
                                 ? "ALTERNATING correctly (never two segments of the same part in a row)"
                                 : "NOT alternating -- one part runs consecutively!");
+
+                // The reported problem: cross-part travels must be FLAT.
+                double maxTravelDz = 0.0;
+                for (const auto& tp : merged->paths) {
+                    if (tp.type != PathType::Travel) continue;
+                    maxTravelDz = std::max(maxTravelDz, std::abs(tp.to.z - tp.from.z));
+                }
+                // A layer-to-layer move MUST rise by one layer height --
+                // that's not a lift, it's the print advancing. What must
+                // NOT happen is a clearance hop far above the part. So
+                // the meaningful check is "does any travel rise by more
+                // than a single layer?", not "is any travel flat?".
+                double layerStep = 0.0;
+                {
+                    const auto& L = mirrorCheck.findObject(idA)->layers;
+                    if (L.size() >= 2) layerStep = std::abs(L[1].z - L[0].z);
+                }
+                std::printf("  interleave travels: largest travel Z change = %.3fmm (one layer = %.3fmm) %s\n",
+                            maxTravelDz, layerStep,
+                            (layerStep <= 0.0 || maxTravelDz <= layerStep + 1e-6)
+                                ? "(no clearance hop -- only the layer step itself)"
+                                : "(CLEARANCE HOP PRESENT!)");
             } else {
                 std::printf("  interleave check: FAILED to build a merged object\n");
             }
@@ -860,6 +885,7 @@ int main() {
             }
             linkPreviewRenderer.rebuild(scene); // cheap; objects/links may have changed regardless of which mode's mesh needed rebuilding
             startPointRenderer.rebuild(scene, bedSettings);
+            vertexRenderer.rebuild(scene, renderSettings.showPrintPaths, renderSettings.showTravels);
             selectionDirty = true; // scene content moved/changed, so highlight positions may be stale too
         }
         if (selectionDirty) {
@@ -895,6 +921,7 @@ int main() {
             if (bedHeightmap.visible) bedHeightmapRenderer.draw(viewProj, lightingSettings);
             linkPreviewRenderer.draw(viewProj); // pending (not-yet-baked) object links, drawn regardless of Lines/Geometry mode
             if (renderSettings.showStartPoint) startPointRenderer.draw(viewProj);
+            if (renderSettings.showVertices) vertexRenderer.draw(viewProj, renderSettings.vertexSizePixels);
             // Selection highlight draws BEFORE the real geometry, wide and
             // depth-tested normally -- the real geometry (always at least
             // as close to the camera as its own centerline) naturally

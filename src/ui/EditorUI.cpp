@@ -198,7 +198,14 @@ void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, boo
     if (ImGui::Checkbox("Travels", &renderSettings.showTravels)) dirty = true;
     ImGui::SameLine();
     ImGui::Checkbox("Start point", &renderSettings.showStartPoint); // draw-time only, no rebuild needed
+    if (ImGui::Checkbox("Vertices", &renderSettings.showVertices)) dirty = true;
+    if (renderSettings.showVertices) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(110.0f);
+        ImGui::DragFloat("Size##vtx", &renderSettings.vertexSizePixels, 0.2f, 1.0f, 20.0f, "%.0f px");
+    }
     ImGui::TextDisabled("Start point = the joint-space PTP the robot moves to before printing.");
+    ImGui::TextDisabled("Vertices = the actual endpoints of each motion command.");
 
     ImGui::Spacing();
     sectionLabel("Render mode");
@@ -604,8 +611,9 @@ void EditorUI::drawMultiPartPanel(Scene& scene, UndoStack& undoStack, bool& dirt
     ImGui::InputInt("Total copies (incl. original)", &multiPartCopies_);
     multiPartCopies_ = std::clamp(multiPartCopies_, 2, 8);
     ImGui::DragFloat("Space between copies (mm)", &multiPartSafeDistanceMm_, 5.0f, 0.0f, 5000.0f, "%.0f");
-    ImGui::DragFloat("Travel clearance (mm)", &multiPartTravelClearanceMm_, 1.0f, 0.0f, 1000.0f, "%.0f");
-    ImGui::TextDisabled("How far above the tallest part the cross-part travels fly.");
+    ImGui::DragFloat("Detour margin (mm)", &multiPartTravelClearanceMm_, 1.0f, 0.0f, 1000.0f, "%.0f");
+    ImGui::TextDisabled("Cross-part travels are FLAT -- they never change Z. With 3+ parts, a move");
+    ImGui::TextDisabled("that would cross a middle part detours around it in Y by this much.");
     ImGui::DragFloat("Travel speed", &multiPartTravelSpeed_, 0.01f, 0.01f, 5.0f, "%.2f");
 
     // ONE button for one intent. This used to be two ("Mirror the
@@ -620,7 +628,7 @@ void EditorUI::drawMultiPartPanel(Scene& scene, UndoStack& undoStack, bool& dirt
         MirrorInterleaveOptions options;
         options.copies = multiPartCopies_;
         options.gapMm = multiPartSafeDistanceMm_;
-        options.travelClearanceMm = multiPartTravelClearanceMm_;
+        options.detourMarginMm = multiPartTravelClearanceMm_;
         options.travelSpeed = multiPartTravelSpeed_;
 
         if (auto merged = mirrorAndInterleave(scene, scene.activeObjectId, options)) {
