@@ -12,6 +12,7 @@
 #include "io/BedIO.h"
 #include "editor/Gizmo.h"
 #include "editor/SrcExporter.h"
+#include "editor/BedConform.h"
 #include "editor/ConnectedDrag.h"
 #include "editor/Framing.h"
 #include "editor/ObjectLinking.h"
@@ -808,6 +809,97 @@ void testObjectLinkBake() {
     }
 }
 
+// A 2x2 heightmap with elevation 0 at the low-X edge and 10 at the
+// high-X edge (no Y gradient), over a 1000x1000mm bed centered at the
+// world origin -- so world X directly maps to a known, hand-computable
+// elevation via bilinear interpolation.
+void testBedConformSampling() {
+    BedSettings bed;
+    bed.widthMm = 1000.0f;
+    bed.depthMm = 1000.0f;
+
+    BedHeightmap heightmap;
+    heightmap.resize(2, 2);
+    heightmap.at(0, 0) = 0.0f;  // local (0,0) -> world (-500,-500)
+    heightmap.at(1, 0) = 10.0f; // local (1000,0) -> world (500,-500)
+    heightmap.at(0, 1) = 0.0f;  // local (0,1000) -> world (-500,500)
+    heightmap.at(1, 1) = 10.0f; // local (1000,1000) -> world (500,500)
+
+    checkNear(sampleBedElevation(heightmap, bed, -500.0, -500.0), 0.0, "BedConform: sample at a corner matches its exact value (low)");
+    checkNear(sampleBedElevation(heightmap, bed, 500.0, 500.0), 10.0, "BedConform: sample at a corner matches its exact value (high)");
+    checkNear(sampleBedElevation(heightmap, bed, 0.0, 0.0), 5.0, "BedConform: sample at the center is the bilinear average");
+    checkNear(sampleBedElevation(heightmap, bed, 0.0, -500.0), 5.0, "BedConform: sample varies with X only on this grid, independent of Y");
+}
+
+// Two connected layer-1 print paths (X: -500 -> 0 -> 500, elevation
+// 0 -> 5 -> 10) plus one layer-2 path, using the same heightmap as
+// above. Checks Z shift, that connectivity survives (the shared vertex
+// between the two layer-1 paths gets the SAME Z from both sides), the
+// speed-override formula, and that layer 2 (beyond affectedLayers=1)
+// gets no effect at all.
+void testBedConformApply() {
+    BedSettings bed;
+    bed.widthMm = 1000.0f;
+    bed.depthMm = 1000.0f;
+
+    BedHeightmap heightmap;
+    heightmap.resize(2, 2);
+    heightmap.at(0, 0) = 0.0f;
+    heightmap.at(1, 0) = 10.0f;
+    heightmap.at(0, 1) = 0.0f;
+    heightmap.at(1, 1) = 10.0f;
+
+    SceneObject object;
+    object.name = "Test";
+    Path p1;
+    p1.number = 1;
+    p1.type = PathType::Print;
+    p1.layer = 1;
+    p1.motion = "LIN";
+    p1.speed = 0.05;
+    p1.from = glm::dvec3(-500.0, 0.0, 0.0);
+    p1.to = glm::dvec3(0.0, 0.0, 0.0);
+    Path p2;
+    p2.number = 2;
+    p2.type = PathType::Print;
+    p2.layer = 1;
+    p2.motion = "LIN";
+    p2.speed = 0.05;
+    p2.from = p1.to;
+    p2.to = glm::dvec3(500.0, 0.0, 0.0);
+    Path p3;
+    p3.number = 3;
+    p3.type = PathType::Print;
+    p3.layer = 2;
+    p3.motion = "LIN";
+    p3.speed = 0.05;
+    p3.from = p2.to;
+    p3.to = glm::dvec3(500.0, 100.0, 0.0);
+    object.paths = {p1, p2, p3};
+
+    BedConformOptions options;
+    options.affectedLayers = 1;
+    options.adjustZ = true;
+    options.adjustSpeed = true;
+    options.speedGainPerMm = 0.1;
+    applyBedConform(object, heightmap, bed, options);
+
+    checkNear(object.paths[0].from.z, 0.0, "BedConform: layer-1 path's FROM Z shifted by its own local elevation (0, low edge)");
+    checkNear(object.paths[0].to.z, 5.0, "BedConform: layer-1 path's TO Z shifted by its own local elevation (5, center)");
+    checkNear(object.paths[1].from.z, object.paths[0].to.z,
+               "BedConform: connected paths' shared vertex gets the SAME Z from both sides (connectivity preserved)");
+    checkNear(object.paths[1].to.z, 10.0, "BedConform: layer-1 path's TO Z shifted by its own local elevation (10, high edge)");
+
+    check(object.paths[0].speedOverride.has_value(), "BedConform: layer-1 path got a speed override");
+    if (object.paths[0].speedOverride.has_value()) {
+        checkNear(*object.paths[0].speedOverride, 0.05 * (1.0 + 1.0 * 0.1 * 5.0),
+                   "BedConform: speed override matches base*(1 + weight*gain*elevation)");
+    }
+
+    checkNear(object.paths[2].to.z, 0.0, "BedConform: a layer beyond affectedLayers gets zero Z shift (taper reached 0)");
+    check(!object.paths[2].speedOverride.has_value(), "BedConform: a layer beyond affectedLayers gets no speed override");
+}
+
 } // namespace
 
 int main() {
@@ -831,6 +923,8 @@ int main() {
     testPathSplitExport();
     testObjectLinkPreview();
     testObjectLinkBake();
+    testBedConformSampling();
+    testBedConformApply();
     testConnectedDragWhole();
     testConnectedDragStart();
     testConnectedDragGap();

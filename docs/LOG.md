@@ -1106,3 +1106,54 @@ immediately by actually running the suite rather than eyeballing the
 logic, fixed by comparing against the correctly-computed expected value
 instead); full Debug rebuild clean; startup sanity checks still report
 `glGetError=0`.
+
+## Bed conform: Z/speed compensation from the bed heightmap
+
+Third of the four larger requested features. Compensates a print for a
+bed that isn't perfectly flat: "when Z is too high we increase the
+speed, when it is too low we lower the speed," plus optionally shifting
+each affected path's own Z to match the measured surface, both tapering
+off over an operator-chosen number of bottom layers.
+
+**`editor/BedConform.h/.cpp`:**
+- `sampleBedElevation(heightmap, bed, worldX, worldY)` -- bilinear
+  interpolation between the four grid points surrounding an arbitrary
+  world-space XY, so a path doesn't need to land exactly on a measured
+  point to get a sensible compensation value. Returns 0 for an
+  unconfigured heightmap (cols/rows < 2) rather than asserting or
+  dividing by zero.
+- `applyBedConform(object, heightmap, bed, options)` -- for every PRINT
+  path (travel paths skipped, their Z/speed aren't meaningful the same
+  way) at a layer within `options.affectedLayers`, weighted by a linear
+  taper (full effect at layer 1, zero by layer `affectedLayers + 1`):
+  optionally shifts `Path::to.z`/`Path::from.z` by the sampled elevation,
+  and/or sets `Path::speedOverride` to
+  `effectiveSpeed() * (1 + weight * speedGainPerMm * elevation)`
+  (clamped so compensation can never crush speed to zero or negative).
+- **The connectivity subtlety that made this worth double-checking with
+  a test:** two print paths that share a vertex (`next.from == cur.to`,
+  same definition `GeometryRenderer` uses for its mitered-run merging)
+  must still share it after conforming, or the mesh gets a visible gap.
+  Solved by re-sampling and shifting BOTH endpoints of EVERY path
+  independently from their own world position, rather than propagating a
+  shift from one path to its neighbor -- since a shared vertex has
+  identical world XY on both sides, sampling it twice (once as one
+  path's `.to`, once as the next path's `.from`) is guaranteed to produce
+  the identical elevation and therefore the identical new Z, with no
+  explicit propagation logic needed. Verified directly: a 2-path
+  connected run's shared midpoint gets the same Z from both paths.
+
+**UI:** new "Bed Conform" section on the active object (Editor panel,
+after Speed), with affected-layer count, Z/speed toggles, a speed-gain
+slider, and an "Apply bed conform" button -- disabled with an explanatory
+message when the Bed panel's heightmap has no valid grid yet.
+
+**6 new tests:** `sampleBedElevation()`'s bilinear math (exact corner
+values, center average, an axis-independence check using a heightmap
+with a gradient on only one axis), and a full `applyBedConform()` pass
+over a hand-built 3-path object verifying the Z shift, the connectivity
+preservation described above, the exact speed-override formula, and that
+a layer beyond `affectedLayers` gets zero effect on either Z or speed.
+
+**Verified:** all tests pass; full Debug rebuild clean; startup sanity
+checks still report `glGetError=0`.

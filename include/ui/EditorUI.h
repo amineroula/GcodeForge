@@ -67,6 +67,8 @@ private:
     void drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty, bool& selectionDirty);
     void drawSelectionGroupPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty, bool& selectionDirty);
     void drawSpeedPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty);
+    void drawBedConformPanel(Scene& scene, SceneObject& object, const BedHeightmap& heightmap,
+                              const BedSettings& bed, UndoStack& undoStack, bool& dirty);
     void drawColorModePanel(ColorMode& colorMode, bool& dirty);
     void drawStatsPanel(const Scene& scene, RenderMode mode, size_t renderedPrimitiveCount);
 
@@ -101,4 +103,12 @@ private:
     // false, draw() returns right after drawing the menu bar, skipping
     // the Editor and Bed windows entirely for an unobstructed viewport.
     bool panelsVisible_ = true;
+
+    // Bed Conform input state -- see editor/BedConform.h's
+    // BedConformOptions (mirrored here since ImGui widgets need plain
+    // persistent fields to edit, not a struct rebuilt fresh every frame).
+    int bedConformAffectedLayers_ = 1;
+    bool bedConformAdjustZ_ = true;
+    bool bedConformAdjustSpeed_ = true;
+    float bedConformSpeedGainPerMm_ = 0.05f;
 };

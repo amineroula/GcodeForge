@@ -1,4 +1,5 @@
 #include "ui/EditorUI.h"
+#include "editor/BedConform.h"
 #include "editor/ObjectLinking.h"
 #include "editor/PathSplit.h"
 #include "editor/Selection.h"
@@ -67,6 +68,7 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
         drawLayerTablePanel(scene, *active, undoStack, sceneDirty, selectionDirty);
         drawSelectionGroupPanel(scene, *active, undoStack, sceneDirty, selectionDirty);
         drawSpeedPanel(scene, *active, undoStack, sceneDirty);
+        drawBedConformPanel(scene, *active, bedHeightmap, bedSettings, undoStack, sceneDirty);
     } else {
         ImGui::Separator();
         ImGui::TextDisabled("No object loaded. File > Open to load a .src file.");
@@ -771,6 +773,47 @@ void EditorUI::drawSpeedPanel(Scene& scene, SceneObject& object, UndoStack& undo
         applySpeedToPaths(object, targets, SpeedApplyMode::Increase, speedPercent_);
         dirty = true;
     }
+}
+
+void EditorUI::drawBedConformPanel(Scene& scene, SceneObject& object, const BedHeightmap& heightmap,
+                                    const BedSettings& bed, UndoStack& undoStack, bool& dirty) {
+    if (boldFont_) ImGui::PushFont(boldFont_);
+    bool open = ImGui::CollapsingHeader("Bed Conform");
+    if (boldFont_) ImGui::PopFont();
+    if (!open) return;
+
+    if (heightmap.cols < 2 || heightmap.rows < 2) {
+        ImGui::TextDisabled("No bed heightmap data yet -- enter measurements in the Bed panel first.");
+        return;
+    }
+
+    ImGui::TextWrapped("Shifts each print path's Z (and optionally speed) based on the measured bed "
+                        "heightmap at its position -- higher bed runs faster, lower bed runs slower.");
+
+    ImGui::InputInt("Affected layers", &bedConformAffectedLayers_);
+    bedConformAffectedLayers_ = std::max(bedConformAffectedLayers_, 1);
+    ImGui::TextDisabled("Layer 1 gets full effect, tapering to none by layer (affected+1).");
+
+    ImGui::Checkbox("Adjust Z", &bedConformAdjustZ_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Adjust speed", &bedConformAdjustSpeed_);
+
+    ImGui::BeginDisabled(!bedConformAdjustSpeed_);
+    ImGui::DragFloat("Speed gain per mm", &bedConformSpeedGainPerMm_, 0.01f, 0.0f, 1.0f, "%.2f");
+    ImGui::EndDisabled();
+
+    ImGui::BeginDisabled(!bedConformAdjustZ_ && !bedConformAdjustSpeed_);
+    if (ImGui::Button("Apply bed conform")) {
+        undoStack.snapshotBeforeChange(scene);
+        BedConformOptions options;
+        options.affectedLayers = bedConformAffectedLayers_;
+        options.adjustZ = bedConformAdjustZ_;
+        options.adjustSpeed = bedConformAdjustSpeed_;
+        options.speedGainPerMm = bedConformSpeedGainPerMm_;
+        applyBedConform(object, heightmap, bed, options);
+        dirty = true;
+    }
+    ImGui::EndDisabled();
 }
 
 void EditorUI::drawColorModePanel(ColorMode& colorMode, bool& dirty) {
