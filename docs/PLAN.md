@@ -110,13 +110,17 @@ Editor is architecturally a compiler, and the module boundaries should match:
    can currently produce a malformed Path), but doesn't yet defend against
    it explicitly. Worth adding before this is treated as fully
    production-hardened.
-10. **Object linking + Bake Links to Travels** — `objectLinks` generates a
-    procedural travel connecting one object's end point to the next object's
-    start point; this must be *cached*, not recomputed every frame (the
-    original hit a real perf bug here — recalculating link geometry on every
-    draw call). "Bake Links to Travels" converts an approved procedural link
-    into permanent, editable `Path` data on the object, after which it's no
-    different from any other travel move.
+10. **Object linking + Bake Links to Travels** — ✅ done (`editor/ObjectLinking`,
+    `render/LinkPreviewRenderer`). `objectLinks` (toggled from the object
+    list's "Link->next" column) generates a procedural travel connecting one
+    object's end point to the next object's start point, cached in
+    `LinkPreviewRenderer` and only rebuilt on `sceneDirty` (not recomputed
+    every frame — the original hit a real perf bug doing that). "Bake links
+    to travels" converts every pending procedural link into permanent,
+    editable `Path` data (a real, non-synthetic `srcLine` — a newly
+    generated KRL line, not cloned from an existing one, since a baked link
+    has no natural sibling line to anchor to), after which it's no different
+    from any other travel move: exportable, editable, deletable.
 11. **Viewport LOD / adaptive rendering** — the "game-style" performance
     system: distance-based simplification, off-screen frustum culling,
     omitting screen-space-tiny segments, batching draw calls instead of one

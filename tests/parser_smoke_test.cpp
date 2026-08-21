@@ -14,6 +14,7 @@
 #include "editor/SrcExporter.h"
 #include "editor/ConnectedDrag.h"
 #include "editor/Framing.h"
+#include "editor/ObjectLinking.h"
 #include "editor/PathSplit.h"
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -736,6 +737,77 @@ void testPathSplitExport() {
     check(foundOriginalEndpoint, "SrcExporter: re-parsed split export still reaches the original endpoint");
 }
 
+// Two objects, both using the sample file, object B offset by (500, 0, 0)
+// so its world-space first point is unambiguous. Links A -> B and checks
+// the world-space preview matches A's last path's WORLD end point and
+// B's first path's WORLD start point.
+void testObjectLinkPreview() {
+    Scene scene;
+    SceneObject a = parseSrc("A", sampleSrcLinesForExport());
+    SceneObject b = parseSrc("B", sampleSrcLinesForExport());
+    b.transform.x = 500.0;
+    int idA = scene.addObject(a).id;
+    int idB = scene.addObject(b).id;
+    scene.toggleLink(idA, idB);
+
+    std::vector<LinkPreview> previews = computeLinkPreviews(scene);
+    check(previews.size() == 1, "ObjectLinking: one preview for one linked pair");
+    if (previews.size() != 1) return;
+
+    SceneObject* objA = scene.findObject(idA);
+    SceneObject* objB = scene.findObject(idB);
+    glm::dvec3 expectedFrom = applyTransform(objA->transform, objA->paths.back().to);
+    glm::dvec3 expectedTo = applyTransform(objB->transform, objB->paths.front().from);
+    checkNear(previews[0].worldFrom.x, expectedFrom.x, "ObjectLinking: preview FROM matches A's last path's world end point (X)");
+    checkNear(previews[0].worldTo.x, expectedTo.x, "ObjectLinking: preview TO matches B's first path's world start point (X)");
+    // B's first path's local X starts near 0 (untransformed), so its
+    // world X after the +500 transform should land close to 500 --
+    // confirms the transform is actually being applied, not skipped.
+    check(previews[0].worldTo.x > 400.0, "ObjectLinking: preview TO reflects B's +500 transform (not still near local-space 0)");
+}
+
+// Bakes the same A -> B link and verifies it becomes a real, permanent,
+// exportable path -- not just a viewport line.
+void testObjectLinkBake() {
+    Scene scene;
+    SceneObject a = parseSrc("A", sampleSrcLinesForExport());
+    SceneObject b = parseSrc("B", sampleSrcLinesForExport());
+    b.transform.x = 500.0;
+    int idA = scene.addObject(a).id;
+    int idB = scene.addObject(b).id;
+    scene.toggleLink(idA, idB);
+
+    SceneObject* objA = scene.findObject(idA);
+    SceneObject* objB = scene.findObject(idB);
+    size_t originalPathCount = objA->paths.size();
+    size_t originalLineCount = objA->sourceLines.size();
+    glm::dvec3 expectedWorldTo = applyTransform(objB->transform, objB->paths.front().from);
+
+    bool baked = bakeLinkToTravel(scene, idA, idB);
+    check(baked, "ObjectLinking: bake succeeds");
+    check(scene.objectLinks.empty(), "ObjectLinking: baking removes the pair from scene.objectLinks");
+    check(objA->paths.size() == originalPathCount + 1, "ObjectLinking: baking adds exactly one path to the from-object");
+    check(objA->sourceLines.size() == originalLineCount + 1, "ObjectLinking: baking adds exactly one source line to the from-object");
+
+    const Path& baked_travel = objA->paths.back();
+    check(baked_travel.type == PathType::Travel, "ObjectLinking: baked path is a Travel move");
+    check(baked_travel.srcLine >= 0, "ObjectLinking: baked path has a REAL srcLine, not a synthetic one");
+
+    glm::dvec3 exportedWorldTo = applyTransform(objA->transform, baked_travel.to);
+    checkNear(exportedWorldTo.x, expectedWorldTo.x, "ObjectLinking: baked path's world-space TO matches B's original start point (X)");
+
+    // The whole point of giving it a real srcLine: it must round-trip
+    // through the exporter and re-parser exactly like any other path.
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(*objA, result);
+    check(result.success, "ObjectLinking: exporting the from-object after baking succeeds");
+    SceneObject reparsed = parseSrc("A_reparsed", exported);
+    check(reparsed.paths.size() == objA->paths.size(), "ObjectLinking: re-parsed export has the baked path too");
+    if (!reparsed.paths.empty()) {
+        checkNear(reparsed.paths.back().to.x, baked_travel.to.x, "ObjectLinking: re-parsed export's last path matches the baked travel's local X");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -757,6 +829,8 @@ int main() {
     testSrcExporterLayerAction();
     testPathSplitModel();
     testPathSplitExport();
+    testObjectLinkPreview();
+    testObjectLinkBake();
     testConnectedDragWhole();
     testConnectedDragStart();
     testConnectedDragGap();

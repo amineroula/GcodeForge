@@ -1047,3 +1047,62 @@ panel, disabled with no selection, undoable via the same
 
 **Verified:** all tests pass including the 6 new ones; full Debug
 rebuild clean; startup sanity checks still report `glGetError=0`.
+
+## Object linking + Bake Links to Travels (milestone 10)
+
+Second of the four larger requested features. This closes out
+milestone 10, which had been sitting as a data-structure-only stub since
+early in the project (`Scene::objectLinks`/`toggleLink()` existed, and
+the object list's "Link->next" checkbox already toggled it, but nothing
+ever consumed the link -- no preview, no way to make it permanent).
+
+**`editor/ObjectLinking.h/.cpp`:**
+- `computeLinkPreviews(const Scene&)` -- for each pending pair in
+  `scene.objectLinks`, computes a world-space line from the FROM object's
+  LAST path's end point to the TO object's FIRST path's start point
+  (both run through `applyTransform()`, so each object's own position/
+  rotation/flip is correctly accounted for). Silently skips a pair whose
+  object was deleted or has no paths -- a link toggle can outlive the
+  object it names.
+- `bakeLinkToTravel(Scene&, fromId, toId)` -- converts one pending link
+  into a REAL, permanent path. Unlike path splitting's synthetic
+  `cloneTemplateSrcLine` approach (a new line inserted relative to an
+  EXISTING sibling), a baked link has no existing sibling in the same
+  object to anchor to -- it's genuinely new content at the very end. So
+  this generates a proper `"LIN {X ..,Y ..,Z ..}"` source line directly
+  (matching `SrcParser`'s expected format exactly) and inserts it into
+  `sourceLines` right after the from-object's current last path's line,
+  then appends a matching `Travel` `Path` with a REAL `srcLine` pointing
+  at it -- not synthetic at all once baked, indistinguishable from a path
+  that was actually parsed from the file to every downstream system
+  (export, further edits, even a future split). Needed a new
+  `inverseApplyTransform()` in `model/Transform.h` (the missing
+  full-point inverse -- `inverseTransformDelta()` only ever handled
+  direction deltas, not points with translation) to convert the TO
+  object's world-space start point into the FROM object's own local
+  space for storage.
+
+**`render/LinkPreviewRenderer`:** one `GL_LINES` segment per pending
+link, bright magenta (outside the normal palette, matching
+`SelectionHighlightRenderer`'s "make it unmistakable" convention) so a
+procedural preview never reads as a real travel move. Drawn regardless
+of Lines/Geometry mode.
+
+**UI:** "Bake links to travels" button under the object list, shown only
+when `scene.objectLinks` is non-empty, converts every currently-pending
+link in one click (undoable).
+
+**4 new tests:** `computeLinkPreviews()`'s world-space math (including a
+transformed second object, to catch a preview that silently ignored the
+target object's own placement), and a full `bakeLinkToTravel()` round-
+trip -- path count, source-line count, the baked path's type/srcLine,
+its world position, AND that it survives a real export + re-parse cycle
+(the actual point of giving it a real `srcLine` instead of a synthetic
+one).
+
+**Verified:** all tests pass (one test assertion of my own was wrong on
+the first run -- comparing two unrelated points' X coordinates -- caught
+immediately by actually running the suite rather than eyeballing the
+logic, fixed by comparing against the correctly-computed expected value
+instead); full Debug rebuild clean; startup sanity checks still report
+`glGetError=0`.

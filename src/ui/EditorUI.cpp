@@ -1,4 +1,5 @@
 #include "ui/EditorUI.h"
+#include "editor/ObjectLinking.h"
 #include "editor/PathSplit.h"
 #include "editor/Selection.h"
 #include "editor/SpeedEditing.h"
@@ -468,6 +469,28 @@ void EditorUI::drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dir
                 }
                 dirty = true;
             }
+        }
+    }
+
+    // Toggling "Link->next" above only records the pair in
+    // scene.objectLinks -- a PROCEDURAL preview (drawn as a bright
+    // magenta line in the viewport, see LinkPreviewRenderer), not real
+    // path data. This button converts every currently-pending link into
+    // a permanent Travel path on its from-object (editor/ObjectLinking.h),
+    // after which it behaves exactly like any other path -- editable,
+    // exportable, deletable.
+    if (!scene.objectLinks.empty()) {
+        ImGui::TextDisabled("%zu pending link(s) (magenta preview in viewport).", scene.objectLinks.size());
+        if (ImGui::SmallButton("Bake links to travels")) {
+            undoStack.snapshotBeforeChange(scene);
+            // Snapshot the pairs first -- bakeLinkToTravel() erases from
+            // scene.objectLinks as it goes, which would invalidate an
+            // in-progress iteration over the live set.
+            std::vector<std::pair<int, int>> pending(scene.objectLinks.begin(), scene.objectLinks.end());
+            for (const auto& [fromId, toId] : pending) {
+                bakeLinkToTravel(scene, fromId, toId);
+            }
+            dirty = true;
         }
     }
 }

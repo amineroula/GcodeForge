@@ -51,3 +51,15 @@ inline glm::dvec3 inverseTransformDelta(const Transform& t, const glm::dvec3& wo
 
     return glm::dvec3(x, y, worldDelta.z);
 }
+
+// The full inverse of applyTransform(): a world-space POINT (not a
+// delta -- translation applies here) back into the object's local
+// space. Subtract the translation first, then reuse
+// inverseTransformDelta() for the rotation+flip undo, since that's
+// exactly what's left once translation is removed. Needed when placing
+// a world-space point (e.g. another object's endpoint, for a baked
+// inter-object link travel) into THIS object's local Path::from/to space.
+inline glm::dvec3 inverseApplyTransform(const Transform& t, const glm::dvec3& world) {
+    glm::dvec3 translated = world - glm::dvec3(t.x, t.y, t.z);
+    return inverseTransformDelta(t, translated);
+}

@@ -32,6 +32,7 @@
 #include "editor/ConnectedDrag.h"
 #include "editor/Framing.h"
 #include "editor/Gizmo.h"
+#include "editor/ObjectLinking.h"
 #include "editor/Picking.h"
 #include "editor/Selection.h"
 #include "editor/SrcExporter.h"
@@ -49,6 +50,7 @@
 #include "render/GizmoRenderer.h"
 #include "render/GridRenderer.h"
 #include "render/LightingSettings.h"
+#include "render/LinkPreviewRenderer.h"
 #include "render/PathColorizer.h"
 #include "render/RenderSettings.h"
 #include "render/SceneRenderer.h"
@@ -260,6 +262,7 @@ int main() {
     SelectionHighlightRenderer selectionHighlight;
     GizmoRenderer gizmoRenderer;
     BedHeightmapRenderer bedHeightmapRenderer;
+    LinkPreviewRenderer linkPreviewRenderer;
     Scene scene;
     g_scene = &scene;
     EditorUI editorUi;
@@ -287,6 +290,7 @@ int main() {
 
         loadFileIntoScene(samplePath, scene);
         sceneRenderer.rebuild(scene, colorMode);
+        linkPreviewRenderer.rebuild(scene);
 
         // Sanity-check the geometry (bead) renderer path at startup too,
         // even though Lines is the default mode -- there's no automated
@@ -669,6 +673,7 @@ int main() {
             } else {
                 geometryRenderer.rebuild(scene, colorMode, renderSettings.beadWidthMm, renderSettings.beadHeightMm);
             }
+            linkPreviewRenderer.rebuild(scene); // cheap; objects/links may have changed regardless of which mode's mesh needed rebuilding
             selectionDirty = true; // scene content moved/changed, so highlight positions may be stale too
         }
         if (selectionDirty) {
@@ -701,6 +706,7 @@ int main() {
         if (height > 0) {
             if (g_showGrid) grid.draw(viewProj);
             if (bedHeightmap.visible) bedHeightmapRenderer.draw(viewProj, lightingSettings);
+            linkPreviewRenderer.draw(viewProj); // pending (not-yet-baked) object links, drawn regardless of Lines/Geometry mode
             // Selection highlight draws BEFORE the real geometry, wide and
             // depth-tested normally -- the real geometry (always at least
             // as close to the camera as its own centerline) naturally
