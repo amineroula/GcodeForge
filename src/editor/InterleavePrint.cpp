@@ -1,5 +1,6 @@
 #include "editor/InterleavePrint.h"
 #include "editor/KrlLineEdit.h"
+#include "editor/MirrorObject.h"
 #include "model/Transform.h"
 
 #include <algorithm>
@@ -121,12 +122,22 @@ std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std:
         emit(*cursor, target, PathType::Travel, -1, travelTemplate, "LIN", options.travelSpeed);
     };
 
+    // (source object index, source layer) -> merged layer number, so a
+    // layer action attached to "object A, layer 3" can be re-attached to
+    // whichever merged layer that segment actually became. Without this,
+    // layer actions were silently dropped by interleaving -- meaning a
+    // part-cooling command set up before mirroring would vanish, which is
+    // exactly the kind of silent loss that already burned one real print.
+    std::map<std::pair<size_t, int>, int> mergedLayerOf;
+
     for (int layer = 1; layer <= maxLayer; ++layer) {
-        for (const auto* object : objects) {
+        for (size_t objectIndex = 0; objectIndex < objects.size(); ++objectIndex) {
+            const auto* object = objects[objectIndex];
             std::optional<LayerSegment> segment = extractLayerSegment(*object, layer);
             if (!segment.has_value()) continue; // this object has no such layer -- it just drops out of the rotation
 
             ++currentLayerNumber;
+            mergedLayerOf[{objectIndex, layer}] = currentLayerNumber;
             const glm::dvec3& segmentStart = segment->paths.front().from;
             if (cursor.has_value()) {
                 emitSafeTransition(segmentStart);
@@ -155,6 +166,21 @@ std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std:
 
     merged.sourceLines.push_back("END");
     if (merged.paths.empty()) return std::nullopt;
+
+    // Re-attach every source object's layer actions to the merged layer
+    // its segment became. Each object keeps its OWN actions -- if both a
+    // part and its mirror have "cooling ON at layer 3", cooling fires
+    // when each of them reaches its own layer 3, which is what per-layer
+    // cooling means once the two are interleaved.
+    for (size_t objectIndex = 0; objectIndex < objects.size(); ++objectIndex) {
+        for (const auto& action : objects[objectIndex]->layerActions) {
+            auto it = mergedLayerOf.find({objectIndex, action.layer});
+            if (it == mergedLayerOf.end()) continue; // that layer never made it into the merge
+            LayerAction remapped = action;
+            remapped.layer = it->second;
+            merged.layerActions.push_back(remapped);
+        }
+    }
 
     Layer layerInfo;
     // The merged object's layer table treats each emitted per-object
@@ -186,4 +212,38 @@ std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std:
     }
 
     return merged;
+}
+
+std::optional<SceneObject> mirrorAndInterleave(Scene& scene, int sourceObjectId,
+                                                const MirrorInterleaveOptions& options) {
+    SceneObject* source = scene.findObject(sourceObjectId);
+    if (!source || highestLayer(*source) <= 0) return std::nullopt;
+
+    int copies = std::max(options.copies, 2);
+    std::vector<int> ids{sourceObjectId};
+
+    // Each copy mirrors the PREVIOUS one, so consecutive parts alternate
+    // orientation and each is placed relative to the one before it --
+    // that spreads them evenly in a row without separate placement logic.
+    //
+    // Re-look-up by id every iteration instead of holding a pointer:
+    // Scene::addObject push_backs into a vector, which can reallocate and
+    // invalidate any SceneObject* taken before the call.
+    int previousId = sourceObjectId;
+    for (int i = 1; i < copies; ++i) {
+        SceneObject* previous = scene.findObject(previousId);
+        if (!previous) break;
+        SceneObject copy = mirrorObject(*previous, options.gapMm);
+        int newId = scene.addObject(std::move(copy)).id;
+        scene.toggleLink(previousId, newId);
+        ids.push_back(newId);
+        previousId = newId;
+    }
+
+    if (ids.size() < 2) return std::nullopt;
+
+    InterleaveOptions interleave;
+    interleave.safeTravelZMm = highestWorldZ(scene, ids) + options.travelClearanceMm;
+    interleave.travelSpeed = options.travelSpeed;
+    return buildInterleavedObject(scene, ids, interleave);
 }

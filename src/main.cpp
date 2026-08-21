@@ -32,6 +32,8 @@
 #include "editor/ConnectedDrag.h"
 #include "editor/Framing.h"
 #include "editor/Gizmo.h"
+#include "editor/InterleavePrint.h"
+#include "editor/MirrorObject.h"
 #include "editor/ObjectLinking.h"
 #include "editor/Picking.h"
 #include "editor/Selection.h"
@@ -361,6 +363,56 @@ int main() {
                 }
             } else {
                 std::printf("  start point: none found (no joint-space PTP in this program)\n");
+            }
+        }
+
+        // Mirror + interleave, exercised against the REAL file rather
+        // than a hand-written snippet -- this is the feature the operator
+        // reported as not working, and a synthetic 7-path sample doesn't
+        // resemble a 24k-path production program at all.
+        if (!scene.objects.empty()) {
+            Scene mirrorCheck;
+            SceneObject copyOfReal = scene.objects.back();
+            copyOfReal.id = 0;
+            int idA = mirrorCheck.addObject(std::move(copyOfReal)).id;
+
+            auto worldBounds = [&](const SceneObject& o, double& minX, double& maxX) {
+                minX = 1e30; maxX = -1e30;
+                for (const auto& p : o.paths) {
+                    minX = std::min({minX, applyTransform(o.transform, p.from).x, applyTransform(o.transform, p.to).x});
+                    maxX = std::max({maxX, applyTransform(o.transform, p.from).x, applyTransform(o.transform, p.to).x});
+                }
+            };
+
+            double aMinX, aMaxX;
+            worldBounds(*mirrorCheck.findObject(idA), aMinX, aMaxX);
+
+            SceneObject mirrored = mirrorObject(*mirrorCheck.findObject(idA), 200.0);
+            int idB = mirrorCheck.addObject(std::move(mirrored)).id;
+            double bMinX, bMaxX;
+            worldBounds(*mirrorCheck.findObject(idB), bMinX, bMaxX);
+
+            std::printf("  mirror check: source world X [%.1f .. %.1f], mirror world X [%.1f .. %.1f], gap=%.1fmm %s\n",
+                        aMinX, aMaxX, bMinX, bMaxX, bMinX - aMaxX,
+                        (bMinX >= aMaxX) ? "(clear)" : "(OVERLAP!)");
+
+            InterleaveOptions opts;
+            opts.safeTravelZMm = highestWorldZ(mirrorCheck, {idA, idB}) + 50.0;
+            auto t6 = std::chrono::steady_clock::now();
+            auto merged = buildInterleavedObject(mirrorCheck, {idA, idB}, opts);
+            auto t7 = std::chrono::steady_clock::now();
+            if (merged) {
+                size_t printCount = 0, travelCount = 0;
+                for (const auto& p : merged->paths) {
+                    if (p.type == PathType::Print) ++printCount; else ++travelCount;
+                }
+                std::printf("  interleave check: %.0fms, %zu paths (%zu print, %zu travel), %zu layers, %zu source lines\n",
+                            ms(t6, t7), merged->paths.size(), printCount, travelCount,
+                            merged->layers.size(), merged->sourceLines.size());
+                std::printf("  interleave check: layerActions carried = %zu (source had %zu)\n",
+                            merged->layerActions.size(), mirrorCheck.findObject(idA)->layerActions.size());
+            } else {
+                std::printf("  interleave check: FAILED to build a merged object\n");
             }
         }
 

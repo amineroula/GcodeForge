@@ -52,3 +52,23 @@ std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std:
 // Highest world-space Z across the given objects -- what the caller adds
 // a clearance margin to for InterleaveOptions::safeTravelZMm.
 double highestWorldZ(const Scene& scene, const std::vector<int>& objectIds);
+
+struct MirrorInterleaveOptions {
+    int copies = 2;                  // TOTAL parts including the original
+    double gapMm = 200.0;            // clear space between neighbouring copies
+    double travelClearanceMm = 50.0; // how far above the tallest part cross-part travels fly
+    double travelSpeed = 0.5;
+};
+
+// The whole operation in one call, because it's one intent: mirror a part
+// N times AND link the copies layer by layer into a single printable
+// program. Splitting it across two buttons ("mirror", then "build
+// interleaved print") made the second step look optional and the first
+// step look broken when used alone -- reported as "mirror doesn't work".
+//
+// Adds the mirrored copies to `scene` (chained with Scene::toggleLink so
+// the link previews are set up too) and returns the merged interleaved
+// object, which the caller adds. Returns std::nullopt if the source
+// doesn't exist, has no layers, or fewer than 2 parts result.
+std::optional<SceneObject> mirrorAndInterleave(Scene& scene, int sourceObjectId,
+                                                const MirrorInterleaveOptions& options);

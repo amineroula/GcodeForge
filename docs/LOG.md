@@ -1481,3 +1481,51 @@ representation entirely.
 
 **Verified:** 211 tests; Debug and Release clean; the real 24,268-line
 file still round-trips `byteIdentical=yes`.
+
+## "Mirror doesn't work" -- it did, but as the wrong shape of feature
+
+Investigated against the REAL 24,268-line file rather than the synthetic
+sample, by adding a mirror+interleave check to the `GCODEFORGE_TEST_FILE`
+diagnostic. The underlying math was correct all along:
+
+    mirror check: source world X [13.2 .. 562.9],
+                  mirror world X [762.9 .. 1312.6], gap=200.0mm (clear)
+    interleave check: 452ms, 48127 paths, 98 layers   <- 49 x 2, exact
+
+So nothing was broken numerically. What was wrong was the **shape of the
+feature**: it was split across two buttons ("Mirror the object", then
+"Build interleaved print"). Mirroring alone produces a scene that looks
+like nothing useful happened, and the second button reads as optional.
+The operator's own description of what they wanted -- "when mirroring you
+should make a new object and links layer by layer until done" -- is one
+action, not two. Merged into a single **"Mirror and link layer by
+layer"** button backed by a new `mirrorAndInterleave()` in
+`editor/InterleavePrint`. Nobody wanted mirroring *without* the linking
+here, so offering it separately only created a way to get a useless
+half-result and conclude the feature was broken.
+
+Also fixed while in there:
+- **`Scene::addObject` invalidates `SceneObject*`.** The old multi-copy
+  loop held a pointer across `addObject` calls, which `push_back` can
+  invalidate by reallocating the vector. It happened not to crash given
+  the exact ordering, but it was one edit away from a use-after-free.
+  `mirrorAndInterleave()` re-looks-up by id every iteration instead.
+- **Layer actions were silently dropped by interleaving** -- confirmed by
+  the same diagnostic (`layerActions carried = 0`). A part-cooling
+  command set up before mirroring would simply vanish from the merged
+  program. Given that a comment-only cooling preset had *already* cost
+  one real print, a second silent path to "cooling doesn't happen" was
+  not acceptable. `buildInterleavedObject()` now records a
+  `(source object, source layer) -> merged layer` map as it emits, and
+  re-attaches each object's actions to the merged layer its segment
+  actually became. Each part keeps its own copy, so with 3 mirrored
+  parts a per-layer cooling command fires for each part's own layer --
+  which is what per-layer cooling means once interleaved.
+- The button now writes a result line ("Built: <name>" or the reason it
+  failed), because the merged object appears at the bottom of the object
+  list, off-screen, and a button that appears to do nothing is
+  indistinguishable from one that is broken.
+
+**Verified:** 221 tests (10 new, including cooling surviving the merge
+end-to-end into the exported file); Debug and Release clean; the real
+file still round-trips `byteIdentical=yes`.

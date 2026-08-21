@@ -148,4 +148,5 @@ private:
     float multiPartSafeDistanceMm_ = 200.0f;
     float multiPartTravelClearanceMm_ = 50.0f;
     float multiPartTravelSpeed_ = 0.5f;
+    std::string lastMirrorResult_; // feedback line so the button visibly does something even when the result is off-screen
 };

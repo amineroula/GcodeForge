@@ -586,67 +586,50 @@ void EditorUI::drawMultiPartPanel(Scene& scene, UndoStack& undoStack, bool& dirt
     if (boldFont_) ImGui::PopFont();
     if (!open) return;
 
-    ImGui::TextWrapped("Mirror a part one or more times with a custom space between copies, then print "
-                        "them layer-by-layer in rotation so each has time to cool. The travels between "
-                        "parts are meant to be cut apart afterward, leaving separate finished parts.");
+    ImGui::TextWrapped("Mirrors the active part, spreads the copies out, and links them layer by layer "
+                        "into one program -- part A layer 1, part B layer 1, back to A layer 2, and so "
+                        "on -- so each part cools while the others print. The travels between parts are "
+                        "tagged for cutting apart afterward, leaving separate finished parts.");
 
     SceneObject* active = scene.activeObject();
-    ImGui::BeginDisabled(active == nullptr);
     ImGui::InputInt("Total copies (incl. original)", &multiPartCopies_);
     multiPartCopies_ = std::clamp(multiPartCopies_, 2, 8);
     ImGui::DragFloat("Space between copies (mm)", &multiPartSafeDistanceMm_, 5.0f, 0.0f, 5000.0f, "%.0f");
-    ImGui::TextDisabled("Gap left between neighboring copies.");
+    ImGui::DragFloat("Travel clearance (mm)", &multiPartTravelClearanceMm_, 1.0f, 0.0f, 1000.0f, "%.0f");
+    ImGui::TextDisabled("How far above the tallest part the cross-part travels fly.");
+    ImGui::DragFloat("Travel speed", &multiPartTravelSpeed_, 0.01f, 0.01f, 5.0f, "%.2f");
 
-    if (ImGui::Button("Mirror the object")) {
+    // ONE button for one intent. This used to be two ("Mirror the
+    // object", then "Build interleaved print"), which made the second
+    // step look optional and the first look broken when used alone --
+    // reported as "mirror doesn't work". Mirroring without the
+    // layer-by-layer linking isn't a thing anyone wanted here.
+    ImGui::Spacing();
+    ImGui::BeginDisabled(active == nullptr);
+    if (ImGui::Button("Mirror and link layer by layer")) {
         undoStack.snapshotBeforeChange(scene);
-        // Each copy mirrors the PREVIOUS one, so consecutive copies
-        // alternate orientation and each is placed relative to the one
-        // before it -- that keeps them evenly spread in a row without
-        // needing separate placement logic.
-        SceneObject* previous = active;
-        for (int i = 1; i < multiPartCopies_; ++i) {
-            int previousId = previous->id;
-            SceneObject copy = mirrorObject(*previous, multiPartSafeDistanceMm_);
-            SceneObject& added = scene.addObject(std::move(copy));
-            // Chain each new copy to the one it was mirrored from, so
-            // the link previews (and "Bake links to travels") are
-            // already set up for the whole row without the operator
-            // having to tick each Link->next box by hand.
-            scene.toggleLink(previousId, added.id);
-            previous = &added;
+        MirrorInterleaveOptions options;
+        options.copies = multiPartCopies_;
+        options.gapMm = multiPartSafeDistanceMm_;
+        options.travelClearanceMm = multiPartTravelClearanceMm_;
+        options.travelSpeed = multiPartTravelSpeed_;
+
+        if (auto merged = mirrorAndInterleave(scene, scene.activeObjectId, options)) {
+            // Hide the sources rather than deleting them -- the merged
+            // object is the thing to export, but destroying the
+            // originals would make this hard to recover from.
+            for (auto& object : scene.objects) object.visible = false;
+            scene.addObject(std::move(*merged));
+            scene.activeObjectId = scene.objects.back().id;
+            lastMirrorResult_ = "Built: " + scene.objects.back().name;
+        } else {
+            lastMirrorResult_ = "Failed -- the active object has no detected print layers.";
         }
         dirty = true;
     }
     ImGui::EndDisabled();
-
-    ImGui::Spacing();
-    ImGui::DragFloat("Travel clearance (mm)", &multiPartTravelClearanceMm_, 1.0f, 0.0f, 1000.0f, "%.0f");
-    ImGui::TextDisabled("Height above the tallest part that cross-part travels fly at.");
-    ImGui::DragFloat("Travel speed", &multiPartTravelSpeed_, 0.01f, 0.01f, 5.0f, "%.2f");
-
-    ImGui::BeginDisabled(scene.objects.size() < 2);
-    if (ImGui::Button("Build interleaved print")) {
-        undoStack.snapshotBeforeChange(scene);
-        std::vector<int> ids;
-        for (const auto& object : scene.objects) {
-            if (object.visible) ids.push_back(object.id);
-        }
-        InterleaveOptions options;
-        options.safeTravelZMm = highestWorldZ(scene, ids) + multiPartTravelClearanceMm_;
-        options.travelSpeed = multiPartTravelSpeed_;
-        if (auto merged = buildInterleavedObject(scene, ids, options)) {
-            // Hide the sources rather than deleting them -- the merged
-            // object is the thing to export, but throwing away the
-            // originals would make the operation destructive and
-            // non-obvious to recover from (undo aside).
-            for (auto& object : scene.objects) object.visible = false;
-            scene.addObject(std::move(*merged));
-            scene.activeObjectId = scene.objects.back().id;
-            dirty = true;
-        }
-    }
-    ImGui::EndDisabled();
-    ImGui::TextDisabled("Interleaves every VISIBLE object, in object-list order.");
+    if (active == nullptr) ImGui::TextDisabled("Load a file and select an object first.");
+    if (!lastMirrorResult_.empty()) ImGui::TextDisabled("%s", lastMirrorResult_.c_str());
 }
 
 void EditorUI::drawTransformPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty) {

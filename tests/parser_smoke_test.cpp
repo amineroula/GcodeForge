@@ -1168,6 +1168,62 @@ void testSafePointRoundTrip() {
     std::remove(path.c_str());
 }
 
+// Mirror + interleave as ONE operation, and the layer-action carry-through
+// that used to silently drop part-cooling commands.
+void testMirrorAndInterleave() {
+    Scene scene;
+    SceneObject part = parseSrc("Part", sampleSrcLinesForExport());
+    // Cooling ON at layer 1 -- exactly the setup that vanished before.
+    LayerAction cooling;
+    cooling.layer = 1;
+    cooling.label = "Part cooling ON";
+    cooling.krlText = "$OUT[5]=TRUE";
+    part.layerActions.push_back(cooling);
+    int sourceId = scene.addObject(std::move(part)).id;
+
+    MirrorInterleaveOptions options;
+    options.copies = 3;
+    options.gapMm = 200.0;
+    options.travelClearanceMm = 50.0;
+
+    size_t objectsBefore = scene.objects.size();
+    auto merged = mirrorAndInterleave(scene, sourceId, options);
+    check(merged.has_value(), "MirrorInterleave: one-step mirror+link succeeds");
+    if (!merged.has_value()) return;
+
+    check(scene.objects.size() == objectsBefore + 2,
+          "MirrorInterleave: 3 copies means 2 new mirrored objects added to the scene");
+    check(!scene.objectLinks.empty(), "MirrorInterleave: copies are chained with links");
+
+    // The whole point: layer actions must survive into the merged program.
+    check(!merged->layerActions.empty(),
+          "MirrorInterleave: layer actions carry through (cooling is NOT silently dropped)");
+    check(merged->layerActions.size() == 3,
+          "MirrorInterleave: each of the 3 parts keeps its own cooling action");
+    bool coolingTextIntact = true;
+    for (const auto& a : merged->layerActions) {
+        if (a.krlText != "$OUT[5]=TRUE") coolingTextIntact = false;
+    }
+    check(coolingTextIntact, "MirrorInterleave: carried actions keep their exact KRL text");
+
+    // Remapped, not left pointing at the original layer numbers.
+    bool layersValid = true;
+    for (const auto& a : merged->layerActions) {
+        if (a.layer < 1) layersValid = false;
+    }
+    check(layersValid, "MirrorInterleave: carried actions have valid remapped layer numbers");
+
+    // And the merged program must still export.
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(*merged, result);
+    check(result.success, "MirrorInterleave: merged program exports");
+    check(result.insertedLayerActions == 3, "MirrorInterleave: all 3 cooling actions reach the exported file");
+    std::string joined;
+    for (const auto& line : exported) joined += line + "\n";
+    check(joined.find("$OUT[5]=TRUE") != std::string::npos,
+          "MirrorInterleave: the real cooling command is present in the exported program");
+}
+
 // A program with no joint-space PTP at all must not sprout a phantom one.
 void testStartPointAbsent() {
     SceneObject object = parseSrc("NoStart", sampleSrcLinesForExport());
@@ -1206,6 +1262,7 @@ int main() {
     testStartPointAbsent();
     testTravelSelectionAndSpeed();
     testSafePointRoundTrip();
+    testMirrorAndInterleave();
     testConnectedDragWhole();
     testConnectedDragStart();
     testConnectedDragGap();
