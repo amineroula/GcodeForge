@@ -1529,3 +1529,66 @@ Also fixed while in there:
 **Verified:** 221 tests (10 new, including cooling surviving the merge
 end-to-end into the exported file); Debug and Release clean; the real
 file still round-trips `byteIdentical=yes`.
+
+## Print order was invisible; project files (milestone 12)
+
+**"The mirroring is wrong, it should go layer by layer not finish one
+object then do the other."** Verified against the real file by dumping
+the actual emission order:
+
+    interleave order: first 12 segments = ABABABABABAB
+                      (longest same-part run: A=1 B=1)
+    interleave order: ALTERNATING correctly
+
+So the program was already correct -- it never prints two segments of the
+same part consecutively. The problem was that **print order is invisible
+in a static render**: an interleaved multi-part program and a sequential
+one produce identical finished geometry. Both parts end up fully built
+either way, so there was no way to tell them apart by looking, and the
+reasonable conclusion was that it hadn't worked.
+
+Fixed by adding **`ColorMode::Sequence`** -- colours each path by where it
+falls in the program, blue (first) through red (last), on a continuous
+5-stop ramp rather than the 18-colour palette (which wraps every 18
+entries and would destroy the ordering signal on a 24k-path file). Under
+this mode the difference is unmistakable: interleaved parts each show the
+FULL blue-to-red gradient, sequential parts show one cool block and one
+warm block. The feature was right; the ability to trust it was missing.
+
+Lesson worth keeping: when a correct feature is reported as broken, the
+bug may be in the *observability*, not the logic. Adding the check to the
+diagnostic first -- rather than "fixing" working code -- is what kept
+this from becoming a regression.
+
+**Project files, `io/ProjectIO` (closes milestone 12).** A `.src` is a
+robot program: it holds what the robot needs and nothing else. Everything
+the EDITOR knows has nowhere to live in one -- selections, selection
+group names/colours, per-object colours and visibility, transforms, the
+bed and its measured heightmap, the measured safe point, pending object
+links, display filters, colour mode, lighting. All of it died with the
+app, and re-importing the SRC couldn't recover it because the
+information was never in the file to begin with.
+
+Format is plain text, one record per line, `OBJECT`/`ENDOBJECT`
+delimited -- deliberately not JSON: no dependency, diffable in git, and
+hand-repairable if a session file is ever half-written. Source lines are
+stored verbatim, because `SrcExporter` patches *those* and its whole
+preservation guarantee (E1-E6, `C_VEL`, interrupt logic, comments) rests
+on them being byte-exact. `loadProject()` builds into locals and only
+commits on success, so a corrupt file can't half-destroy an open
+session; loading also resets the undo stack, since that history refers
+to the previous scene and undo would otherwise restore a foreign one.
+
+**A bug my own earlier fix caused.** `BedHeightmap`'s default
+initializer pre-sizes `elevationsMm` to `cols*rows` zeros -- that was the
+fix for an out-of-bounds crash. In the project loader it worked against
+me: `heightmapValue` records are `push_back`'d, so they appended to the
+50 pre-existing zeros, the count no longer matched `cols*rows`, and the
+consistency check replaced everything with zeros -- silently discarding
+every measurement in the file. Caught by the round-trip test asserting a
+specific value (3.25 at a specific cell) rather than just checking the
+grid dimensions. Fixed by clearing before reading.
+
+**Verified:** 252 tests (11 new, each asserting a specific thing a `.src`
+cannot hold); Debug and Release clean; the real file still round-trips
+`byteIdentical=yes` and still interleaves ABABAB.

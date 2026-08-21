@@ -53,6 +53,18 @@ void SpeedColorTable::rebuild(const std::vector<SceneObject>& objects) {
     }
     std::sort(unique.begin(), unique.end());
     sortedSpeeds_ = std::move(unique);
+
+    maxPathNumberByObject_.clear();
+    for (const auto& object : objects) {
+        int highest = 0;
+        for (const auto& path : object.paths) highest = std::max(highest, path.number);
+        maxPathNumberByObject_[object.id] = std::max(highest, 1);
+    }
+}
+
+int SpeedColorTable::maxPathNumber(int objectId) const {
+    auto it = maxPathNumberByObject_.find(objectId);
+    return it == maxPathNumberByObject_.end() ? 1 : it->second;
 }
 
 glm::vec3 SpeedColorTable::colorFor(double speed) const {
@@ -81,6 +93,26 @@ glm::vec3 pathColor(const SceneObject& object, const Path& path, ColorMode mode,
         }
         case ColorMode::Speed:
             return speedColors.colorFor(path.effectiveSpeed());
+        case ColorMode::Sequence: {
+            // Blue -> cyan -> green -> yellow -> red across the program.
+            // A continuous ramp, NOT the 18-color palette: the palette
+            // wraps every 18 entries, which on a 24k-path file would
+            // repeat constantly and destroy the ordering signal that is
+            // this mode's entire purpose.
+            float t = static_cast<float>(path.number - 1) /
+                       static_cast<float>(std::max(speedColors.maxPathNumber(object.id) - 1, 1));
+            t = std::clamp(t, 0.0f, 1.0f);
+            const glm::vec3 stops[5] = {
+                glm::vec3(0.15f, 0.30f, 0.95f), // first
+                glm::vec3(0.10f, 0.80f, 0.85f),
+                glm::vec3(0.20f, 0.85f, 0.30f),
+                glm::vec3(0.95f, 0.85f, 0.15f),
+                glm::vec3(0.95f, 0.20f, 0.15f), // last
+            };
+            float scaled = t * 4.0f;
+            int lo = std::clamp(static_cast<int>(scaled), 0, 3);
+            return glm::mix(stops[lo], stops[lo + 1], scaled - lo);
+        }
     }
     return kSpeedFallback;
 }

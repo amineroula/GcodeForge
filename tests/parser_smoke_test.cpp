@@ -10,6 +10,7 @@
 #include "editor/UndoStack.h"
 #include "editor/Picking.h"
 #include "io/BedIO.h"
+#include "io/ProjectIO.h"
 #include "editor/Gizmo.h"
 #include "editor/SrcExporter.h"
 #include "editor/BedConform.h"
@@ -1224,6 +1225,121 @@ void testMirrorAndInterleave() {
           "MirrorInterleave: the real cooling command is present in the exported program");
 }
 
+// The whole point of a project file: everything an .src CANNOT hold must
+// survive a save/load cycle. Each assertion below is something that is
+// simply absent from a robot program and would be lost forever otherwise.
+void testProjectRoundTrip() {
+    ProjectData original;
+
+    SceneObject part = parseSrc("Part", sampleSrcLinesForExport());
+    part.transform.x = 123.5;
+    part.transform.rotZDegrees = 30.0;
+    part.transform.flipX = true;
+    part.color = glm::vec3(0.25f, 0.5f, 0.75f);
+    part.visible = false;
+    part.selectedPaths.insert(2);
+    part.selectedPaths.insert(4);
+    part.paths[3].speedOverride = 0.0125;
+
+    SelectionGroup group;
+    group.id = "grp-1";
+    group.name = "Perimeters";
+    group.color = glm::vec3(0.9f, 0.1f, 0.4f);
+    group.pathNumbers = {1, 2, 3};
+    part.selectionGroups.push_back(group);
+
+    LayerAction action;
+    action.layer = 1;
+    action.label = "Part cooling ON";
+    action.krlText = "$OUT[5]=TRUE";
+    part.layerActions.push_back(action);
+
+    int idA = original.scene.addObject(std::move(part)).id;
+    SceneObject second = parseSrc("Second", sampleSrcLinesForExport());
+    int idB = original.scene.addObject(std::move(second)).id;
+    original.scene.toggleLink(idA, idB);
+    original.scene.activeObjectId = idB;
+
+    original.bed.widthMm = 1500.0f;
+    original.bed.safePointMeasured = true;
+    original.bed.safePointXMm = 970.7f;
+    original.bed.safePointYMm = 1760.8f;
+    original.bed.safePointZMm = 1005.0f;
+    original.heightmap.resize(4, 3);
+    original.heightmap.at(1, 1) = 3.25f;
+    original.colorMode = ColorMode::Sequence;
+    original.render.mode = RenderMode::Geometry;
+    original.render.showTravels = false;
+    original.lighting.lights.clear();
+    original.lighting.lights.push_back(Light{glm::vec3(1, 0, 0), glm::vec3(0.5f, 0.6f, 0.7f), false});
+    original.lighting.lights.push_back(Light{glm::vec3(0, 1, 0), glm::vec3(1, 1, 1), true});
+
+    const std::string path = "project_test_tmp.gfproj";
+    check(saveProject(path, original), "Project: save succeeds");
+
+    ProjectData loaded;
+    check(loadProject(path, loaded), "Project: load succeeds");
+
+    check(loaded.scene.objects.size() == 2, "Project: object count round-trips");
+    if (loaded.scene.objects.size() != 2) { std::remove(path.c_str()); return; }
+
+    const SceneObject& a = loaded.scene.objects[0];
+    check(a.name == "Part", "Project: object name round-trips");
+    check(!a.visible, "Project: per-object visibility round-trips");
+    checkNear(a.transform.x, 123.5, "Project: transform translation round-trips");
+    checkNear(a.transform.rotZDegrees, 30.0, "Project: transform rotation round-trips");
+    check(a.transform.flipX, "Project: transform flip round-trips");
+    check(a.paths.size() == 7, "Project: path count round-trips");
+    check(a.sourceLines.size() == sampleSrcLinesForExport().size(),
+          "Project: source lines round-trip (export fidelity depends on these)");
+
+    check(a.selectedPaths.count(2) && a.selectedPaths.count(4),
+          "Project: SELECTION round-trips (a .src has nowhere to store this)");
+    check(a.selectionGroups.size() == 1, "Project: selection groups round-trip");
+    if (!a.selectionGroups.empty()) {
+        check(a.selectionGroups[0].name == "Perimeters", "Project: group name round-trips");
+        check(a.selectionGroups[0].pathNumbers.size() == 3, "Project: group membership round-trips");
+    }
+    check(a.layerActions.size() == 1, "Project: layer actions round-trip");
+    if (!a.layerActions.empty()) {
+        check(a.layerActions[0].krlText == "$OUT[5]=TRUE", "Project: layer action KRL text round-trips exactly");
+    }
+
+    bool overrideKept = false;
+    for (const auto& p : a.paths) {
+        if (p.speedOverride.has_value() && std::abs(*p.speedOverride - 0.0125) < 1e-9) overrideKept = true;
+    }
+    check(overrideKept, "Project: per-path speed override round-trips");
+
+    check(!loaded.scene.objectLinks.empty(), "Project: object links round-trip");
+    check(loaded.scene.activeObjectId == idB, "Project: active object round-trips");
+
+    checkNear(loaded.bed.widthMm, 1500.0, "Project: bed size round-trips");
+    check(loaded.bed.safePointMeasured, "Project: measured safe point flag round-trips");
+    checkNear(loaded.bed.safePointZMm, original.bed.safePointZMm, "Project: safe point Z round-trips");
+    check(loaded.heightmap.cols == 4 && loaded.heightmap.rows == 3, "Project: heightmap size round-trips");
+    checkNear(loaded.heightmap.at(1, 1), 3.25, "Project: heightmap values round-trip");
+
+    check(loaded.colorMode == ColorMode::Sequence, "Project: color mode round-trips");
+    check(loaded.render.mode == RenderMode::Geometry, "Project: render mode round-trips");
+    check(!loaded.render.showTravels, "Project: display filters round-trip");
+
+    check(loaded.lighting.lights.size() == 2,
+          "Project: lights round-trip WITHOUT the default one stacking on top");
+    if (loaded.lighting.lights.size() == 2) {
+        check(!loaded.lighting.lights[0].enabled, "Project: per-light enabled flag round-trips");
+    }
+
+    std::remove(path.c_str());
+
+    // A garbage file must be refused outright, leaving the caller's
+    // session untouched rather than half-replaced.
+    ProjectData untouched;
+    untouched.scene.activeObjectId = 42;
+    check(!loadProject("this_project_does_not_exist.gfproj", untouched), "Project: missing file returns false");
+    check(untouched.scene.activeObjectId == 42, "Project: a failed load leaves the existing session untouched");
+}
+
 // A program with no joint-space PTP at all must not sprout a phantom one.
 void testStartPointAbsent() {
     SceneObject object = parseSrc("NoStart", sampleSrcLinesForExport());
@@ -1263,6 +1379,7 @@ int main() {
     testTravelSelectionAndSpeed();
     testSafePointRoundTrip();
     testMirrorAndInterleave();
+    testProjectRoundTrip();
     testConnectedDragWhole();
     testConnectedDragStart();
     testConnectedDragGap();

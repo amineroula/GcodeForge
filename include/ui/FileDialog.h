@@ -13,5 +13,10 @@ std::optional<std::string> showOpenSrcDialog(GLFWwindow* window);
 std::optional<std::string> showSaveBedDialog(GLFWwindow* window);
 std::optional<std::string> showOpenBedDialog(GLFWwindow* window);
 
+// Whole-session project files (see io/ProjectIO.h) -- everything the
+// editor knows that a .src has nowhere to store.
+std::optional<std::string> showSaveProjectDialog(GLFWwindow* window);
+std::optional<std::string> showOpenProjectDialog(GLFWwindow* window);
+
 // suggestedName pre-fills the save dialog (e.g. the active object's name + ".src").
 std::optional<std::string> showSaveSrcDialog(GLFWwindow* window, const std::string& suggestedName);

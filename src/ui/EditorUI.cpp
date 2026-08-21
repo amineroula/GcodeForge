@@ -31,6 +31,7 @@ const char* colorModeLabel(ColorMode mode) {
         case ColorMode::Layer: return "Layer";
         case ColorMode::Group: return "Selection group";
         case ColorMode::Speed: return "Speed";
+        case ColorMode::Sequence: return "Print order (blue=first, red=last)";
     }
     return "?";
 }
@@ -105,6 +106,14 @@ void EditorUI::drawMenuBar(Scene& scene, UndoStack& undoStack, bool& sceneDirty)
             if (ImGui::MenuItem("Save SRC As...", nullptr, false, hasActive)) {
                 saveSrcRequested_ = true;
             }
+            ImGui::Separator();
+            // A .src is a robot program and can only hold what the robot
+            // needs. Selections, groups, bed + heightmap, the measured
+            // safe point, object links, per-object colours -- none of
+            // that has anywhere to live in a .src, so it dies with the
+            // app unless it goes in a project file.
+            if (ImGui::MenuItem("Open Project...")) loadProjectRequested_ = true;
+            if (ImGui::MenuItem("Save Project As...")) saveProjectRequested_ = true;
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Edit")) {
@@ -1110,7 +1119,8 @@ void EditorUI::drawBedConformPanel(Scene& scene, SceneObject& object, const BedH
 
 void EditorUI::drawColorModePanel(ColorMode& colorMode, bool& dirty) {
     sectionLabel("Color mode");
-    const ColorMode modes[] = {ColorMode::Object, ColorMode::Type, ColorMode::Layer, ColorMode::Group, ColorMode::Speed};
+    const ColorMode modes[] = {ColorMode::Object, ColorMode::Type, ColorMode::Layer,
+                                ColorMode::Group, ColorMode::Speed, ColorMode::Sequence};
     for (ColorMode mode : modes) {
         bool selected = (colorMode == mode);
         if (ImGui::RadioButton(colorModeLabel(mode), selected)) {

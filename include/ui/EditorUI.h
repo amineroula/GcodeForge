@@ -51,6 +51,11 @@ public:
     bool loadBedRequested() const { return loadBedRequested_; }
     void clearLoadBedRequest() { loadBedRequested_ = false; }
 
+    bool saveProjectRequested() const { return saveProjectRequested_; }
+    void clearSaveProjectRequest() { saveProjectRequested_ = false; }
+    bool loadProjectRequested() const { return loadProjectRequested_; }
+    void clearLoadProjectRequest() { loadProjectRequested_ = false; }
+
     // Set once, right after construction, if main.cpp successfully loaded
     // a bold font (see main.cpp's font setup). Section labels use it when
     // set; when null, they just render in the regular font -- the app
@@ -97,6 +102,8 @@ private:
     bool saveBedRequested_ = false;
     bool loadBedRequested_ = false;
     bool saveSrcRequested_ = false;
+    bool saveProjectRequested_ = false;
+    bool loadProjectRequested_ = false;
 
     double speedExact_ = 0.040;
     double speedPercent_ = 10.0;

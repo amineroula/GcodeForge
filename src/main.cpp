@@ -40,6 +40,7 @@
 #include "editor/SrcExporter.h"
 #include "editor/UndoStack.h"
 #include "io/BedIO.h"
+#include "io/ProjectIO.h"
 #include "io/FileIO.h"
 #include "model/BedHeightmap.h"
 #include "model/Scene.h"
@@ -411,6 +412,31 @@ int main() {
                             merged->layers.size(), merged->sourceLines.size());
                 std::printf("  interleave check: layerActions carried = %zu (source had %zu)\n",
                             merged->layerActions.size(), mirrorCheck.findObject(idA)->layerActions.size());
+
+                // The claim to actually verify: does the PRINT ORDER
+                // alternate between parts layer by layer, or does it
+                // finish one part then start the other? Walk the merged
+                // paths in emission order and report which part each
+                // printed segment belongs to (the two parts occupy
+                // disjoint X ranges, so the X centre identifies them).
+                double midX = (aMaxX + bMinX) * 0.5;
+                std::string order;
+                int shown = 0, lastLayer = -1;
+                int runA = 0, runB = 0, maxRunA = 0, maxRunB = 0;
+                for (const auto& p : merged->paths) {
+                    if (p.type != PathType::Print || p.layer == lastLayer) continue;
+                    lastLayer = p.layer;
+                    bool isA = ((p.from.x + p.to.x) * 0.5) < midX;
+                    if (isA) { ++runA; runB = 0; maxRunA = std::max(maxRunA, runA); }
+                    else     { ++runB; runA = 0; maxRunB = std::max(maxRunB, runB); }
+                    if (shown++ < 12) order += (isA ? 'A' : 'B');
+                }
+                std::printf("  interleave order: first 12 segments = %s  (longest same-part run: A=%d B=%d)\n",
+                            order.c_str(), maxRunA, maxRunB);
+                std::printf("  interleave order: %s\n",
+                            (maxRunA <= 1 && maxRunB <= 1)
+                                ? "ALTERNATING correctly (never two segments of the same part in a row)"
+                                : "NOT alternating -- one part runs consecutively!");
             } else {
                 std::printf("  interleave check: FAILED to build a merged object\n");
             }
@@ -537,6 +563,46 @@ int main() {
                     bedDirty = true;
                 } else {
                     std::fprintf(stderr, "Could not load bed settings from: %s\n", path->c_str());
+                }
+            }
+        }
+        if (editorUi.saveProjectRequested()) {
+            editorUi.clearSaveProjectRequest();
+            if (auto path = showSaveProjectDialog(window)) {
+                ProjectData project;
+                project.scene = scene;
+                project.bed = bedSettings;
+                project.heightmap = bedHeightmap;
+                project.lighting = lightingSettings;
+                project.render = renderSettings;
+                project.colorMode = colorMode;
+                if (saveProject(*path, project)) {
+                    std::printf("Saved project: %s (%zu object(s))\n", path->c_str(), scene.objects.size());
+                } else {
+                    std::fprintf(stderr, "Could not save project to: %s\n", path->c_str());
+                }
+            }
+        }
+        if (editorUi.loadProjectRequested()) {
+            editorUi.clearLoadProjectRequest();
+            if (auto path = showOpenProjectDialog(window)) {
+                ProjectData project;
+                if (loadProject(*path, project)) {
+                    // loadProject only commits on success, so a bad file
+                    // leaves the current session untouched rather than
+                    // half-replacing it.
+                    scene = std::move(project.scene);
+                    bedSettings = project.bed;
+                    bedHeightmap = project.heightmap;
+                    lightingSettings = project.lighting;
+                    renderSettings = project.render;
+                    colorMode = project.colorMode;
+                    undoStack = UndoStack{}; // history refers to the OLD scene; keeping it would let undo restore a foreign session
+                    sceneDirty = true;
+                    bedDirty = true;
+                    std::printf("Loaded project: %s (%zu object(s))\n", path->c_str(), scene.objects.size());
+                } else {
+                    std::fprintf(stderr, "Could not load project from: %s\n", path->c_str());
                 }
             }
         }

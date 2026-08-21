@@ -128,7 +128,7 @@ Editor is architecturally a compiler, and the module boundaries should match:
     of segments) are loaded — GL_LINES alone (milestone 6) will not scale to
     that without this. Selected/active geometry stays full detail regardless
     of distance.
-12. **Project save/load format** — serialize objects, transforms, speed
+12. **Project save/load format** -- done (`io/ProjectIO`, `.gfproj`). — serialize objects, transforms, speed
     overrides, links, baked travels, and selection state to a project file
     (JSON is the natural choice) distinct from the SRC export, so editing
     sessions aren't lost and don't require re-deriving state from a plain SRC
