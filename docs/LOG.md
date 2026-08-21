@@ -1411,3 +1411,25 @@ panels are hidden -- the hover readout is most useful precisely then.
 **Verified:** 202 tests (10 new covering travel selection, travel speed
 application, and travel splitting); Debug and Release clean; the real
 24,268-line file still round-trips `byteIdentical=yes`.
+
+## Two UI bugs from real use: invisible mirror panel, phantom heightmap grid
+
+**"The mirror option has no panel in the UI."** It was being drawn --
+`drawMultiPartPanel()` was called every frame -- but as a
+`CollapsingHeader` WITHOUT `DefaultOpen`, sandwiched between sections
+(Transform, Layers) that do default open. A collapsed bar that looks
+unlike every neighbour is effectively invisible. Added `DefaultOpen` and
+a separator. Worth noting as a category: "it renders" and "it can be
+found" are different claims, and only the second one matters.
+
+**"5x5 heightmap but I see 12 lines in the grid."** The values were
+right and the mesh was right -- what was wrong was that the heightmap had
+no lines OF ITS OWN. A flat surface with every elevation still 0 sits
+exactly coplanar with the bed reference grid, so the bed's 100mm lines
+(1000mm bed / 100mm spacing = 11 lines) showed through and read as the
+heightmap's own divisions. Fixed by drawing the heightmap's actual cell
+boundaries: full row and column lines only, deliberately NOT via
+`glPolygonMode(GL_LINE)` on the mesh, which would also draw every
+triangulation diagonal and make a 5x5 grid look like a grid of triangles.
+Lifted 0.5mm in Z so it can't z-fight with the bed grid in the
+all-zeros case that caused the confusion in the first place.

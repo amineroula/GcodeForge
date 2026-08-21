@@ -545,8 +545,14 @@ void EditorUI::drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dir
 }
 
 void EditorUI::drawMultiPartPanel(Scene& scene, UndoStack& undoStack, bool& dirty) {
+    // DefaultOpen: without it this rendered as a bare collapsed bar
+    // sandwiched between sections that ARE open (Transform, Layers), so
+    // it read as nothing at all -- reported as "the option has no panel
+    // in the UI". A collapsed header that looks unlike its neighbours is
+    // effectively invisible.
+    ImGui::Separator();
     if (boldFont_) ImGui::PushFont(boldFont_);
-    bool open = ImGui::CollapsingHeader("Mirror the object");
+    bool open = ImGui::CollapsingHeader("Mirror the object", ImGuiTreeNodeFlags_DefaultOpen);
     if (boldFont_) ImGui::PopFont();
     if (!open) return;
 

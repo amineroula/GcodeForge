@@ -43,6 +43,18 @@ BedHeightmapRenderer::BedHeightmapRenderer() {
     glEnableVertexAttribArray(3);
     glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), reinterpret_cast<void*>(offsetof(MeshVertex, selected)));
     glBindVertexArray(0);
+
+    edgeShaderProgram_ = createLineShaderProgram();
+    edgeMvpLoc_ = glGetUniformLocation(edgeShaderProgram_, "uMvp");
+    glGenVertexArrays(1, &edgeVao_);
+    glGenBuffers(1, &edgeVbo_);
+    glBindVertexArray(edgeVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, edgeVbo_);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(LineVertex), reinterpret_cast<void*>(offsetof(LineVertex, position)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(LineVertex), reinterpret_cast<void*>(offsetof(LineVertex, color)));
+    glBindVertexArray(0);
 }
 
 BedHeightmapRenderer::~BedHeightmapRenderer() {
@@ -50,6 +62,10 @@ BedHeightmapRenderer::~BedHeightmapRenderer() {
     glDeleteBuffers(1, &ebo_);
     glDeleteVertexArrays(1, &vao_);
     glDeleteProgram(shaderProgram_);
+
+    glDeleteBuffers(1, &edgeVbo_);
+    glDeleteVertexArrays(1, &edgeVao_);
+    glDeleteProgram(edgeShaderProgram_);
 }
 
 void BedHeightmapRenderer::rebuild(const BedSettings& bed, const BedHeightmap& heightmap) {
@@ -113,6 +129,46 @@ void BedHeightmapRenderer::rebuild(const BedSettings& bed, const BedHeightmap& h
         glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(indices.size() * sizeof(uint32_t)), indices.data());
     }
     glBindVertexArray(0);
+
+    // Cell boundaries: full row lines and column lines only (NOT the
+    // triangulation diagonals -- drawing the mesh in GL_LINE polygon mode
+    // would show those too and make a 5x5 grid look like a 5x5 grid of
+    // triangles). Lifted slightly in Z so it can't z-fight with the bed
+    // reference grid when every elevation is still 0 and the two planes
+    // are exactly coincident.
+    std::vector<LineVertex> edges;
+    constexpr float kEdgeLiftMm = 0.5f;
+    const glm::vec3 kEdgeColor(0.10f, 0.12f, 0.16f);
+    if (!vertices.empty()) {
+        auto vertexAt = [&](int col, int row) {
+            glm::vec3 p = vertices[static_cast<size_t>(row) * heightmap.cols + col].position;
+            p.z += kEdgeLiftMm;
+            return p;
+        };
+        for (int row = 0; row < heightmap.rows; ++row) {
+            for (int col = 0; col + 1 < heightmap.cols; ++col) {
+                edges.push_back({vertexAt(col, row), kEdgeColor});
+                edges.push_back({vertexAt(col + 1, row), kEdgeColor});
+            }
+        }
+        for (int col = 0; col < heightmap.cols; ++col) {
+            for (int row = 0; row + 1 < heightmap.rows; ++row) {
+                edges.push_back({vertexAt(col, row), kEdgeColor});
+                edges.push_back({vertexAt(col, row + 1), kEdgeColor});
+            }
+        }
+    }
+
+    edgeVertexCount_ = static_cast<GLsizei>(edges.size());
+    glBindVertexArray(edgeVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, edgeVbo_);
+    if (edgeVertexCount_ > edgeVboCapacityVertices_) {
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(edges.size() * sizeof(LineVertex)), edges.data(), GL_DYNAMIC_DRAW);
+        edgeVboCapacityVertices_ = edgeVertexCount_;
+    } else if (edgeVertexCount_ > 0) {
+        glBufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(edges.size() * sizeof(LineVertex)), edges.data());
+    }
+    glBindVertexArray(0);
 }
 
 void BedHeightmapRenderer::draw(const glm::mat4& viewProj, const LightingSettings& lighting) const {
@@ -139,4 +195,17 @@ void BedHeightmapRenderer::draw(const glm::mat4& viewProj, const LightingSetting
     glBindVertexArray(vao_);
     glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
     glBindVertexArray(0);
+
+    // Cell boundaries on top, so the heightmap's ACTUAL resolution is
+    // visible rather than being confused with the bed reference grid
+    // showing through a flat, featureless surface.
+    if (edgeVertexCount_ > 0) {
+        glUseProgram(edgeShaderProgram_);
+        glUniformMatrix4fv(edgeMvpLoc_, 1, GL_FALSE, glm::value_ptr(viewProj));
+        glLineWidth(1.5f);
+        glBindVertexArray(edgeVao_);
+        glDrawArrays(GL_LINES, 0, edgeVertexCount_);
+        glBindVertexArray(0);
+        glLineWidth(1.0f);
+    }
 }

@@ -3,6 +3,7 @@
 #include "model/BedHeightmap.h"
 #include "render/BedSettings.h"
 #include "render/LightingSettings.h"
+#include "render/LineShader.h"
 #include "render/MeshShader.h"
 
 #include <GL/glew.h>
@@ -43,4 +44,19 @@ private:
     GLsizei indexCount_ = 0;
     GLsizei vboCapacityVertices_ = 0;
     GLsizei eboCapacityIndices_ = 0;
+
+    // The heightmap's OWN cell boundaries, as lines. Without these the
+    // surface is a flat unbroken sheet, and when every elevation is still
+    // 0 it sits exactly coplanar with the bed reference grid -- so the
+    // bed's 100mm lines read as though they were the heightmap's own
+    // divisions. That's a real reported confusion: a 5x5 heightmap on a
+    // 1000mm bed appeared to have 11 divisions, because those 11 lines
+    // were the bed grid showing through. Drawing the actual cell edges
+    // makes the real resolution unambiguous.
+    GLuint edgeVao_ = 0;
+    GLuint edgeVbo_ = 0;
+    GLuint edgeShaderProgram_ = 0;
+    GLint edgeMvpLoc_ = -1;
+    GLsizei edgeVertexCount_ = 0;
+    GLsizei edgeVboCapacityVertices_ = 0;
 };
