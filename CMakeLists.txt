@@ -77,7 +77,14 @@ if(WIN32)
 endif()
 
 enable_testing()
-add_executable(parser_smoke_test tests/parser_smoke_test.cpp)
+# PathColorizer.cpp is pulled in directly rather than linked from
+# gcode_editor: it's GL-independent (glm only) but lives under render/
+# with the rest of the GL-dependent rendering code, so it's part of
+# GCODE_APP_SOURCES, not gcode_core. Compiling it into the test binary
+# lets SpeedColorTable's color math be unit-tested without dragging in
+# GLFW/GLEW/ImGui.
+add_executable(parser_smoke_test tests/parser_smoke_test.cpp src/render/PathColorizer.cpp)
+target_include_directories(parser_smoke_test PRIVATE include)
 target_link_libraries(parser_smoke_test PRIVATE gcode_core)
 add_test(NAME parser_smoke_test COMMAND parser_smoke_test)
 

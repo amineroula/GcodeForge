@@ -68,11 +68,29 @@ int SpeedColorTable::maxPathNumber(int objectId) const {
 }
 
 glm::vec3 SpeedColorTable::colorFor(double speed) const {
-    auto it = std::find(sortedSpeeds_.begin(), sortedSpeeds_.end(), speed);
-    if (it == sortedSpeeds_.end()) return kSpeedFallback;
-    size_t index = static_cast<size_t>(std::distance(sortedSpeeds_.begin(), it));
-    const auto& palette = colorPalette();
-    return palette[index % palette.size()];
+    // Fixed pivot at 0.6 (m/s) rather than the data's own midpoint: the
+    // request was specifically "0.6 should be green", a meaningful
+    // reference speed for THIS process, not whatever happens to be
+    // exactly between the slowest and fastest move in one file. A file
+    // that never goes below 0.6 will read as all-green-to-blue, which is
+    // correct -- it genuinely never ran slow.
+    constexpr double kPivot = 0.6;
+    const glm::vec3 kRed(0.95f, 0.20f, 0.15f);
+    const glm::vec3 kGreen(0.20f, 0.85f, 0.30f);
+    const glm::vec3 kBlue(0.15f, 0.35f, 0.95f);
+
+    if (sortedSpeeds_.empty()) return kSpeedFallback;
+
+    if (speed <= kPivot) {
+        double lo = sortedSpeeds_.front();
+        if (lo >= kPivot) return kGreen; // nothing in the file is actually below the pivot
+        float t = static_cast<float>(std::clamp((speed - lo) / (kPivot - lo), 0.0, 1.0));
+        return glm::mix(kRed, kGreen, t);
+    }
+    double hi = sortedSpeeds_.back();
+    if (hi <= kPivot) return kGreen; // nothing in the file is actually above the pivot
+    float t = static_cast<float>(std::clamp((speed - kPivot) / (hi - kPivot), 0.0, 1.0));
+    return glm::mix(kGreen, kBlue, t);
 }
 
 glm::vec3 pathColor(const SceneObject& object, const Path& path, ColorMode mode,

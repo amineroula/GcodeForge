@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 
 // Replaces ONLY the numeric value after an axis letter on a KRL motion
@@ -14,3 +15,10 @@
 // SrcExporter.cpp; pulled out once a second caller needed the exact same
 // logic, rather than risking the two copies drifting apart.
 std::string replaceKrlAxisValue(const std::string& line, char axisLetter, double newValue);
+
+// Reads the current numeric value of an axis on a KRL motion line, or
+// std::nullopt if that axis isn't present. This is what lets the exporter
+// ask the question that actually matters -- "does the file's value differ
+// from what we want to write?" -- rather than inferring change from the
+// model, which cannot see edits applied directly to a path's coordinates.
+std::optional<double> readKrlAxisValue(const std::string& line, char axisLetter);

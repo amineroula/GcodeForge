@@ -462,6 +462,22 @@ int main() {
                             (layerStep <= 0.0 || maxTravelDz <= layerStep + 1e-6)
                                 ? "(no clearance hop -- only the layer step itself)"
                                 : "(CLEARANCE HOP PRESENT!)");
+
+                // The reported bug: exported speed is 0.
+                ExportResult mergedExport;
+                std::vector<std::string> mergedLines = buildExportedLines(*merged, mergedExport);
+                int velCpCount = 0, zeroVelCpCount = 0;
+                for (const auto& l : mergedLines) {
+                    auto pos = l.find("$VEL.CP");
+                    if (pos == std::string::npos) continue;
+                    auto eq = l.find('=', pos);
+                    if (eq == std::string::npos) continue;
+                    ++velCpCount;
+                    if (std::abs(std::stod(l.substr(eq + 1))) < 1e-9) ++zeroVelCpCount;
+                }
+                std::printf("  interleave speed: %d $VEL.CP command(s) in exported program, %d of them zero %s\n",
+                            velCpCount, zeroVelCpCount,
+                            (velCpCount > 0 && zeroVelCpCount == 0) ? "(GOOD)" : "(BUG!)");
             } else {
                 std::printf("  interleave check: FAILED to build a merged object\n");
             }

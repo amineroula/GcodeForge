@@ -33,6 +33,11 @@ const std::vector<glm::vec3>& colorPalette();
 // Assigns each distinct effective speed value present in the scene a
 // palette color, sorted ascending -- mirrors rebuildSpeedColors(). Call
 // after any speed edit, before rendering in Speed mode.
+// Continuous gradient, NOT a discrete palette lookup: red (slow) ->
+// green (right at the 0.6 pivot) -> blue (fast). Chosen to match the bed
+// heightmap's gradient convention (also a continuous ramp through a
+// meaningful midpoint) rather than an arbitrary N-color palette, so
+// "which speed is which color" reads the same way across both panels.
 class SpeedColorTable {
 public:
     void rebuild(const std::vector<SceneObject>& objects);

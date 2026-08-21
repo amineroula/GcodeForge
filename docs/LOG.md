@@ -1644,3 +1644,75 @@ safe-height one); Debug and Release clean; on the real file:
 `largest travel Z change = 2.000mm (one layer = 2.000mm) (no clearance
 hop -- only the layer step itself)`, still `ABABABABABAB`, still
 `byteIdentical=yes`.
+
+## Export writes the moved position now; interleaved speed was silently 0
+
+Two real bugs from real use, both in the exporter's core logic.
+
+**"After I moved paths, the exporter kept the old positions."** Root
+cause was a genuinely wrong comparison in the coordinate-patch loop:
+
+    glm::dvec3 exportPos = applyTransform(object.transform, path.to);
+    glm::dvec3 originalPos = path.to;
+    bool changed = glm::length(exportPos - originalPos) > 1e-6;
+
+That asks "does the object's TRANSFORM move this point?", not "did this
+point CHANGE versus the file?". With an identity transform -- true for
+any freshly-loaded file, and true for the merged interleaved object --
+`exportPos` and `path.to` are equal by definition regardless of what the
+operator did to `path.to` directly (gizmo drag, connected drag, bed
+conform, a moved-and-nudged selection after mirroring). Every edit
+applied straight to a path's coordinates, with no accompanying transform
+change, silently failed to export. It only ever worked in testing because
+every existing test happened to set a transform first.
+
+Fixed by comparing against what the SOURCE LINE currently says instead of
+against the model: `editor/KrlLineEdit` gained `readKrlAxisValue()`, and
+the patch loop now asks "does the file's own X/Y/Z differ from what we
+want to write?" -- which is the only question that's actually meaningful,
+since the model has no memory of the file's original value once a
+coordinate has been edited in place. Confirmed with a test that moves a
+path directly under an identity transform and re-parses the export to
+check the MOVED value survived, not the original. Cost: export on the
+24k-path file went from ~3ms to ~195ms (three regex reads per path
+instead of trusting the model) -- worth it for correctness on a save
+that's triggered by hand, not in a hot loop.
+
+**"After export, the speed is 0."** Confirmed on the real file: the
+merged interleaved program contained ZERO `$VEL.CP` commands anywhere.
+Root cause: `buildInterleavedObject()` gives every path a genuinely real
+(non-synthetic) `srcLine`, which made `SrcExporter`'s two-timeline speed
+logic assume the file's own line already asserts the correct speed "for
+free" -- a valid assumption when PATCHING a real file (that's the whole
+design), but false for a program built from nothing that never had any
+`$VEL.CP` in it until something writes one. The robot received no speed
+command at all and stayed at whatever it was left at.
+
+Fixed at the source: `emit()` (the helper `InterleavePrint` uses to
+append every motion line) now writes a real `$VEL.CP` command into the
+generated source whenever the required speed changes, exactly mirroring
+what a real Eidos file does and what `SrcExporter` expects to find
+already there. PTP motion is skipped, matching `SrcExporter`'s own rule.
+On the real file: 195 `$VEL.CP` commands in the exported program, zero of
+them zero.
+
+Also added: `SpeedColorTable`'s gradient is now continuous (red -> green
+at a fixed 0.6 pivot -> blue) instead of a discrete palette lookup,
+matching the bed heightmap's gradient convention so "which speed is which
+color" reads the same way in both panels. The pivot is fixed at 0.6
+deliberately (not the data's own midpoint) -- a file that never drops
+below 0.6 should read all-green-to-blue, because it genuinely never ran
+slow.
+
+**Editor panel reorganized into three tabs** (View / Scene / Object:
+<name>) instead of one long scroll of ten stacked sections -- which is
+how "Mirror the object" ended up invisible in the first place, as just
+another collapsed bar buried in the middle. The Object tab is labelled
+with the active object's own name, since with several mirrored copies in
+the list "Object" alone stops being enough to know which one you're
+editing.
+
+**Verified:** 270 tests (6 new: the direct-edit export bug, the
+interleave-speed bug end-to-end into exported text, and the speed
+gradient's pivot/edge cases); Debug and Release clean; the real file: 195
+non-zero `$VEL.CP` commands, still `ABABABABABAB`, still `byteIdentical=yes`.

@@ -122,6 +122,17 @@ std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std:
     int nextPathNumber = 1;
     int currentLayerNumber = 0;
     std::optional<glm::dvec3> cursor; // where the nozzle currently is, world space
+    // The speed the ROBOT is actually running at right now, as far as the
+    // generated program has told it -- tracked so emit() knows when a
+    // real $VEL.CP command needs writing. Reported bug: "after the file
+    // is exported the speed is 0." Root cause: every path in a merged
+    // object gets a genuinely real (non-synthetic) srcLine, which made
+    // SrcExporter's two-timeline logic assume the file's own line already
+    // asserts the correct speed "for free" -- true for a REAL file being
+    // patched, but this program is built from nothing and never had any
+    // $VEL.CP in it at all until this fix. The robot received no speed
+    // command whatsoever and stayed at whatever it was left at (0).
+    std::optional<double> currentSpeed;
 
     // Appends one motion line + its Path. `templateLine` supplies the
     // format (motion command, E1-E6, C_VEL, comments) that
@@ -129,6 +140,17 @@ std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std:
     // passes its own plain "LIN {...}" template instead.
     auto emit = [&](const glm::dvec3& from, const glm::dvec3& to, PathType type, int layer,
                      const std::string& templateLine, const std::string& motion, std::optional<double> speed) {
+        // Write a REAL $VEL.CP command whenever the required speed
+        // changes. PTP motion ignores $VEL.CP (matches SrcExporter's own
+        // rule), so it's skipped there too.
+        if (motion != "PTP" && speed.has_value() &&
+            (!currentSpeed.has_value() || std::abs(*currentSpeed - *speed) > 1e-9)) {
+            char velLine[64];
+            std::snprintf(velLine, sizeof(velLine), "$VEL.CP = %.6f", *speed);
+            merged.sourceLines.push_back(velLine);
+            currentSpeed = speed;
+        }
+
         std::string line = templateLine;
         line = replaceKrlAxisValue(line, 'X', to.x);
         line = replaceKrlAxisValue(line, 'Y', to.y);

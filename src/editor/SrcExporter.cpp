@@ -43,11 +43,30 @@ std::vector<std::string> buildExportedLines(const SceneObject& object, ExportRes
         if (path.srcLine < 0 || path.srcLine >= static_cast<int>(output.size())) continue;
 
         glm::dvec3 exportPos = applyTransform(object.transform, path.to);
-        glm::dvec3 originalPos = path.to;
-        bool changed = glm::length(exportPos - originalPos) > 1e-6;
+        std::string& line = output[static_cast<size_t>(path.srcLine)];
+
+        // Compare against what the LINE currently says, not against the
+        // model. This was a real, shipped bug: the old test was
+        // `applyTransform(transform, path.to) != path.to`, which asks
+        // "does the transform move this point?" -- NOT "did this point
+        // change versus the file?". With an identity transform the two
+        // sides are equal by definition, so every edit applied DIRECTLY
+        // to a path's coordinates (gizmo drag, connected drag, bed
+        // conform, split) silently failed to export. It only ever worked
+        // because the tests all happened to set a transform first.
+        //
+        // Reading the line's own value is also the only correct source of
+        // truth: the model has no memory of what the file originally
+        // said once a coordinate has been edited in place.
+        std::optional<double> lineX = readKrlAxisValue(line, 'X');
+        std::optional<double> lineY = readKrlAxisValue(line, 'Y');
+        std::optional<double> lineZ = readKrlAxisValue(line, 'Z');
+
+        bool changed = (lineX && std::abs(*lineX - exportPos.x) > 1e-6) ||
+                       (lineY && std::abs(*lineY - exportPos.y) > 1e-6) ||
+                       (lineZ && std::abs(*lineZ - exportPos.z) > 1e-6);
         if (!changed) continue;
 
-        std::string& line = output[static_cast<size_t>(path.srcLine)];
         line = replaceKrlAxisValue(line, 'X', exportPos.x);
         line = replaceKrlAxisValue(line, 'Y', exportPos.y);
         line = replaceKrlAxisValue(line, 'Z', exportPos.z);

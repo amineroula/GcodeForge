@@ -14,6 +14,7 @@
 #include "editor/Gizmo.h"
 #include "editor/SrcExporter.h"
 #include "editor/BedConform.h"
+#include "render/PathColorizer.h"
 #include "editor/ConnectedDrag.h"
 #include "editor/Framing.h"
 #include "editor/InterleavePrint.h"
@@ -1180,6 +1181,59 @@ void testSafePointRoundTrip() {
 
 // Mirror + interleave as ONE operation, and the layer-action carry-through
 // that used to silently drop part-cooling commands.
+// Reported from real use: "after the file is exported the speed is 0."
+// Checks the merged object's actual Path::speed values survive the
+// mirror+interleave pipeline -- not just that layerActions do (the
+// existing test only checked that).
+void testMirrorAndInterleaveKeepsSpeed() {
+    Scene scene;
+    SceneObject part = parseSrc("Part", sampleSrcLinesForExport());
+
+    // Confirm the SOURCE actually has real, nonzero speeds before doing
+    // anything else -- otherwise a failure here would be ambiguous about
+    // where the value was lost.
+    bool sourceHasRealSpeed = false;
+    for (const auto& p : part.paths) {
+        if (p.type == PathType::Print && p.effectiveSpeed() > 1e-6) sourceHasRealSpeed = true;
+    }
+    check(sourceHasRealSpeed, "MirrorInterleaveSpeed: precondition -- the source object has real nonzero speeds");
+
+    int sourceId = scene.addObject(std::move(part)).id;
+
+    MirrorInterleaveOptions options;
+    options.copies = 2;
+    options.gapMm = 200.0;
+
+    auto merged = mirrorAndInterleave(scene, sourceId, options);
+    check(merged.has_value(), "MirrorInterleaveSpeed: mirror+interleave succeeds");
+    if (!merged.has_value()) return;
+
+    int zeroSpeedPrints = 0, totalPrints = 0;
+    for (const auto& p : merged->paths) {
+        if (p.type != PathType::Print) continue;
+        ++totalPrints;
+        if (p.effectiveSpeed() <= 1e-6) ++zeroSpeedPrints;
+    }
+    check(totalPrints > 0, "MirrorInterleaveSpeed: merged object has print paths to check");
+    check(zeroSpeedPrints == 0,
+          "MirrorInterleaveSpeed: NO merged print path has speed 0 (the reported bug)");
+
+    // And that it actually reaches the exported KRL text as a real
+    // $VEL.CP value, not silently defaulted.
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(*merged, result);
+    check(result.success, "MirrorInterleaveSpeed: merged program exports");
+    bool foundNonZeroVelCp = false;
+    for (const auto& line : exported) {
+        auto pos = line.find("$VEL.CP");
+        if (pos == std::string::npos) continue;
+        auto eq = line.find('=', pos);
+        if (eq == std::string::npos) continue;
+        if (std::abs(std::stod(line.substr(eq + 1))) > 1e-6) foundNonZeroVelCp = true;
+    }
+    check(foundNonZeroVelCp, "MirrorInterleaveSpeed: exported file contains a real, nonzero $VEL.CP");
+}
+
 void testMirrorAndInterleave() {
     Scene scene;
     SceneObject part = parseSrc("Part", sampleSrcLinesForExport());
@@ -1349,6 +1403,79 @@ void testProjectRoundTrip() {
     check(untouched.scene.activeObjectId == 42, "Project: a failed load leaves the existing session untouched");
 }
 
+// Moving a path DIRECTLY (gizmo drag, connected drag, bed conform) must
+// export, even when the object's transform is identity. Reported from
+// real use: after mirroring and nudging paths closer together, the
+// exported file still had the original positions.
+void testDirectPathEditExports() {
+    std::vector<std::string> lines = sampleSrcLinesForExport();
+    SceneObject object = parseSrc("Part", lines);
+    // Deliberately NO transform change -- transform stays identity, which
+    // is the exact case the old "did the transform move it?" check missed.
+    check(object.transform.x == 0.0, "DirectEdit: precondition -- transform is identity");
+
+    Path* target = object.findPath(4);
+    check(target != nullptr, "DirectEdit: found the path to move");
+    if (!target) return;
+    double originalX = target->to.x;
+    target->to.x = originalX + 250.0; // as a gizmo drag would
+    target->from.x += 250.0;
+
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(object, result);
+    check(result.success, "DirectEdit: export succeeds");
+    check(result.patchedCoordinateLines > 0,
+          "DirectEdit: a directly-moved path patches its coordinate line (identity transform)");
+
+    SceneObject reparsed = parseSrc("Reparsed", exported);
+    const Path* reparsedTarget = reparsed.findPath(4);
+    check(reparsedTarget != nullptr, "DirectEdit: re-parsed export still has the path");
+    if (reparsedTarget) {
+        checkNear(reparsedTarget->to.x, originalX + 250.0,
+                  "DirectEdit: the MOVED position is what actually reaches the exported file");
+    }
+}
+
+// Speed color: continuous gradient (red=slow, green AT the 0.6 pivot,
+// blue=fast), NOT a discrete palette lookup. Verifies the pivot lands
+// exactly on green regardless of what else is in the data, and that the
+// two edge cases (every speed below/above the pivot) don't divide by a
+// zero-width range.
+void testSpeedColorGradient() {
+    SceneObject object;
+    Path slow; slow.number = 1; slow.type = PathType::Print; slow.motion = "LIN"; slow.speed = 0.2;
+    Path pivot; pivot.number = 2; pivot.type = PathType::Print; pivot.motion = "LIN"; pivot.speed = 0.6;
+    Path fast; fast.number = 3; fast.type = PathType::Print; fast.motion = "LIN"; fast.speed = 1.0;
+    object.paths = {slow, pivot, fast};
+
+    SpeedColorTable table;
+    std::vector<SceneObject> objects = {object};
+    table.rebuild(objects);
+
+    glm::vec3 atPivot = table.colorFor(0.6);
+    checkNear(atPivot.r, 0.20, "SpeedColor: at the 0.6 pivot, red channel is green's red (low)");
+    checkNear(atPivot.g, 0.85, "SpeedColor: at the 0.6 pivot, green channel is green's green (high)");
+    checkNear(atPivot.b, 0.30, "SpeedColor: at the 0.6 pivot, blue channel is green's blue (low)");
+
+    glm::vec3 slowest = table.colorFor(0.2);
+    check(slowest.r > slowest.g && slowest.r > slowest.b, "SpeedColor: the slowest speed reads red-dominant");
+
+    glm::vec3 fastest = table.colorFor(1.0);
+    check(fastest.b > fastest.r && fastest.b > fastest.g, "SpeedColor: the fastest speed reads blue-dominant");
+
+    // Every speed on one side of the pivot must not divide by zero.
+    SceneObject allFast;
+    Path f1; f1.number = 1; f1.type = PathType::Print; f1.motion = "LIN"; f1.speed = 0.8;
+    Path f2; f2.number = 2; f2.type = PathType::Print; f2.motion = "LIN"; f2.speed = 1.2;
+    allFast.paths = {f1, f2};
+    SpeedColorTable table2;
+    std::vector<SceneObject> objects2 = {allFast};
+    table2.rebuild(objects2);
+    glm::vec3 result = table2.colorFor(0.8);
+    check(std::isfinite(result.r) && std::isfinite(result.g) && std::isfinite(result.b),
+          "SpeedColor: a file with every speed above the pivot doesn't produce NaN/Inf");
+}
+
 // A program with no joint-space PTP at all must not sprout a phantom one.
 void testStartPointAbsent() {
     SceneObject object = parseSrc("NoStart", sampleSrcLinesForExport());
@@ -1388,7 +1515,10 @@ int main() {
     testTravelSelectionAndSpeed();
     testSafePointRoundTrip();
     testMirrorAndInterleave();
+    testMirrorAndInterleaveKeepsSpeed();
     testProjectRoundTrip();
+    testDirectPathEditExports();
+    testSpeedColorGradient();
     testConnectedDragWhole();
     testConnectedDragStart();
     testConnectedDragGap();

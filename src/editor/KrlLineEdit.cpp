@@ -28,3 +28,16 @@ std::string replaceKrlAxisValue(const std::string& line, char axisLetter, double
     result.replace(static_cast<size_t>(match.position(0)), static_cast<size_t>(match.length(0)), replacement);
     return result;
 }
+
+std::optional<double> readKrlAxisValue(const std::string& line, char axisLetter) {
+    const std::regex* axisRe = nullptr;
+    switch (axisLetter) {
+        case 'X': axisRe = &kXRe; break;
+        case 'Y': axisRe = &kYRe; break;
+        case 'Z': axisRe = &kZRe; break;
+        default: return std::nullopt;
+    }
+    std::smatch match;
+    if (!std::regex_search(line, match, *axisRe)) return std::nullopt;
+    return std::stod(match[1].str());
+}

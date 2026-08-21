@@ -61,30 +61,52 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
     ImGui::SetNextWindowSize(ImVec2(380, 680), ImGuiCond_FirstUseEver);
     ImGui::Begin("Editor");
 
-    drawViewPanel(camera, renderSettings, sceneDirty);
-    ImGui::Separator();
-    drawObjectListPanel(scene, undoStack, sceneDirty);
-    drawMultiPartPanel(scene, undoStack, sceneDirty);
-
+    // Three tabs instead of one long scroll. The panel had grown to ten
+    // stacked sections -- View, Objects, Mirror, Transform, Layers, Layer
+    // actions, Groups, Speed, Bed Conform, Colour, Stats -- which is how
+    // a whole feature ("Mirror the object") ended up invisible: it was
+    // just another collapsed bar somewhere in the middle. Grouping by
+    // WHAT YOU'RE ACTING ON (the view / the whole scene / the selected
+    // object) means each tab is short enough to take in at a glance.
     SceneObject* active = scene.activeObject();
-    if (active) {
-        ImGui::Separator();
-        ImGui::Text("Active: %s", active->name.c_str());
-        drawTransformPanel(scene, *active, undoStack, sceneDirty);
-        drawLayerTablePanel(scene, *active, undoStack, sceneDirty, selectionDirty);
-        drawSelectionGroupPanel(scene, *active, undoStack, sceneDirty, selectionDirty);
-        drawSpeedPanel(scene, *active, undoStack, sceneDirty);
-        drawBedConformPanel(scene, *active, bedHeightmap, bedSettings, undoStack, sceneDirty);
-    } else {
-        ImGui::Separator();
-        ImGui::TextDisabled("No object loaded. File > Open to load a .src file.");
+    if (ImGui::BeginTabBar("editorTabs")) {
+
+        if (ImGui::BeginTabItem("View")) {
+            drawViewPanel(camera, renderSettings, sceneDirty);
+            ImGui::Separator();
+            drawColorModePanel(colorMode, sceneDirty);
+            ImGui::Separator();
+            drawStatsPanel(scene, renderSettings.mode, renderedPrimitiveCount);
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Scene")) {
+            drawObjectListPanel(scene, undoStack, sceneDirty);
+            drawMultiPartPanel(scene, undoStack, sceneDirty);
+            ImGui::EndTabItem();
+        }
+
+        // Labelled with the active object's name rather than a generic
+        // "Object", so it's obvious WHICH object these controls edit --
+        // with several mirrored copies in the list that stops being
+        // guessable.
+        std::string objectTabLabel = active ? ("Object: " + active->name + "###objtab")
+                                            : std::string("Object###objtab");
+        if (ImGui::BeginTabItem(objectTabLabel.c_str())) {
+            if (active) {
+                drawTransformPanel(scene, *active, undoStack, sceneDirty);
+                drawLayerTablePanel(scene, *active, undoStack, sceneDirty, selectionDirty);
+                drawSelectionGroupPanel(scene, *active, undoStack, sceneDirty, selectionDirty);
+                drawSpeedPanel(scene, *active, undoStack, sceneDirty);
+                drawBedConformPanel(scene, *active, bedHeightmap, bedSettings, undoStack, sceneDirty);
+            } else {
+                ImGui::TextDisabled("No object loaded. File > Open to load a .src file.");
+            }
+            ImGui::EndTabItem();
+        }
+
+        ImGui::EndTabBar();
     }
-
-    ImGui::Separator();
-    drawColorModePanel(colorMode, sceneDirty);
-
-    ImGui::Separator();
-    drawStatsPanel(scene, renderSettings.mode, renderedPrimitiveCount);
 
     ImGui::End();
 
@@ -591,11 +613,6 @@ void EditorUI::drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dir
 }
 
 void EditorUI::drawMultiPartPanel(Scene& scene, UndoStack& undoStack, bool& dirty) {
-    // DefaultOpen: without it this rendered as a bare collapsed bar
-    // sandwiched between sections that ARE open (Transform, Layers), so
-    // it read as nothing at all -- reported as "the option has no panel
-    // in the UI". A collapsed header that looks unlike its neighbours is
-    // effectively invisible.
     ImGui::Separator();
     if (boldFont_) ImGui::PushFont(boldFont_);
     bool open = ImGui::CollapsingHeader("Mirror the object", ImGuiTreeNodeFlags_DefaultOpen);
@@ -878,6 +895,8 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
         ImGui::EndTable();
     }
 
+    ImGui::Spacing();
+    sectionLabel("Selection & splitting");
     ImGui::Text("Selected paths: %zu", object.selectedPaths.size());
     ImGui::SameLine();
     if (ImGui::SmallButton("Select all visible")) {
@@ -915,7 +934,8 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
     }
     ImGui::EndDisabled();
     ImGui::TextDisabled("Split inserts a new vertex at each selected path's midpoint -- handy for");
-    ImGui::TextDisabled("giving half of a long travel/print move its own speed.");
+    ImGui::TextDisabled("giving half of a long travel/print move its own speed. Turn on");
+    ImGui::TextDisabled("View > Display > Vertices to see the new point appear.");
 
     ImGui::Spacing();
     sectionLabel("Layer actions");
