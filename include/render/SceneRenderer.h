@@ -26,7 +26,10 @@ public:
     // Rebuilds the GPU vertex buffer from the current scene state. Call
     // whenever paths, visibility, transforms, or the color mode change --
     // NOT every frame.
-    void rebuild(const Scene& scene, ColorMode colorMode);
+    // showPrintPaths/showTravels are display filters only -- a hidden
+    // category is simply not uploaded to the vertex buffer. Nothing is
+    // deleted, and export is unaffected.
+    void rebuild(const Scene& scene, ColorMode colorMode, bool showPrintPaths = true, bool showTravels = true);
 
     void draw(const glm::mat4& viewProj) const;
 

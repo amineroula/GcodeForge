@@ -25,7 +25,7 @@ SceneRenderer::~SceneRenderer() {
     glDeleteProgram(shaderProgram_);
 }
 
-void SceneRenderer::rebuild(const Scene& scene, ColorMode colorMode) {
+void SceneRenderer::rebuild(const Scene& scene, ColorMode colorMode, bool showPrintPaths, bool showTravels) {
     speedColors_.rebuild(scene.objects);
 
     std::vector<LineVertex> vertices;
@@ -34,6 +34,8 @@ void SceneRenderer::rebuild(const Scene& scene, ColorMode colorMode) {
     for (const auto& object : scene.objects) {
         if (!object.visible) continue;
         for (const auto& path : object.paths) {
+            if (path.type == PathType::Print && !showPrintPaths) continue;
+            if (path.type == PathType::Travel && !showTravels) continue;
             glm::dvec3 fromWorld = applyTransform(object.transform, path.from);
             glm::dvec3 toWorld = applyTransform(object.transform, path.to);
             glm::vec3 color = pathColor(object, path, colorMode, speedColors_);

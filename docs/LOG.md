@@ -1245,3 +1245,90 @@ export + re-parse round-trip); and uneven-layer handling.
 
 **Verified:** all tests pass; Debug and Release both rebuild clean;
 startup sanity checks still report `glGetError=0`.
+
+## The joint-space start point: parsed, displayed, movable
+
+The operator hit a real limitation while using the tool on a production
+file: "analyse the eidos source file and find the first safe position,
+it's a point I couldn't find with gcode editor."
+
+**Why it was invisible.** The point is line 88 of the real file:
+
+    PTP {A1 0.000, A2 -89.990, A3 99.400, A4 0.000, A5 -9.410, A6 0.000}
+
+It commands six AXIS ANGLES, not a Cartesian position -- there is no X,
+Y, or Z on that line at all. `SrcParser`'s motion handler gated every
+path on `if (x && y && z)`, so this line matched as a motion command,
+found no coordinates, and fell through to nothing. Not a rendering bug
+or a picking bug: the data never entered the model. It's also the ONLY
+joint-space move in all 24,268 lines, which is why it never came up
+before -- everything else in the file is Cartesian `LIN`.
+
+**Why Eidos emits it.** A Cartesian point is reachable by several
+different arm configurations (elbow up/down, wrist flipped). Commanding
+joint angles removes that ambiguity, so the arm always begins from one
+known, repeatable posture before flying to the first Cartesian target.
+A2 ~= -90 / A3 ~= +99 is the classic "arm upright, forearm forward"
+ready pose.
+
+**`model/StartPoint.h`** -- deliberately NOT a `Path`. A Path has
+`from`/`to` in Cartesian space and participates in selection, speed
+editing, layer detection, run/mesh building and export patching; a joint
+pose has none of that and would have to fake all of it. Stored instead as
+its own optional member on `SceneObject`, carrying the six angles, the
+source line, and a display anchor.
+
+**The honest limitation, encoded in the design:** the file states no
+Cartesian position for this pose, and computing one needs the robot's DH
+parameters, which the program doesn't carry. So `StartPoint::position` is
+documented as a display ANCHOR, not a derived truth -- it defaults to the
+program's first Cartesian point (where the arm is heading next, the most
+meaningful proxy available) and the operator can move it. It's stored in
+LOCAL space, so it rides the object's transform exactly like a path does
+-- which is what makes the operator's actual question ("did my start
+point just leave the bed when I moved the object?") answerable by
+looking.
+
+**A regex trap worth naming.** The existing `kARe` matches a bare `\bA`
+for tool orientation. Reusing it on a joint line would happily match the
+`A` of `A1` -- and on the Cartesian lines it would read `A 164.577` as if
+it were `A1`. The new `kA1Re`..`kA6Re` include the digit, and a test
+asserts A4 parses as 0.0 rather than picking up the Cartesian lines'
+`A 164.577`.
+
+**Display filters** (`RenderSettings::showPrintPaths/showTravels/
+showStartPoint`), exposed as a "Display: Paths / Travels / Start point"
+row in the View panel. Pure view filters -- a hidden category is simply
+not uploaded to a vertex buffer; nothing is deleted and export is
+untouched. Worth having independently of the start point: a real file is
+mostly print paths, and the travels weaving between them bury the
+geometry you're trying to inspect.
+
+**`render/StartPointRenderer`** draws a 3D crosshair plus a small open
+box in amber, at fixed WORLD size rather than screen size -- "is this
+still inside the bed" is a world-space question, and a marker that held
+constant pixels while zooming would make a point far outside the bed
+look close to it.
+
+**Editing** lives in the Transform panel (the natural home -- it's the
+same problem as object placement): the joint angles shown read-only for
+reference, and the anchor editable as WORLD X/Y/Z, converted in and out
+of local space via `applyTransform`/`inverseApplyTransform`. Undoable via
+the continuous-edit pattern. A "moved by hand" note plus a Reset button
+distinguish an intentional edit from the auto-derived default.
+
+**Export is deliberately untouched.** Moving the marker changes display
+and planning only -- the original joint move is written back verbatim.
+Rewriting a joint-space PTP as a Cartesian one would reintroduce exactly
+the configuration ambiguity the joint form exists to remove, which is a
+robot-safety decision, not a rendering one. The UI says so directly
+("Display/planning only: export still writes the original joint move")
+rather than leaving it to be discovered.
+
+**Verified on the real production file, not just a synthetic snippet:**
+`GCODEFORGE_TEST_FILE` now reports the parsed start point, and on the
+24,268-line file it prints `srcLine=87 A1=0.000 A2=-89.990 A3=99.400
+A4=0.000 A5=-9.410 A6=0.000` with the anchor at the true first Cartesian
+point (X 291.12, Y 2027.09, Z 4.20) -- and that file still round-trips
+`byteIdentical=yes`. 15 new tests (192 total), Debug and Release both
+clean.

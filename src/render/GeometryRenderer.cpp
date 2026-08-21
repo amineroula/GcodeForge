@@ -180,7 +180,8 @@ GeometryRenderer::~GeometryRenderer() {
     glDeleteVertexArrays(1, &outlineVao_);
 }
 
-void GeometryRenderer::rebuild(const Scene& scene, ColorMode colorMode, float beadWidthMm, float beadHeightMm) {
+void GeometryRenderer::rebuild(const Scene& scene, ColorMode colorMode, float beadWidthMm, float beadHeightMm,
+                                bool showPrintPaths, bool showTravels) {
     speedColors_.rebuild(scene.objects);
 
     std::vector<MeshVertex> meshVertices;
@@ -199,14 +200,17 @@ void GeometryRenderer::rebuild(const Scene& scene, ColorMode colorMode, float be
         size_t i = 0;
         while (i < paths.size()) {
             if (paths[i].type != PathType::Print) {
-                glm::vec3 fromWorld(applyTransform(object.transform, paths[i].from));
-                glm::vec3 toWorld(applyTransform(object.transform, paths[i].to));
-                glm::vec3 color = pathColor(object, paths[i], colorMode, speedColors_);
-                travelVertices.push_back({fromWorld, color});
-                travelVertices.push_back({toWorld, color});
+                if (showTravels) {
+                    glm::vec3 fromWorld(applyTransform(object.transform, paths[i].from));
+                    glm::vec3 toWorld(applyTransform(object.transform, paths[i].to));
+                    glm::vec3 color = pathColor(object, paths[i], colorMode, speedColors_);
+                    travelVertices.push_back({fromWorld, color});
+                    travelVertices.push_back({toWorld, color});
+                }
                 ++i;
                 continue;
             }
+            if (!showPrintPaths) { ++i; continue; }
 
             // Extend the run while consecutive print paths are
             // position-connected (this path's `to` matches the next

@@ -148,6 +148,17 @@ void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, boo
     ImGui::TextDisabled("Plain click: select path. Plain drag: marquee-select.");
 
     ImGui::Spacing();
+    sectionLabel("Display");
+    // Pure display filters -- hiding a category doesn't delete it or
+    // exclude it from export, it just declutters the viewport.
+    if (ImGui::Checkbox("Paths", &renderSettings.showPrintPaths)) dirty = true;
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Travels", &renderSettings.showTravels)) dirty = true;
+    ImGui::SameLine();
+    ImGui::Checkbox("Start point", &renderSettings.showStartPoint); // draw-time only, no rebuild needed
+    ImGui::TextDisabled("Start point = the joint-space PTP the robot moves to before printing.");
+
+    ImGui::Spacing();
     sectionLabel("Render mode");
     bool isLines = (renderSettings.mode == RenderMode::Lines);
     if (ImGui::RadioButton("Lines", isLines)) {
@@ -628,6 +639,51 @@ void EditorUI::drawTransformPanel(Scene& scene, SceneObject& object, UndoStack& 
         undoStack.snapshotBeforeChange(scene);
         t = Transform{};
         dirty = true;
+    }
+
+    // Start point (the joint-space "first safe position") -- editable
+    // here because transforming an object can carry it off the bed, and
+    // the operator needs to be able to put it back. Coordinates are shown
+    // in WORLD space (what "is it on the bed?" is actually asking) but
+    // stored local, so the round-trip through the object's transform is
+    // done on the way in and out.
+    if (object.startPoint.present) {
+        ImGui::Spacing();
+        sectionLabel("Start point (first safe position)");
+        const JointPose& j = object.startPoint.joints;
+        ImGui::TextDisabled("Joint pose: A1 %.2f  A2 %.2f  A3 %.2f", j.a1, j.a2, j.a3);
+        ImGui::TextDisabled("            A4 %.2f  A5 %.2f  A6 %.2f", j.a4, j.a5, j.a6);
+
+        if (object.startPoint.position.has_value()) {
+            glm::dvec3 world = applyTransform(t, *object.startPoint.position);
+            float xyz[3] = {static_cast<float>(world.x), static_cast<float>(world.y), static_cast<float>(world.z)};
+            bool changed = ImGui::DragFloat3("World X/Y/Z", xyz, 1.0f, 0.0f, 0.0f, "%.2f");
+            if (ImGui::IsItemActivated()) undoStack.beginContinuousEdit(scene);
+            if (changed) {
+                object.startPoint.position = inverseApplyTransform(t, glm::dvec3(xyz[0], xyz[1], xyz[2]));
+                object.startPoint.movedByOperator = true;
+                dirty = true;
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) undoStack.commitContinuousEdit();
+
+            if (object.startPoint.movedByOperator) {
+                ImGui::TextDisabled("Moved by hand (no longer the auto-derived anchor).");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Reset##startpoint")) {
+                    undoStack.snapshotBeforeChange(scene);
+                    // Back to the anchor the parser chose: the program's
+                    // first Cartesian point.
+                    if (!object.paths.empty()) {
+                        object.startPoint.position = object.paths.front().to;
+                        object.startPoint.movedByOperator = false;
+                        dirty = true;
+                    }
+                }
+            }
+        } else {
+            ImGui::TextDisabled("No Cartesian anchor -- this program has no Cartesian move to place it near.");
+        }
+        ImGui::TextDisabled("Display/planning only: export still writes the original joint move.");
     }
 
     ImGui::PopID();

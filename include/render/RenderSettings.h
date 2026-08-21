@@ -44,6 +44,15 @@ enum class SelectionStyle {
 struct RenderSettings {
     RenderMode mode = RenderMode::Lines;
     SelectionStyle selectionStyle = SelectionStyle::Stripes;
+
+    // Display filters -- which categories of thing are drawn at all.
+    // Purely visual: hiding travels doesn't delete or exclude them from
+    // export, it just declutters the viewport (a real file is mostly
+    // print paths, and the travels weaving between them can bury the
+    // geometry you're actually trying to look at).
+    bool showPrintPaths = true;
+    bool showTravels = true;
+    bool showStartPoint = true; // the joint-space "first safe position", see model/StartPoint.h
     float beadWidthMm = 7.0f;   // cross-section width of the simulated extrusion bead
     float beadHeightMm = 3.0f;  // cross-section height (roughly: layer height)
 

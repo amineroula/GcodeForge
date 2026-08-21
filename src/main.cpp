@@ -51,6 +51,7 @@
 #include "render/GridRenderer.h"
 #include "render/LightingSettings.h"
 #include "render/LinkPreviewRenderer.h"
+#include "render/StartPointRenderer.h"
 #include "render/PathColorizer.h"
 #include "render/RenderSettings.h"
 #include "render/SceneRenderer.h"
@@ -263,6 +264,7 @@ int main() {
     GizmoRenderer gizmoRenderer;
     BedHeightmapRenderer bedHeightmapRenderer;
     LinkPreviewRenderer linkPreviewRenderer;
+    StartPointRenderer startPointRenderer;
     Scene scene;
     g_scene = &scene;
     EditorUI editorUi;
@@ -291,6 +293,7 @@ int main() {
         loadFileIntoScene(samplePath, scene);
         sceneRenderer.rebuild(scene, colorMode);
         linkPreviewRenderer.rebuild(scene);
+        startPointRenderer.rebuild(scene);
 
         // Sanity-check the geometry (bead) renderer path at startup too,
         // even though Lines is the default mode -- there's no automated
@@ -346,6 +349,20 @@ int main() {
                     ms(t0, t1), ms(t1, t2), ms(t2, t3));
         std::printf("  lines: %zu segments, geometry: %zu triangles\n",
                     sceneRenderer.lineCount(), geometryRenderer.triangleCount());
+
+        if (!scene.objects.empty()) {
+            const StartPoint& sp = scene.objects.back().startPoint;
+            if (sp.present) {
+                std::printf("  start point (first safe position): srcLine=%d  A1=%.3f A2=%.3f A3=%.3f A4=%.3f A5=%.3f A6=%.3f\n",
+                            sp.srcLine, sp.joints.a1, sp.joints.a2, sp.joints.a3, sp.joints.a4, sp.joints.a5, sp.joints.a6);
+                if (sp.position.has_value()) {
+                    std::printf("  start point display anchor (first Cartesian point): X %.2f  Y %.2f  Z %.2f\n",
+                                sp.position->x, sp.position->y, sp.position->z);
+                }
+            } else {
+                std::printf("  start point: none found (no joint-space PTP in this program)\n");
+            }
+        }
 
         // Real-world round-trip validation: export the untouched object
         // and diff it against the original file line-by-line. Should be
@@ -669,11 +686,13 @@ int main() {
             // at, or vice versa. Matters once files get big (docs/PLAN.md
             // milestone 11 is the deeper version of this idea).
             if (renderSettings.mode == RenderMode::Lines) {
-                sceneRenderer.rebuild(scene, colorMode);
+                sceneRenderer.rebuild(scene, colorMode, renderSettings.showPrintPaths, renderSettings.showTravels);
             } else {
-                geometryRenderer.rebuild(scene, colorMode, renderSettings.beadWidthMm, renderSettings.beadHeightMm);
+                geometryRenderer.rebuild(scene, colorMode, renderSettings.beadWidthMm, renderSettings.beadHeightMm,
+                                          renderSettings.showPrintPaths, renderSettings.showTravels);
             }
             linkPreviewRenderer.rebuild(scene); // cheap; objects/links may have changed regardless of which mode's mesh needed rebuilding
+            startPointRenderer.rebuild(scene);
             selectionDirty = true; // scene content moved/changed, so highlight positions may be stale too
         }
         if (selectionDirty) {
@@ -688,7 +707,8 @@ int main() {
             // happens to trigger a full rebuild. Lines mode doesn't pay
             // this cost -- it relies entirely on the (cheap) overlay.
             if (renderSettings.mode == RenderMode::Geometry) {
-                geometryRenderer.rebuild(scene, colorMode, renderSettings.beadWidthMm, renderSettings.beadHeightMm);
+                geometryRenderer.rebuild(scene, colorMode, renderSettings.beadWidthMm, renderSettings.beadHeightMm,
+                                          renderSettings.showPrintPaths, renderSettings.showTravels);
             }
         }
         if (bedDirty) {
@@ -707,6 +727,7 @@ int main() {
             if (g_showGrid) grid.draw(viewProj);
             if (bedHeightmap.visible) bedHeightmapRenderer.draw(viewProj, lightingSettings);
             linkPreviewRenderer.draw(viewProj); // pending (not-yet-baked) object links, drawn regardless of Lines/Geometry mode
+            if (renderSettings.showStartPoint) startPointRenderer.draw(viewProj);
             // Selection highlight draws BEFORE the real geometry, wide and
             // depth-tested normally -- the real geometry (always at least
             // as close to the camera as its own centerline) naturally

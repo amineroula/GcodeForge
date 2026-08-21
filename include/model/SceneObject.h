@@ -4,6 +4,7 @@
 #include "model/LayerAction.h"
 #include "model/Path.h"
 #include "model/SelectionGroup.h"
+#include "model/StartPoint.h"
 #include "model/Transform.h"
 
 #include <glm/glm.hpp>
@@ -37,6 +38,12 @@ struct SceneObject {
     // part cooling on/off, etc.) -- see model/LayerAction.h and
     // editor/SrcExporter.h.
     std::vector<LayerAction> layerActions;
+
+    // The joint-space "first safe position" PTP move, if this program has
+    // one -- see model/StartPoint.h. Not a Path: it carries no Cartesian
+    // coordinates of its own, so it can't participate in path selection,
+    // speed editing, or run/mesh building the way real motion paths do.
+    StartPoint startPoint;
 
     Path* findPath(int number) {
         for (auto& p : paths) {

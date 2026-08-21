@@ -1029,6 +1029,62 @@ void testInterleaveUnevenLayers() {
           "InterleavePrint: merged output includes the taller object's full print plus the shorter one's layers");
 }
 
+// The joint-space "first safe position" -- a real Eidos program's startup
+// PTP, reproduced verbatim from a production file. It has NO X/Y/Z, only
+// A1-A6, which is exactly why the parser used to drop it silently and it
+// was impossible to find in the viewport.
+void testStartPointJointMove() {
+    std::vector<std::string> lines = {
+        "DEF Part()",
+        "BAS(#BASE,1)",
+        "BAS(#VEL_PTP,1) ",
+        "PTP {A1 0.000, A2 -89.990, A3 99.400, A4 0.000, A5 -9.410, A6 0.000}",
+        "$VEL.CP = 0.061000",
+        "LIN {X 291.12, Y 2027.09, Z 4.20, A 164.577, B 90.000, C 164.767} C_VEL",
+        "LIN {X 291.12, Y 2027.09, Z 2.20, A 164.577, B 90.000, C 164.767} C_VEL",
+        ";travel end",
+        "$VEL.CP = 0.060000",
+        "LIN {X 291.12, Y 2650.27, Z 2.20, A 164.577, B 90.000, C 164.767} C_VEL",
+        "END",
+    };
+    SceneObject object = parseSrc("Part", lines);
+
+    check(object.startPoint.present, "StartPoint: the joint-space PTP is captured, not silently dropped");
+    check(object.startPoint.jointSpace, "StartPoint: it's flagged as joint-space (no Cartesian coords of its own)");
+    check(object.startPoint.srcLine == 3, "StartPoint: srcLine points at the actual PTP line");
+    checkNear(object.startPoint.joints.a1, 0.0, "StartPoint: A1 parsed");
+    checkNear(object.startPoint.joints.a2, -89.990, "StartPoint: A2 parsed (negative value)");
+    checkNear(object.startPoint.joints.a3, 99.400, "StartPoint: A3 parsed");
+    checkNear(object.startPoint.joints.a5, -9.410, "StartPoint: A5 parsed");
+
+    // The A1..A6 regexes must not be confused by the bare A/B/C tool
+    // orientation on the Cartesian lines -- a naive \bA match would read
+    // "A 164.577" as A1.
+    checkNear(object.startPoint.joints.a4, 0.0, "StartPoint: A4 is 0, not the Cartesian lines' A 164.577");
+
+    check(object.startPoint.position.has_value(), "StartPoint: got a display anchor from the first Cartesian point");
+    if (object.startPoint.position.has_value()) {
+        checkNear(object.startPoint.position->x, 291.12, "StartPoint: anchor X is the first Cartesian point's X");
+        checkNear(object.startPoint.position->z, 4.20, "StartPoint: anchor Z is the first Cartesian point's Z");
+    }
+
+    // Capturing it must not have changed how the real motion paths parse.
+    check(object.paths.size() == 3, "StartPoint: the joint move is NOT counted as a motion path");
+    check(object.paths.front().type == PathType::Travel, "StartPoint: first Cartesian move is still a travel");
+
+    // And it must still export byte-identically -- the joint move is
+    // preserved as an untouched source line, not rewritten.
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(object, result);
+    check(exported == lines, "StartPoint: a file with a joint-space PTP still round-trips byte-identically");
+}
+
+// A program with no joint-space PTP at all must not sprout a phantom one.
+void testStartPointAbsent() {
+    SceneObject object = parseSrc("NoStart", sampleSrcLinesForExport());
+    check(!object.startPoint.present, "StartPoint: a program with no joint-space PTP reports none");
+}
+
 } // namespace
 
 int main() {
@@ -1057,6 +1113,8 @@ int main() {
     testMirrorObject();
     testInterleavePrint();
     testInterleaveUnevenLayers();
+    testStartPointJointMove();
+    testStartPointAbsent();
     testConnectedDragWhole();
     testConnectedDragStart();
     testConnectedDragGap();

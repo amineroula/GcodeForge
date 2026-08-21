@@ -22,6 +22,17 @@ const std::regex kCRe(R"(\bC\s*([-+]?\d+(?:\.\d+)?))", std::regex::icase);
 const std::regex kVelCpRe(R"(\$VEL\.CP\s*=\s*([-+]?\d+(?:\.\d+)?))", std::regex::icase);
 const std::regex kBasRe(R"(BAS\s*\(\s*#VEL_(?:CP|PTP)\s*,\s*([-+]?\d+(?:\.\d+)?)\s*\))", std::regex::icase);
 
+// Joint-space axis angles (A1..A6). Deliberately NOT the same as kARe
+// above: kARe matches a bare "A" (tool orientation on a Cartesian line),
+// and would happily match the "A" of "A1" and read the wrong number. The
+// digit here is what keeps the two forms apart.
+const std::regex kA1Re(R"(\bA1\s*([-+]?\d+(?:\.\d+)?))", std::regex::icase);
+const std::regex kA2Re(R"(\bA2\s*([-+]?\d+(?:\.\d+)?))", std::regex::icase);
+const std::regex kA3Re(R"(\bA3\s*([-+]?\d+(?:\.\d+)?))", std::regex::icase);
+const std::regex kA4Re(R"(\bA4\s*([-+]?\d+(?:\.\d+)?))", std::regex::icase);
+const std::regex kA5Re(R"(\bA5\s*([-+]?\d+(?:\.\d+)?))", std::regex::icase);
+const std::regex kA6Re(R"(\bA6\s*([-+]?\d+(?:\.\d+)?))", std::regex::icase);
+
 std::string toLower(const std::string& s) {
     std::string out = s;
     std::transform(out.begin(), out.end(), out.begin(),
@@ -93,8 +104,39 @@ SceneObject parseSrc(const std::string& objectName, const std::vector<std::strin
                 auto y = matchNumber(block, kYRe);
                 auto z = matchNumber(block, kZRe);
 
+                // A joint-space move (A1..A6, no X/Y/Z) -- the "first safe
+                // position" an Eidos program issues before any Cartesian
+                // motion. This used to fall straight through the
+                // x && y && z test below and vanish without a trace,
+                // which is exactly why it was impossible to find in the
+                // viewport. Captured here instead; see model/StartPoint.h
+                // for why it can't just become a normal Path.
+                if (!x && !y && !z && !object.startPoint.present) {
+                    auto a1 = matchNumber(block, kA1Re);
+                    auto a2 = matchNumber(block, kA2Re);
+                    if (a1 && a2) { // A1+A2 present is enough to call it a joint move
+                        object.startPoint.present = true;
+                        object.startPoint.jointSpace = true;
+                        object.startPoint.srcLine = lineIndex;
+                        object.startPoint.joints.a1 = *a1;
+                        object.startPoint.joints.a2 = *a2;
+                        object.startPoint.joints.a3 = matchNumber(block, kA3Re).value_or(0.0);
+                        object.startPoint.joints.a4 = matchNumber(block, kA4Re).value_or(0.0);
+                        object.startPoint.joints.a5 = matchNumber(block, kA5Re).value_or(0.0);
+                        object.startPoint.joints.a6 = matchNumber(block, kA6Re).value_or(0.0);
+                        continue;
+                    }
+                }
+
                 if (x && y && z) {
                     glm::dvec3 to(*x, *y, *z);
+                    // Anchor the start-point marker to the program's FIRST
+                    // Cartesian point -- the file states no position for a
+                    // joint pose, and where the arm goes next is the most
+                    // meaningful proxy available (see model/StartPoint.h).
+                    if (object.startPoint.present && !object.startPoint.position.has_value()) {
+                        object.startPoint.position = to;
+                    }
                     ++pathNo;
                     const PathType type = inTravel ? PathType::Travel : PathType::Print;
 

@@ -43,7 +43,10 @@ public:
     GeometryRenderer(const GeometryRenderer&) = delete;
     GeometryRenderer& operator=(const GeometryRenderer&) = delete;
 
-    void rebuild(const Scene& scene, ColorMode colorMode, float beadWidthMm, float beadHeightMm);
+    // showPrintPaths/showTravels are display filters only -- a hidden
+    // category is simply not meshed. Nothing is deleted, export unaffected.
+    void rebuild(const Scene& scene, ColorMode colorMode, float beadWidthMm, float beadHeightMm,
+                  bool showPrintPaths = true, bool showTravels = true);
     void draw(const glm::mat4& viewProj, const LightingSettings& lighting, bool backfaceCulling,
               SelectionStyle selectionStyle, float timeSeconds) const;
 
