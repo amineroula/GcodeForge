@@ -63,6 +63,7 @@ private:
     void drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty);
     void drawBedPanel(BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& heightmap, bool& bedDirty);
     void drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dirty);
+    void drawMultiPartPanel(Scene& scene, UndoStack& undoStack, bool& dirty);
     void drawTransformPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty);
     void drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty, bool& selectionDirty);
     void drawSelectionGroupPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty, bool& selectionDirty);
@@ -111,4 +112,11 @@ private:
     bool bedConformAdjustZ_ = true;
     bool bedConformAdjustSpeed_ = true;
     float bedConformSpeedGainPerMm_ = 0.05f;
+
+    // Multi-part / interleaved-cooling input state -- see
+    // editor/MirrorObject.h and editor/InterleavePrint.h.
+    int multiPartCopies_ = 2;
+    float multiPartSafeDistanceMm_ = 200.0f;
+    float multiPartTravelClearanceMm_ = 50.0f;
+    float multiPartTravelSpeed_ = 0.5f;
 };

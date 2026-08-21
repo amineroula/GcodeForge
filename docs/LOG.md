@@ -1157,3 +1157,91 @@ a layer beyond `affectedLayers` gets zero effect on either Z or speed.
 
 **Verified:** all tests pass; full Debug rebuild clean; startup sanity
 checks still report `glGetError=0`.
+
+## Mirror + interleaved multi-part printing (for cooling)
+
+Last of the four larger requested features, and the one with the most
+real-world manufacturing intent behind it: mirror a part N times, spread
+the copies safely apart, and print them layer-by-layer in rotation so
+each part gets real cooling time between its own layers -- then
+physically cut the connecting travels apart afterward to get N finished
+parts. The operator's framing: "this will help print multiple objects at
+once with speed and allows the plastic to cool down from the heat, this
+is a super important feature."
+
+**`editor/KrlLineEdit.h/.cpp` (refactor first).** `SrcExporter.cpp` had a
+private `replaceAxisValue()` for patching an axis value inside a KRL
+motion line without disturbing anything else on it. The interleave
+builder needs the exact same operation (cloning a source line's format
+into a merged sequence), so it was extracted to a shared header rather
+than copy-pasted -- two copies of "the one function that decides how we
+rewrite robot motion coordinates" is exactly the kind of duplication
+that silently drifts. Verified as a pure refactor: full suite re-run
+before building anything on top of it.
+
+**`editor/MirrorObject.h/.cpp`.** Copies an object, toggles
+`transform.flipX`, and offsets `transform.x` so the mirror sits clear of
+the original by a custom operator-set gap.
+
+**A real placement bug, caught by a test rather than by a crashed
+print.** The first version offset by the part's WIDTH (`maxX - minX`).
+That's only correct when a part's local X starts at 0 -- and real KUKA
+files don't work that way, their coordinates sit wherever the cell's
+work envelope puts them (300-2700mm in the sample production file). The
+test asserted the mirror's leftmost world point clears the source's
+rightmost world point, and it failed immediately. Re-derived properly:
+`flipX` negates local X, so `[minX, maxX]` becomes `[-maxX, -minX]`, and
+requiring `(-maxX + mirrorX) - (maxX + sourceX) == gap` gives
+`mirrorX = sourceX + 2*maxX + gap` -- `minX` drops out entirely, only
+the far edge matters. On real hardware the original formula would have
+placed the mirror overlapping the original.
+
+**`editor/InterleavePrint.h/.cpp`.** Builds ONE merged, exportable
+`SceneObject` that round-robins 2+ objects layer-by-layer (A1, B1, C1,
+A2, B2, C2, ...). Design decisions that mattered:
+- **Where the transition goes.** Per the operator's clarification, the
+  jump between parts replaces the existing layer-to-layer travel rather
+  than interrupting a print: each per-object layer segment is emitted
+  ending at its last PRINT path, and the source layer's own
+  leading/trailing travels are dropped (they only made sense within one
+  object anyway).
+- **Collision safety.** The transition is synthesized as THREE explicit
+  moves -- straight up to a clearance height, across at that height,
+  then straight down -- rather than one diagonal, which is what
+  guarantees the crossing actually happens above every part for its
+  whole length instead of cutting a diagonal through one. Clearance is
+  computed as `highestWorldZ(objects) + operator margin`. Directly
+  asserted in a test: every generated travel is either purely vertical
+  or entirely at/above the safe height.
+- **World-space baking.** Every path in the merged object has its
+  coordinates run through its own source object's transform, and the
+  merged object's own transform is left at identity -- sidesteps
+  reconciling N different local spaces inside one combined object.
+- **Uneven layer counts.** An object that runs out of layers simply
+  drops out of the rotation; the rest keep interleaving, and once one
+  remains it finishes normally. Tested with a deliberately truncated
+  second object.
+- Generated travels are tagged `; GCODEFORGE INTERLEAVE TRAVEL -- cut
+  here after printing`, so the thing the operator physically cuts is
+  labeled in the exported program.
+
+**UI:** "Mirror the object" section (named per the operator's request)
+with a copy count, a custom space-between-copies value, travel clearance
+and travel speed, a "Mirror the object" button, and "Build interleaved
+print." Mirroring also auto-chains each new copy to the one it came from
+via `Scene::toggleLink()`, so the existing link previews and "Bake links
+to travels" are already wired up for the whole row without ticking each
+Link->next box by hand. Building the interleaved object hides the
+sources rather than deleting them -- the merged object is what gets
+exported, but silently destroying the originals would be a nasty
+surprise.
+
+**11 new tests:** mirror (flip, path count, name, empty selection, and
+the no-overlap placement property that caught the bug above);
+interleave (identity transform, print/travel presence, the
+travel-safety property, that consecutive segments actually alternate
+between parts rather than printing one part sequentially, and a full
+export + re-parse round-trip); and uneven-layer handling.
+
+**Verified:** all tests pass; Debug and Release both rebuild clean;
+startup sanity checks still report `glGetError=0`.

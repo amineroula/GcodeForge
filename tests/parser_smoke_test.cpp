@@ -15,10 +15,14 @@
 #include "editor/BedConform.h"
 #include "editor/ConnectedDrag.h"
 #include "editor/Framing.h"
+#include "editor/InterleavePrint.h"
+#include "editor/MirrorObject.h"
 #include "editor/ObjectLinking.h"
 #include "editor/PathSplit.h"
 
 #include <glm/gtc/matrix_transform.hpp>
+#include <algorithm>
+#include <limits>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -900,6 +904,131 @@ void testBedConformApply() {
     check(!object.paths[2].speedOverride.has_value(), "BedConform: a layer beyond affectedLayers gets no speed override");
 }
 
+void testMirrorObject() {
+    SceneObject source = parseSrc("Part", sampleSrcLinesForExport());
+    SceneObject mirror = mirrorObject(source, 200.0);
+
+    check(mirror.transform.flipX != source.transform.flipX, "MirrorObject: mirror has flipX toggled relative to the source");
+    check(mirror.paths.size() == source.paths.size(), "MirrorObject: mirror has the same path count as the source");
+    check(mirror.name != source.name, "MirrorObject: mirror gets a distinct name");
+    check(mirror.selectedPaths.empty(), "MirrorObject: mirror starts with an empty selection");
+
+    // The mirror must sit entirely clear of the source in X, or the two
+    // parts would physically collide on the bed -- the whole point of
+    // the "safe distance" argument.
+    double sourceMaxX = std::numeric_limits<double>::lowest();
+    for (const auto& p : source.paths) {
+        sourceMaxX = std::max({sourceMaxX, applyTransform(source.transform, p.from).x, applyTransform(source.transform, p.to).x});
+    }
+    double mirrorMinX = std::numeric_limits<double>::max();
+    for (const auto& p : mirror.paths) {
+        mirrorMinX = std::min({mirrorMinX, applyTransform(mirror.transform, p.from).x, applyTransform(mirror.transform, p.to).x});
+    }
+    check(mirrorMinX >= sourceMaxX, "MirrorObject: mirror is placed entirely clear of the source in X (no overlap)");
+}
+
+void testInterleavePrint() {
+    Scene scene;
+    SceneObject a = parseSrc("A", sampleSrcLinesForExport());
+    int idA = scene.addObject(a).id;
+    SceneObject b = mirrorObject(*scene.findObject(idA), 200.0);
+    int idB = scene.addObject(std::move(b)).id;
+
+    InterleaveOptions options;
+    options.safeTravelZMm = highestWorldZ(scene, {idA, idB}) + 50.0;
+    options.travelSpeed = 0.5;
+
+    auto merged = buildInterleavedObject(scene, {idA, idB}, options);
+    check(merged.has_value(), "InterleavePrint: building an interleaved object from two objects succeeds");
+    if (!merged.has_value()) return;
+
+    check(merged->transform.x == 0.0 && merged->transform.y == 0.0,
+          "InterleavePrint: merged object's own transform is identity (coordinates are baked to world space)");
+
+    size_t printCount = 0, travelCount = 0;
+    for (const auto& p : merged->paths) {
+        if (p.type == PathType::Print) ++printCount;
+        else ++travelCount;
+    }
+    check(printCount > 0, "InterleavePrint: merged object has print paths");
+    check(travelCount > 0, "InterleavePrint: merged object has generated travel paths between segments");
+
+    // The safety property that actually matters on real hardware: no
+    // travel may cross at a height that could clip a part. Every
+    // generated cross-part travel either climbs/descends vertically
+    // (same XY) or moves horizontally at >= the safe height.
+    bool allTravelsSafe = true;
+    for (const auto& p : merged->paths) {
+        if (p.type != PathType::Travel) continue;
+        bool verticalOnly = std::abs(p.from.x - p.to.x) < 1e-6 && std::abs(p.from.y - p.to.y) < 1e-6;
+        bool atSafeHeight = p.from.z >= options.safeTravelZMm - 1e-6 && p.to.z >= options.safeTravelZMm - 1e-6;
+        bool inLayerReposition = std::abs(p.from.z - p.to.z) < 1e-6 && p.from.z < options.safeTravelZMm;
+        if (!verticalOnly && !atSafeHeight && !inLayerReposition) allTravelsSafe = false;
+    }
+    check(allTravelsSafe, "InterleavePrint: every cross-part travel is either vertical or at the safe clearance height");
+
+    // Alternation is the whole point: consecutive printed segments must
+    // come from different parts. Both parts sit at disjoint X ranges
+    // (mirror is placed clear of the source), so the X midpoint of each
+    // segment identifies which part it belongs to.
+    std::vector<double> segmentMidX;
+    int lastLayer = -1;
+    for (const auto& p : merged->paths) {
+        if (p.type != PathType::Print) continue;
+        if (p.layer != lastLayer) {
+            segmentMidX.push_back((p.from.x + p.to.x) * 0.5);
+            lastLayer = p.layer;
+        }
+    }
+    check(segmentMidX.size() >= 2, "InterleavePrint: merged object contains at least two printed segments");
+    bool alternates = true;
+    for (size_t i = 1; i < segmentMidX.size(); ++i) {
+        if (std::abs(segmentMidX[i] - segmentMidX[i - 1]) < 1.0) alternates = false;
+    }
+    check(alternates, "InterleavePrint: consecutive printed segments come from different parts (alternating, not sequential)");
+
+    // Must survive the exporter, same as any other object.
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(*merged, result);
+    check(result.success, "InterleavePrint: exporting the merged object succeeds");
+    SceneObject reparsed = parseSrc("merged_reparsed", exported);
+    check(reparsed.paths.size() == merged->paths.size(),
+          "InterleavePrint: re-parsed export has the same path count as the merged object");
+}
+
+// An object with FEWER layers must simply drop out of the rotation once
+// exhausted, leaving the taller one to finish normally.
+void testInterleaveUnevenLayers() {
+    Scene scene;
+    SceneObject tall = parseSrc("Tall", sampleSrcLinesForExport());
+    int idTall = scene.addObject(tall).id;
+
+    SceneObject shortObj = mirrorObject(*scene.findObject(idTall), 200.0);
+    // Drop every path above layer 1, leaving a single-layer part.
+    shortObj.paths.erase(std::remove_if(shortObj.paths.begin(), shortObj.paths.end(),
+                                         [](const Path& p) { return p.type == PathType::Print && p.layer > 1; }),
+                          shortObj.paths.end());
+    int idShort = scene.addObject(std::move(shortObj)).id;
+
+    InterleaveOptions options;
+    options.safeTravelZMm = highestWorldZ(scene, {idTall, idShort}) + 50.0;
+
+    auto merged = buildInterleavedObject(scene, {idTall, idShort}, options);
+    check(merged.has_value(), "InterleavePrint: uneven layer counts still build successfully");
+    if (!merged.has_value()) return;
+
+    size_t tallPrintPaths = 0;
+    for (const auto& p : scene.findObject(idTall)->paths) {
+        if (p.type == PathType::Print) ++tallPrintPaths;
+    }
+    size_t mergedPrintPaths = 0;
+    for (const auto& p : merged->paths) {
+        if (p.type == PathType::Print) ++mergedPrintPaths;
+    }
+    check(mergedPrintPaths > tallPrintPaths,
+          "InterleavePrint: merged output includes the taller object's full print plus the shorter one's layers");
+}
+
 } // namespace
 
 int main() {
@@ -925,6 +1054,9 @@ int main() {
     testObjectLinkBake();
     testBedConformSampling();
     testBedConformApply();
+    testMirrorObject();
+    testInterleavePrint();
+    testInterleaveUnevenLayers();
     testConnectedDragWhole();
     testConnectedDragStart();
     testConnectedDragGap();

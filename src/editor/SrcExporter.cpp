@@ -1,4 +1,5 @@
 #include "editor/SrcExporter.h"
+#include "editor/KrlLineEdit.h"
 
 #include <algorithm>
 #include <cmath>
@@ -6,28 +7,8 @@
 #include <fstream>
 #include <map>
 #include <optional>
-#include <regex>
 
 namespace {
-
-const std::regex kXRe(R"(\bX\s*([-+]?\d+(?:\.\d+)?))", std::regex::icase);
-const std::regex kYRe(R"(\bY\s*([-+]?\d+(?:\.\d+)?))", std::regex::icase);
-const std::regex kZRe(R"(\bZ\s*([-+]?\d+(?:\.\d+)?))", std::regex::icase);
-
-// Replaces ONLY the numeric value after the axis letter (e.g. "X 291.12"
-// -> "X 305.00"), leaving everything else on the line -- surrounding
-// whitespace, A/B/C, E1-E6, trailing C_VEL, comments -- untouched.
-std::string replaceAxisValue(const std::string& line, const std::regex& axisRe, char axisLetter, double newValue) {
-    std::smatch match;
-    if (!std::regex_search(line, match, axisRe)) return line; // axis not present on this line, leave it alone
-
-    char replacement[64];
-    std::snprintf(replacement, sizeof(replacement), "%c %.3f", axisLetter, newValue);
-
-    std::string result = line;
-    result.replace(static_cast<size_t>(match.position(0)), static_cast<size_t>(match.length(0)), replacement);
-    return result;
-}
 
 std::string formatSpeedLine(double speed) {
     char buffer[64];
@@ -67,9 +48,9 @@ std::vector<std::string> buildExportedLines(const SceneObject& object, ExportRes
         if (!changed) continue;
 
         std::string& line = output[static_cast<size_t>(path.srcLine)];
-        line = replaceAxisValue(line, kXRe, 'X', exportPos.x);
-        line = replaceAxisValue(line, kYRe, 'Y', exportPos.y);
-        line = replaceAxisValue(line, kZRe, 'Z', exportPos.z);
+        line = replaceKrlAxisValue(line, 'X', exportPos.x);
+        line = replaceKrlAxisValue(line, 'Y', exportPos.y);
+        line = replaceKrlAxisValue(line, 'Z', exportPos.z);
         ++result.patchedCoordinateLines;
     }
 
@@ -109,7 +90,7 @@ std::vector<std::string> buildExportedLines(const SceneObject& object, ExportRes
     //        edited output stream. A synthetic path ALSO gets its own
     //        motion line synthesized here -- cloning its template's full
     //        line text (motion command, E1-E6, C_VEL, trailing comment --
-    //        everything replaceAxisValue() doesn't touch) with just its
+    //        everything replaceKrlAxisValue() doesn't touch) with just its
     //        own X/Y/Z substituted in, same as any coordinate patch. ---
     std::optional<double> previousOriginalSpeed;
     std::optional<double> outputSpeed;
@@ -140,9 +121,9 @@ std::vector<std::string> buildExportedLines(const SceneObject& object, ExportRes
         if (isSynthetic && targetLine >= 0 && targetLine < static_cast<int>(object.sourceLines.size())) {
             glm::dvec3 exportPos = applyTransform(object.transform, path.to);
             std::string newLine = object.sourceLines[static_cast<size_t>(targetLine)];
-            newLine = replaceAxisValue(newLine, kXRe, 'X', exportPos.x);
-            newLine = replaceAxisValue(newLine, kYRe, 'Y', exportPos.y);
-            newLine = replaceAxisValue(newLine, kZRe, 'Z', exportPos.z);
+            newLine = replaceKrlAxisValue(newLine, 'X', exportPos.x);
+            newLine = replaceKrlAxisValue(newLine, 'Y', exportPos.y);
+            newLine = replaceKrlAxisValue(newLine, 'Z', exportPos.z);
             insertionsByLine[targetLine].push_back(newLine);
         }
     }
