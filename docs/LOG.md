@@ -1433,3 +1433,51 @@ boundaries: full row and column lines only, deliberately NOT via
 triangulation diagonal and make a 5x5 grid look like a grid of triangles.
 Lifted 0.5mm in Z so it can't z-fight with the bed grid in the
 all-zeros case that caused the confusion in the first place.
+
+## The safe point is a CELL property, not a part property
+
+The operator read the real position off the pendant:
+**X 970.7, Y 1760.8, Z 1005.0**.
+
+That immediately exposed how wrong the derived anchor was. GcodeForge had
+been drawing the marker at the program's first Cartesian point --
+X 291.12, Y 2027.09, **Z 4.20** -- which is a full METRE too low and
+~680mm off in X. The anchor sat on the bed; the actual safe pose is up in
+the air, which is what a safe pose is *for*. The header comment on
+`StartPoint::position` always said "display anchor, not derived truth,"
+and this is exactly the gap that warning was about -- but a warning in a
+comment doesn't help the operator looking at a crosshair in the wrong
+place.
+
+**The architectural insight, from the operator's own framing:** the same
+robot goes to the same safe pose for every job. It's a property of the
+CELL, not of the part. So it belongs on `BedSettings` (saved and loaded
+with the bed file), not on `SceneObject` -- entered once per machine
+rather than re-read off the pendant for every file.
+
+- `BedSettings` gains `safePointMeasured` + `safePointX/Y/ZMm`, persisted
+  by `io/BedIO` alongside size, origin, grid and heightmap.
+- `StartPointRenderer::rebuild()` now takes the bed: a measured point is
+  drawn ONCE in world space and does NOT ride any object's transform
+  (the robot doesn't move its safe pose because a part moved). With a
+  measured point present, the per-object derived anchors are suppressed
+  entirely -- they were only ever standing in for this.
+- Bed panel gains a "Robot safe point" section with the pendant workflow
+  written into the UI, and honest state labelling: green "Measured --
+  marker shows the real position" versus amber "Not measured -- marker
+  falls back to the program's first point, which is NOT the safe pose."
+  The previous silent fallback looked authoritative while being a metre
+  wrong.
+
+**A test bug worth recording, because the failure mode is subtle.** The
+first round-trip test compared the loaded `float` fields against `double`
+literals (`970.7`) at `checkNear`'s 1e-6 tolerance. `float(970.7)` and
+`double(970.7)` differ by ~1.2e-5, so X and Y failed while Z passed --
+1005.0 being exactly representable in float. Nothing was wrong with the
+save/load. Fixed by comparing loaded-against-original rather than
+loaded-against-literal, which is the assertion that actually carries
+meaning ("what I saved is what I got back") and is immune to float
+representation entirely.
+
+**Verified:** 211 tests; Debug and Release clean; the real 24,268-line
+file still round-trips `byteIdentical=yes`.

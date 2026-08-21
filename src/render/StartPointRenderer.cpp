@@ -15,6 +15,28 @@ void appendLine(std::vector<LineVertex>& vertices, const glm::vec3& a, const glm
     vertices.push_back({b, kStartPointColor});
 }
 
+// One marker: a 3D crosshair plus a small open box. The box matters when
+// the crosshair arms happen to lie along a path -- without it the marker
+// can disappear into the geometry it's meant to be distinguishable from.
+void appendMarker(std::vector<LineVertex>& vertices, const glm::vec3& centre) {
+    appendLine(vertices, centre - glm::vec3(kArmLengthMm, 0.0f, 0.0f), centre + glm::vec3(kArmLengthMm, 0.0f, 0.0f));
+    appendLine(vertices, centre - glm::vec3(0.0f, kArmLengthMm, 0.0f), centre + glm::vec3(0.0f, kArmLengthMm, 0.0f));
+    appendLine(vertices, centre - glm::vec3(0.0f, 0.0f, kArmLengthMm), centre + glm::vec3(0.0f, 0.0f, kArmLengthMm));
+
+    const float h = kBoxHalfMm;
+    glm::vec3 corners[8] = {
+        centre + glm::vec3(-h, -h, -h), centre + glm::vec3(h, -h, -h),
+        centre + glm::vec3(h, h, -h),   centre + glm::vec3(-h, h, -h),
+        centre + glm::vec3(-h, -h, h),  centre + glm::vec3(h, -h, h),
+        centre + glm::vec3(h, h, h),    centre + glm::vec3(-h, h, h),
+    };
+    for (int i = 0; i < 4; ++i) {
+        appendLine(vertices, corners[i], corners[(i + 1) % 4]);           // bottom ring
+        appendLine(vertices, corners[i + 4], corners[((i + 1) % 4) + 4]); // top ring
+        appendLine(vertices, corners[i], corners[i + 4]);                 // vertical edge
+    }
+}
+
 } // namespace
 
 StartPointRenderer::StartPointRenderer() {
@@ -38,38 +60,31 @@ StartPointRenderer::~StartPointRenderer() {
     glDeleteProgram(shaderProgram_);
 }
 
-void StartPointRenderer::rebuild(const Scene& scene) {
+void StartPointRenderer::rebuild(const Scene& scene, const BedSettings& bed) {
     std::vector<LineVertex> vertices;
+
+    // A measured safe point is a CELL property and lives in world space
+    // already -- it does not ride any object's transform, because the
+    // robot goes to the same pose regardless of where a part sits. Drawn
+    // once, not per object.
+    if (bed.safePointMeasured) {
+        glm::vec3 centre(bed.safePointXMm, bed.safePointYMm, bed.safePointZMm);
+        appendMarker(vertices, centre);
+    }
 
     for (const auto& object : scene.objects) {
         if (!object.visible) continue;
         if (!object.startPoint.present || !object.startPoint.position.has_value()) continue;
+        // With a measured position in hand, the derived anchor is just
+        // noise -- it was only ever a stand-in for this.
+        if (bed.safePointMeasured) continue;
 
         // Stored in LOCAL space, so it rides along with the object's own
         // transform exactly like any path does -- which is the whole
         // point: move the object and this marker moves with it, making
         // "did my start point just leave the bed?" answerable by looking.
         glm::vec3 centre(applyTransform(object.transform, *object.startPoint.position));
-
-        appendLine(vertices, centre - glm::vec3(kArmLengthMm, 0.0f, 0.0f), centre + glm::vec3(kArmLengthMm, 0.0f, 0.0f));
-        appendLine(vertices, centre - glm::vec3(0.0f, kArmLengthMm, 0.0f), centre + glm::vec3(0.0f, kArmLengthMm, 0.0f));
-        appendLine(vertices, centre - glm::vec3(0.0f, 0.0f, kArmLengthMm), centre + glm::vec3(0.0f, 0.0f, kArmLengthMm));
-
-        // A small open box around the centre, so the marker still reads
-        // as a distinct object when the crosshair arms happen to lie
-        // along a path.
-        const float h = kBoxHalfMm;
-        glm::vec3 corners[8] = {
-            centre + glm::vec3(-h, -h, -h), centre + glm::vec3(h, -h, -h),
-            centre + glm::vec3(h, h, -h),   centre + glm::vec3(-h, h, -h),
-            centre + glm::vec3(-h, -h, h),  centre + glm::vec3(h, -h, h),
-            centre + glm::vec3(h, h, h),    centre + glm::vec3(-h, h, h),
-        };
-        for (int i = 0; i < 4; ++i) {
-            appendLine(vertices, corners[i], corners[(i + 1) % 4]);         // bottom ring
-            appendLine(vertices, corners[i + 4], corners[((i + 1) % 4) + 4]); // top ring
-            appendLine(vertices, corners[i], corners[i + 4]);               // vertical edge
-        }
+        appendMarker(vertices, centre);
     }
 
     vertexCount_ = static_cast<GLsizei>(vertices.size());

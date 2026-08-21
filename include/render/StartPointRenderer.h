@@ -1,6 +1,7 @@
 #pragma once
 
 #include "model/Scene.h"
+#include "render/BedSettings.h"
 #include "render/LineShader.h"
 
 #include <GL/glew.h>
@@ -24,7 +25,13 @@ public:
     StartPointRenderer(const StartPointRenderer&) = delete;
     StartPointRenderer& operator=(const StartPointRenderer&) = delete;
 
-    void rebuild(const Scene& scene);
+    // `bed` supplies the operator-MEASURED safe-point position (read off
+    // the pendant) when they've entered one. That takes precedence over
+    // each object's derived anchor, because it's ground truth and the
+    // anchor is only a proxy -- on a real file the two were a full metre
+    // apart in Z, the anchor sitting on the bed while the actual safe
+    // pose is up in the air where a safe pose belongs.
+    void rebuild(const Scene& scene, const BedSettings& bed);
     void draw(const glm::mat4& viewProj) const;
 
 private:

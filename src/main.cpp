@@ -293,7 +293,7 @@ int main() {
         loadFileIntoScene(samplePath, scene);
         sceneRenderer.rebuild(scene, colorMode);
         linkPreviewRenderer.rebuild(scene);
-        startPointRenderer.rebuild(scene);
+        startPointRenderer.rebuild(scene, bedSettings);
 
         // Sanity-check the geometry (bead) renderer path at startup too,
         // even though Lines is the default mode -- there's no automated
@@ -741,7 +741,7 @@ int main() {
                                           renderSettings.showPrintPaths, renderSettings.showTravels);
             }
             linkPreviewRenderer.rebuild(scene); // cheap; objects/links may have changed regardless of which mode's mesh needed rebuilding
-            startPointRenderer.rebuild(scene);
+            startPointRenderer.rebuild(scene, bedSettings);
             selectionDirty = true; // scene content moved/changed, so highlight positions may be stale too
         }
         if (selectionDirty) {

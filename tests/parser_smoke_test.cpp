@@ -1126,6 +1126,48 @@ void testTravelSelectionAndSpeed() {
     checkNear(after->to.x, originalTo.x, "TravelEdit: split travel's second half still ends at the original endpoint");
 }
 
+// The measured safe point is a CELL property: it must survive a bed
+// save/load round-trip, since re-reading it off the pendant for every
+// job is exactly the friction it exists to remove. Uses the real values
+// measured on the operator's KR 120 R3100-2.
+void testSafePointRoundTrip() {
+    BedSettings bed;
+    bed.safePointMeasured = true;
+    bed.safePointXMm = 970.7f;
+    bed.safePointYMm = 1760.8f;
+    bed.safePointZMm = 1005.0f;
+
+    BedHeightmap heightmap;
+    const std::string path = "safepoint_test_tmp.bed";
+    check(saveBedSettings(path, bed, heightmap), "SafePoint: bed save succeeds");
+
+    BedSettings loaded;
+    BedHeightmap loadedHeightmap;
+    check(loadBedSettings(path, loaded, loadedHeightmap), "SafePoint: bed load succeeds");
+    check(loaded.safePointMeasured, "SafePoint: measured flag round-trips");
+    // Compare float-to-float, not float-to-double-literal: float(970.7)
+    // differs from the double literal 970.7 by ~1.2e-5, which checkNear's
+    // 1e-6 tolerance rejects. That's a property of float, not a
+    // round-trip failure -- and "loaded matches what I saved" is the
+    // assertion that actually means something here anyway.
+    checkNear(loaded.safePointXMm, bed.safePointXMm, "SafePoint: X round-trips");
+    checkNear(loaded.safePointYMm, bed.safePointYMm, "SafePoint: Y round-trips");
+    checkNear(loaded.safePointZMm, bed.safePointZMm, "SafePoint: Z round-trips");
+
+    std::remove(path.c_str());
+
+    // An un-measured bed must NOT come back claiming to be measured --
+    // that would draw a marker at (0,0,0) and look authoritative.
+    BedSettings unmeasured;
+    BedHeightmap h2;
+    check(saveBedSettings(path, unmeasured, h2), "SafePoint: saving an unmeasured bed succeeds");
+    BedSettings loaded2;
+    BedHeightmap h3;
+    check(loadBedSettings(path, loaded2, h3), "SafePoint: loading an unmeasured bed succeeds");
+    check(!loaded2.safePointMeasured, "SafePoint: an unmeasured bed stays unmeasured after round-trip");
+    std::remove(path.c_str());
+}
+
 // A program with no joint-space PTP at all must not sprout a phantom one.
 void testStartPointAbsent() {
     SceneObject object = parseSrc("NoStart", sampleSrcLinesForExport());
@@ -1163,6 +1205,7 @@ int main() {
     testStartPointJointMove();
     testStartPointAbsent();
     testTravelSelectionAndSpeed();
+    testSafePointRoundTrip();
     testConnectedDragWhole();
     testConnectedDragStart();
     testConnectedDragGap();

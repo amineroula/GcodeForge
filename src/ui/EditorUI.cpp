@@ -270,10 +270,40 @@ void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHei
         bedDirty = true;
     }
 
+    // Safe point: a CELL property, which is why it lives here with the
+    // bed rather than on the part. The same robot goes to the same safe
+    // pose for every job, so it's entered once and saved with the bed.
+    ImGui::Spacing();
+    sectionLabel("Robot safe point (start position)");
+    ImGui::TextWrapped("The joint-space PTP the robot moves to before printing has no X/Y/Z in the "
+                        "program -- read it off the pendant (Display > Actual Position > Cartesian, "
+                        "with Tool 1 / Base 1 active) and enter it here.");
+
+    float safeXYZ[3] = {bed.safePointXMm, bed.safePointYMm, bed.safePointZMm};
+    if (ImGui::DragFloat3("Safe X/Y/Z (mm)", safeXYZ, 1.0f, 0.0f, 0.0f, "%.1f")) {
+        bed.safePointXMm = safeXYZ[0];
+        bed.safePointYMm = safeXYZ[1];
+        bed.safePointZMm = safeXYZ[2];
+        bed.safePointMeasured = true;
+        bedDirty = true;
+    }
+    if (bed.safePointMeasured) {
+        ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.50f, 1.0f), "Measured -- marker shows the real position.");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear##safepoint")) {
+            bed.safePointMeasured = false;
+            bedDirty = true;
+        }
+    } else {
+        ImGui::TextColored(ImVec4(1.0f, 0.70f, 0.30f, 1.0f),
+                            "Not measured -- marker falls back to the program's first point, which is NOT the safe pose.");
+    }
+
     ImGui::Spacing();
     if (ImGui::Button("Save Bed...")) saveBedRequested_ = true;
     ImGui::SameLine();
     if (ImGui::Button("Load Bed...")) loadBedRequested_ = true;
+    ImGui::TextDisabled("Bed file stores size, origin, grid, heightmap, and the safe point.");
 
     // Lighting affects only Geometry-mode shading (a per-frame shader
     // uniform, not baked into any mesh) -- no bedDirty/sceneDirty needed,

@@ -16,6 +16,13 @@ bool saveBedSettings(const std::string& path, const BedSettings& bed, const BedH
     file << "gridSpacing " << bed.gridSpacingMm << "\n";
     file << "showGrid " << (bed.showGrid ? 1 : 0) << "\n";
 
+    // Cell-level, not part-level: the same robot goes to the same safe
+    // pose for every job, so it belongs with the bed.
+    file << "safePointMeasured " << (bed.safePointMeasured ? 1 : 0) << "\n";
+    file << "safePointX " << bed.safePointXMm << "\n";
+    file << "safePointY " << bed.safePointYMm << "\n";
+    file << "safePointZ " << bed.safePointZMm << "\n";
+
     file << "heightmapVisible " << (heightmap.visible ? 1 : 0) << "\n";
     file << "heightmapCols " << heightmap.cols << "\n";
     file << "heightmapRows " << heightmap.rows << "\n";
@@ -73,6 +80,10 @@ bool loadBedSettings(const std::string& path, BedSettings& bed, BedHeightmap& he
         else if (key == "originZ") resultBed.originZMm = static_cast<float>(value);
         else if (key == "gridSpacing") resultBed.gridSpacingMm = static_cast<float>(value);
         else if (key == "showGrid") resultBed.showGrid = (value != 0.0);
+        else if (key == "safePointMeasured") resultBed.safePointMeasured = (value != 0.0);
+        else if (key == "safePointX") resultBed.safePointXMm = static_cast<float>(value);
+        else if (key == "safePointY") resultBed.safePointYMm = static_cast<float>(value);
+        else if (key == "safePointZ") resultBed.safePointZMm = static_cast<float>(value);
         else if (key == "heightmapVisible") resultHeightmap.visible = (value != 0.0);
         else if (key == "heightmapCols") declaredCols = static_cast<int>(value);
         else if (key == "heightmapRows") declaredRows = static_cast<int>(value);
