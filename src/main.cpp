@@ -481,6 +481,41 @@ int main() {
             } else {
                 std::printf("  interleave check: FAILED to build a merged object\n");
             }
+
+            // Reported from real use: a 4-copy mirror+interleave export of
+            // this exact file was rejected by the web editor's structural
+            // validator (1630 CRITICAL issues) and its points failed to
+            // load on the KUKA pendant -- traced to synthetic travel/
+            // reposition lines missing A/B/C/E1-E6. 4 copies (not 2) is
+            // required to reproduce it: the Y-detour path only triggers
+            // going from the far part back past a middle one.
+            Scene fourCopyCheck;
+            SceneObject copyForFour = scene.objects.back();
+            copyForFour.id = 0;
+            int idFour = fourCopyCheck.addObject(std::move(copyForFour)).id;
+            MirrorInterleaveOptions fourOpts;
+            fourOpts.copies = 4;
+            fourOpts.gapMm = 200.0;
+            fourOpts.detourMarginMm = 100.0;
+            auto merged4 = mirrorAndInterleave(fourCopyCheck, idFour, fourOpts);
+            if (merged4) {
+                ExportResult merged4Export;
+                std::vector<std::string> merged4Lines = buildExportedLines(*merged4, merged4Export);
+                int syntheticLines = 0, incompleteLines = 0;
+                for (const auto& l : merged4Lines) {
+                    if (l.find("GCODEFORGE INTERLEAVE TRAVEL") == std::string::npos &&
+                        l.find("GCODEFORGE in-layer reposition") == std::string::npos) continue;
+                    ++syntheticLines;
+                    for (const char* field : {"A ", "B ", "C ", "E1 ", "E2 ", "E3 ", "E4 ", "E5 ", "E6 "}) {
+                        if (l.find(field) == std::string::npos) { ++incompleteLines; break; }
+                    }
+                }
+                std::printf("  4-copy interleave: %d synthetic travel/reposition lines, %d missing A/B/C/E1-E6 %s\n",
+                            syntheticLines, incompleteLines,
+                            (syntheticLines > 0 && incompleteLines == 0) ? "(GOOD)" : (syntheticLines == 0 ? "(no synthetic lines?!)" : "(BUG!)"));
+            } else {
+                std::printf("  4-copy interleave: FAILED to build a merged object\n");
+            }
         }
 
         // Real-world round-trip validation: export the untouched object

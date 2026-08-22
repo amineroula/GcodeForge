@@ -1235,6 +1235,57 @@ void testMirrorAndInterleaveKeepsSpeed() {
     check(foundNonZeroVelCp, "MirrorInterleaveSpeed: exported file contains a real, nonzero $VEL.CP");
 }
 
+// Reported from real use: a 4-copy mirror+interleave export was rejected
+// by the web editor's own structural validator (1630 CRITICAL issues) and
+// its points failed to load on the KUKA pendant. Root cause: synthetic
+// cross-part travel and in-layer reposition lines carried only X/Y/Z,
+// dropping tool orientation (A/B/C) and all six extruder axes (E1-E6),
+// which every real motion line in the format carries. Uses 3 copies so
+// the far-to-near transition is forced through the Y-detour path too
+// (segmentCrossesFootprint), exercising both synthetic-line call sites.
+void testInterleaveTravelsKeepFullAxisSet() {
+    Scene scene;
+    std::vector<std::string> fullAxisLines = {
+        "DEF Part()",
+        "$VEL.CP = 0.040",
+        "LIN {X 0, Y 0, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 10, Y 0, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 10, Y 10, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 0, Y 0, Z 4, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 10, Y 0, Z 4, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 10, Y 10, Z 4, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "END",
+    };
+    SceneObject part = parseSrc("Part", fullAxisLines);
+    int sourceId = scene.addObject(std::move(part)).id;
+
+    MirrorInterleaveOptions options;
+    options.copies = 3;
+    options.gapMm = 200.0;
+    options.detourMarginMm = 100.0;
+
+    auto merged = mirrorAndInterleave(scene, sourceId, options);
+    check(merged.has_value(), "InterleaveAxisSet: 3-copy mirror+interleave succeeds");
+    if (!merged.has_value()) return;
+
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(*merged, result);
+    check(result.success, "InterleaveAxisSet: merged program exports");
+
+    int syntheticLines = 0, incompleteLines = 0;
+    for (const auto& line : exported) {
+        if (line.find("GCODEFORGE INTERLEAVE TRAVEL") == std::string::npos &&
+            line.find("GCODEFORGE in-layer reposition") == std::string::npos) continue;
+        ++syntheticLines;
+        for (const char* field : {"A ", "B ", "C ", "E1 ", "E2 ", "E3 ", "E4 ", "E5 ", "E6 "}) {
+            if (line.find(field) == std::string::npos) { ++incompleteLines; break; }
+        }
+    }
+    check(syntheticLines > 0, "InterleaveAxisSet: the merge actually produced synthetic travel/reposition lines");
+    check(incompleteLines == 0,
+          "InterleaveAxisSet: every synthetic line carries the full A/B/C/E1-E6 axis set (the reported bug)");
+}
+
 void testMirrorAndInterleave() {
     Scene scene;
     SceneObject part = parseSrc("Part", sampleSrcLinesForExport());
@@ -1599,6 +1650,7 @@ int main() {
     testSafePointRoundTrip();
     testMirrorAndInterleave();
     testMirrorAndInterleaveKeepsSpeed();
+    testInterleaveTravelsKeepFullAxisSet();
     testProjectRoundTrip();
     testDirectPathEditExports();
     testSpeedColorGradient();

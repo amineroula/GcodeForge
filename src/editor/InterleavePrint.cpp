@@ -7,8 +7,18 @@
 #include <cstdio>
 #include <limits>
 #include <map>
+#include <regex>
 
 namespace {
+
+// Does this KRL line actually carry the A axis field (with a numeric
+// value)? Used to tell a genuine motion line -- which also carries B, C,
+// E1-E6, always emitted together in this format -- apart from the
+// synthetic "LIN {X 0,Y 0,Z 0}" fallback stub, which has none of them.
+bool hasAxisFieldA(const std::string& line) {
+    static const std::regex re(R"(\bA\s*[-+]?\d)");
+    return std::regex_search(line, re);
+}
 
 // One object's paths for one layer, already in world space, ending at
 // its last PRINT path -- the trailing/leading travels of the source
@@ -134,6 +144,18 @@ std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std:
     // command whatsoever and stayed at whatever it was left at (0).
     std::optional<double> currentSpeed;
 
+    // The most recent REAL motion line seen (full A/B/C/E1-E6 axis set),
+    // used as the template for synthetic travel/reposition lines instead
+    // of a bare "LIN {X 0,Y 0,Z 0}" stub. Reported bug: exporting a 4-copy
+    // interleave produced a file the web editor's own structural validator
+    // rejected with 1630 critical issues, and the same file's points
+    // failed to load on the KUKA pendant. Root cause: every synthetic
+    // cross-part travel and in-layer reposition line carried ONLY X/Y/Z --
+    // missing tool orientation (A/B/C) and all six extruder axes (E1-E6)
+    // entirely, which both the file format and the pendant's point loader
+    // require present on every motion line, not just print moves.
+    std::string lastFullTemplateLine = "LIN {X 0,Y 0,Z 0,A 0,B 0,C 0,E1 0,E2 0,E3 0,E4 0,E5 0,E6 0}";
+
     // Appends one motion line + its Path. `templateLine` supplies the
     // format (motion command, E1-E6, C_VEL, comments) that
     // replaceKrlAxisValue then re-points at `to`; a generated travel
@@ -197,10 +219,22 @@ std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std:
     // back to the first would pass straight through the middle one. That
     // case detours around in Y -- still at constant Z -- instead of over
     // the top.
+    // Builds a synthetic motion line from the last known real axis line,
+    // so it keeps a full A/B/C/E1-E6 set instead of a bare X/Y/Z stub.
+    // C_VEL (continuous blending) is stripped: travels should stop
+    // precisely at each waypoint, not blend through the gap between parts.
+    auto syntheticTemplate = [&](const std::string& comment) {
+        std::string line = lastFullTemplateLine;
+        size_t cvelPos = line.rfind("C_VEL");
+        if (cvelPos != std::string::npos) line.erase(cvelPos);
+        while (!line.empty() && line.back() == ' ') line.pop_back();
+        return line + " ; " + comment;
+    };
+
     auto emitTransition = [&](const glm::dvec3& target, size_t targetObjectIndex) {
         if (!cursor.has_value()) return;
         glm::dvec3 start = *cursor;
-        const std::string travelTemplate = "LIN {X 0,Y 0,Z 0} ; GCODEFORGE INTERLEAVE TRAVEL -- cut here after printing";
+        const std::string travelTemplate = syntheticTemplate("GCODEFORGE INTERLEAVE TRAVEL -- cut here after printing");
 
         // Would a straight line clip a part that is neither where we're
         // leaving from nor where we're going?
@@ -259,8 +293,9 @@ std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std:
                 // safe-height treatment.
                 if (cursor.has_value() && glm::length(path.from - *cursor) > 1e-4) {
                     emit(*cursor, path.from, PathType::Travel, -1,
-                          "LIN {X 0,Y 0,Z 0} ; GCODEFORGE in-layer reposition", "LIN", options.travelSpeed);
+                          syntheticTemplate("GCODEFORGE in-layer reposition"), "LIN", options.travelSpeed);
                 }
+                if (hasAxisFieldA(templateLine)) lastFullTemplateLine = templateLine;
                 emit(path.from, path.to, PathType::Print, currentLayerNumber, templateLine, path.motion, path.speed);
             }
         }

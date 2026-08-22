@@ -1781,3 +1781,66 @@ trivially itself and couldn't move under any rotation, exactly the kind
 of self-cancelling test worth catching before it hides a real bug behind
 a false pass); Debug and Release clean; real file still round-trips
 `byteIdentical=yes`.
+
+## Interleave travels missing A/B/C/E1-E6 (rejected file + failed pendant load)
+
+Real-use report, with photos: a 4-copy mirror+interleave export of the
+production file failed on two fronts at once. The web GCode Editor's own
+structural validator popped up "Output has 1630 critical validation
+issue(s). Download for offline review anyway?" And separately, the KUKA
+pendant's OrangeApps PointLoader plugin refused the same file with
+"PointInfoCollection is null." (The pendant plugin is proprietary --
+there's no public documentation of its internal error codes to consult,
+so this was root-caused from the file format itself rather than from
+pendant-side docs.)
+
+**Root cause**, found by reading the web editor's own validator source
+(`validateLines` in the original app, still present in
+`_learn/-Gcode-Editor/index.html`): every real motion line in this format
+carries 12 fields always emitted together --
+`{X,Y,Z,A,B,C,E1,E2,E3,E4,E5,E6}` -- confirmed against the real file
+(`LIN {X 291.12, Y 2027.09, Z 4.20, A 164.577, B 90.000, C 164.767, E1
+0.000, ... E6 0.000 } C_VEL`). `InterleavePrint.cpp`'s synthetic
+cross-part travel and in-layer-reposition lines used a hardcoded
+`"LIN {X 0,Y 0,Z 0}"` stub -- X/Y/Z only, missing tool orientation
+(A/B/C) and all six extruder axes (E1-E6) entirely. The web validator
+flags every incomplete LIN line as CRITICAL (9 missing fields each); a
+4-copy interleave of the real file generates 585 synthetic lines, close
+enough to the reported 1630 (9 × ~181 of them, the rest being print
+lines that DO carry their real template) to confirm this is the same
+bug. The pendant's point loader almost certainly rejects the same
+structurally incomplete lines for the same reason -- a motion point
+missing orientation/axis data isn't a valid point to load.
+
+Two copies (the object count every earlier interleave check used) never
+exercised the Y-detour code path at all -- that only fires going from
+the far part in a row back past a middle one, which needs 3+ copies. The
+in-layer-reposition stub was hit by both counts, but at a lower volume,
+which is likely why this had not surfaced until the user specifically
+tried 4 copies.
+
+**Fix:** `InterleavePrint.cpp` now tracks `lastFullTemplateLine`, updated
+to the most recent REAL motion line's template every time a genuine
+(non-stub) axis line is emitted (detected via `hasAxisFieldA`, since a
+line either carries the whole A/B/C/E1-E6 set together or none of it).
+Both synthetic call sites now build from `syntheticTemplate()`, which
+takes that real template, strips any trailing `C_VEL` (travels should
+stop precisely at each waypoint rather than blend through the gap
+between parts -- matching the original stub's intent), and appends the
+identifying comment. `replaceKrlAxisValue` then re-points X/Y/Z at the
+actual travel target exactly as before; A/B/C/E1-E6 now come along for
+free from the borrowed template instead of being dropped.
+
+New test `testInterleaveTravelsKeepFullAxisSet()`: builds a 3-copy
+mirror+interleave from a small fixture where every LIN line carries the
+full 12-field set (unlike the older lightweight fixture, which only puts
+A/B/C on one line -- not representative of a real robot file), forces
+the Y-detour by using 3 copies, and checks every exported line
+containing the `GCODEFORGE INTERLEAVE TRAVEL` / `GCODEFORGE in-layer
+reposition` markers has all 9 of A/B/C/E1-E6 present.
+
+**Verified:** 285 tests, Debug and Release clean. Real file
+(`GCODEFORGE_TEST_FILE`), 4-copy interleave (the exact scenario
+reported): 585 synthetic travel/reposition lines, 0 missing
+A/B/C/E1-E6 (was the bug before the fix). Round-trip export of the
+untouched file still `byteIdentical=yes`.
