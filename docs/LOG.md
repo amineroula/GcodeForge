@@ -1844,3 +1844,64 @@ reposition` markers has all 9 of A/B/C/E1-E6 present.
 reported): 585 synthetic travel/reposition lines, 0 missing
 A/B/C/E1-E6 (was the bug before the fix). Round-trip export of the
 untouched file still `byteIdentical=yes`.
+
+## Interleaved export discarding the whole safety header and shutdown footer
+
+Real-use report, with photos comparing a 1-up original file against the
+same part mirrored 5 times and interleaved: the 5-up file would not load
+on the robot at all. The screenshots (Print-order color mode) showed the
+1-up object with a distinct starting travel (safe-pose PTP + initial
+travel down to the print) and ending travel (final retreat + shutdown),
+both visible as colored paths -- and the 5-up object had neither.
+
+**Root cause:** `buildInterleavedObject()` never copied any of the
+original program's own structure. It started every merged program from a
+bare `DEF GCODEFORGE_INTERLEAVED()` and ended with a bare `END`, discarding
+`&ACCESS`, every safety interrupt declaration, `BAS(#INITMOV,0)`, the
+joint-space safe-pose PTP, the initial travel down to the print's start
+point, and -- critically -- the entire shutdown block at the end
+(`$OUT[...]=FALSE` for air/extruder/bed-heat, `$TIMER_STOP`). A program
+missing `&ACCESS` and its safety interrupts is exactly the kind of thing
+a real controller refuses to load, and even if it somehow had loaded, it
+would have finished printing without ever turning off the extruder or bed
+heat. The user explained the retreat travel's actual purpose: it moves
+the head away from the object so it doesn't drip on the finished part --
+confirming it needs to be transformed per-part, not treated as some fixed
+global parking position.
+
+**Fix:** `buildInterleavedObject()` now finds each object's own real
+Cartesian path span (`pathSrcLineSpan()`) and lifts everything before the
+FIRST object's first path (the header) and everything after the LAST
+object's last path (the footer) verbatim via a new `extractBoilerplate()`
+helper -- coordinate-patching any embedded LIN/PTP lines through that
+object's own transform (so the header, from the un-mirrored original,
+comes through unchanged, and the footer's retreat travel, from whichever
+copy printed last, is correctly re-transformed to retreat from THAT
+copy's own position, exactly matching the drip-avoidance purpose the user
+described). The header's paths and the source object's `startPoint`
+(joint-space safe pose) are registered as real entries on the merged
+object -- not just background text -- so they render, select, and color
+in the viewport exactly like the screenshots show for a normal file.
+Path numbering runs header paths first, then the interleaved body, then
+footer paths, continuing the same sequence throughout.
+
+Also added, same real-use report: an FPS counter in the status bar
+(bottom-right corner), reading ImGui's own internally-smoothed
+`io.Framerate` -- no separate timer needed.
+
+New test `testInterleavePreservesHeaderAndFooter()`: a fixture shaped
+like a real Eidos program (`&ACCESS`, interrupt declarations, safe-pose
+PTP, print body, shutdown footer), mirrored 5 times and interleaved,
+checking the export still contains `&ACCESS`, the interrupt declaration,
+the safe-pose PTP, all three shutdown `$OUT[...]=FALSE` lines, and a real
+trailing `END` -- and that re-parsing the export recovers exactly the
+same path count and startPoint the model reports (proving header/footer
+travels are tracked paths, not just preserved text).
+
+**Verified:** 299 tests, Debug and Release clean. Against the user's own
+real 1-up file (`E:\CELL01-HUB_SMALL_B2B_REV_B-1UP-.src`), mirrored 5
+times (the exact scenario reported): exported program has `&ACCESS`,
+`INTERRUPT`, the safe-pose PTP, all three shutdown outputs, ends with a
+real `END`, `startPoint.present = true`, and re-parsing the export
+recovers all 33,227 paths the model reports (exact match). Round-trip
+export of the untouched original file is still `byteIdentical=yes`.

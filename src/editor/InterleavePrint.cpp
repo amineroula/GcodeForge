@@ -93,6 +93,72 @@ bool segmentCrossesFootprint(const glm::dvec3& a, const glm::dvec3& b, const Foo
     return t0 <= t1;
 }
 
+// The literal source lines (and any Cartesian paths among them, coordinate-
+// patched through the object's own transform) in [startLine, endLine), a
+// half-open range against ONE object's own sourceLines. Used to lift the
+// real boilerplate at the front and back of a real Eidos program -- safety
+// interrupt declarations, BAS(#INITMOV,0), the safe-pose PTP, and at the
+// end the retreat travel + $OUT[...]=FALSE shutdown block + END -- into
+// the merged interleaved object, instead of discarding it.
+struct BoilerplateSlice {
+    std::vector<std::string> lines;
+    // srcLine here is relative to `lines` (0-based within this slice), NOT
+    // yet the absolute index it will end up at in merged.sourceLines --
+    // the caller fixes that up once it knows where this slice landed.
+    std::vector<Path> paths;
+};
+
+BoilerplateSlice extractBoilerplate(const SceneObject& object, int startLine, int endLineExclusive) {
+    BoilerplateSlice slice;
+    startLine = std::max(startLine, 0);
+    endLineExclusive = std::min(endLineExclusive, static_cast<int>(object.sourceLines.size()));
+    if (startLine >= endLineExclusive) return slice;
+
+    std::map<int, const Path*> byLine;
+    for (const auto& path : object.paths) {
+        if (path.srcLine >= startLine && path.srcLine < endLineExclusive) byLine[path.srcLine] = &path;
+    }
+
+    for (int i = startLine; i < endLineExclusive; ++i) {
+        std::string line = object.sourceLines[static_cast<size_t>(i)];
+        auto it = byLine.find(i);
+        if (it != byLine.end()) {
+            const Path* srcPath = it->second;
+            glm::dvec3 worldTo = applyTransform(object.transform, srcPath->to);
+            glm::dvec3 worldFrom = applyTransform(object.transform, srcPath->from);
+            line = replaceKrlAxisValue(line, 'X', worldTo.x);
+            line = replaceKrlAxisValue(line, 'Y', worldTo.y);
+            line = replaceKrlAxisValue(line, 'Z', worldTo.z);
+
+            Path cloned = *srcPath;
+            cloned.from = worldFrom;
+            cloned.to = worldTo;
+            cloned.srcLine = static_cast<int>(slice.lines.size());
+            slice.paths.push_back(cloned);
+        }
+        slice.lines.push_back(line);
+    }
+    return slice;
+}
+
+// The [minSrcLine, maxSrcLine] span of an object's own real Cartesian
+// paths -- everything before it is header boilerplate, everything after
+// is footer boilerplate. std::nullopt if the object has no real paths at
+// all (shouldn't happen here: buildInterleavedObject already requires
+// highestLayer() > 0, so there's at least one Print path with a real
+// srcLine).
+std::optional<std::pair<int, int>> pathSrcLineSpan(const SceneObject& object) {
+    int minLine = std::numeric_limits<int>::max();
+    int maxLine = -1;
+    for (const auto& path : object.paths) {
+        if (path.srcLine < 0) continue;
+        minLine = std::min(minLine, path.srcLine);
+        maxLine = std::max(maxLine, path.srcLine);
+    }
+    if (maxLine < 0) return std::nullopt;
+    return std::make_pair(minLine, maxLine);
+}
+
 } // namespace
 
 double highestWorldZ(const Scene& scene, const std::vector<int>& objectIds) {
@@ -124,13 +190,53 @@ std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std:
 
     SceneObject merged;
     merged.name = objects.front()->name + " (interleaved x" + std::to_string(objects.size()) + ")";
-    merged.sourceLines.push_back("DEF GCODEFORGE_INTERLEAVED()");
+
+    // Real header (safety interrupt declarations, BAS(#INITMOV,0), the
+    // safe-pose PTP, initial travel down to print start) and footer (final
+    // retreat travel + $OUT[...]=FALSE shutdown block + END), lifted
+    // verbatim from the FIRST and LAST object respectively instead of
+    // being silently discarded. Reported from real use: a 5-copy
+    // interleaved export had none of this -- no &ACCESS, no safety
+    // interrupts, no shutdown sequence -- and the robot refused to load
+    // it. Falls back to a bare DEF/END only if an object genuinely has no
+    // boilerplate to find (e.g. a hand-built test fixture).
+    int nextPathNumber = 1;
+    BoilerplateSlice header, footer;
+    if (auto frontSpan = pathSrcLineSpan(*objects.front())) {
+        header = extractBoilerplate(*objects.front(), 0, frontSpan->first);
+    }
+    if (auto backSpan = pathSrcLineSpan(*objects.back())) {
+        footer = extractBoilerplate(*objects.back(), backSpan->second + 1,
+                                     static_cast<int>(objects.back()->sourceLines.size()));
+    }
+
+    if (!header.lines.empty()) {
+        merged.sourceLines = header.lines;
+        for (auto& p : header.paths) {
+            p.number = nextPathNumber++;
+            merged.paths.push_back(p);
+        }
+        if (objects.front()->startPoint.present) {
+            merged.startPoint = objects.front()->startPoint;
+            if (merged.startPoint.position.has_value()) {
+                merged.startPoint.position = applyTransform(objects.front()->transform, *merged.startPoint.position);
+            }
+        }
+    } else {
+        merged.sourceLines.push_back("DEF GCODEFORGE_INTERLEAVED()");
+    }
     merged.sourceLines.push_back("; Generated by GcodeForge: " + std::to_string(objects.size()) +
                                   " objects interleaved layer-by-layer for cooling.");
     merged.sourceLines.push_back("; The travel moves BETWEEN objects are meant to be cut apart after printing.");
 
-    int nextPathNumber = 1;
     int currentLayerNumber = 0;
+    // NOT seeded from headerEndCursor: the header's own last travel
+    // already ends exactly where the first print segment starts (that's
+    // how Eidos wrote it -- travel down to the print's own start point,
+    // then start printing there), so seeding cursor here would only make
+    // emitTransition() fire once for a zero-length "move" between the
+    // header and the very first segment, inserting a spurious travel line
+    // that was never there before.
     std::optional<glm::dvec3> cursor; // where the nozzle currently is, world space
     // The speed the ROBOT is actually running at right now, as far as the
     // generated program has told it -- tracked so emit() knows when a
@@ -301,7 +407,17 @@ std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std:
         }
     }
 
-    merged.sourceLines.push_back("END");
+    if (!footer.lines.empty()) {
+        int footerBaseLine = static_cast<int>(merged.sourceLines.size());
+        for (auto& p : footer.paths) {
+            p.number = nextPathNumber++;
+            p.srcLine += footerBaseLine;
+            merged.paths.push_back(p);
+        }
+        merged.sourceLines.insert(merged.sourceLines.end(), footer.lines.begin(), footer.lines.end());
+    } else {
+        merged.sourceLines.push_back("END");
+    }
     if (merged.paths.empty()) return std::nullopt;
 
     // Re-attach every source object's layer actions to the merged layer

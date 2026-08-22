@@ -188,6 +188,15 @@ void EditorUI::drawStatusBar() {
         } else {
             ImGui::TextDisabled("Hover a path to see its layer and speed.   Tab: hide/show panels");
         }
+
+        // FPS in the corner. ImGui already tracks a smoothed framerate
+        // internally (averaged over the last ~120 frames) -- no need for
+        // our own timer.
+        char fpsText[32];
+        std::snprintf(fpsText, sizeof(fpsText), "%.0f FPS", ImGui::GetIO().Framerate);
+        ImVec2 fpsSize = ImGui::CalcTextSize(fpsText);
+        ImGui::SameLine(ImGui::GetWindowWidth() - fpsSize.x - 14.0f);
+        ImGui::TextDisabled("%s", fpsText);
     }
     ImGui::End();
     ImGui::PopStyleVar();

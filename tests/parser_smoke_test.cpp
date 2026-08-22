@@ -1286,6 +1286,104 @@ void testInterleaveTravelsKeepFullAxisSet() {
           "InterleaveAxisSet: every synthetic line carries the full A/B/C/E1-E6 axis set (the reported bug)");
 }
 
+// Reported from real use, with photos: a real Eidos file mirrored 5 times
+// and interleaved would not load on the robot at all. Root cause: the
+// merged program discarded EVERYTHING outside the print/travel body --
+// &ACCESS, safety interrupt declarations, BAS(#INITMOV,0), the safe-pose
+// PTP, and at the end the retreat travel + $OUT[...]=FALSE shutdown block
+// + $TIMER_STOP + END -- replacing it all with a bare "DEF .../END". A
+// program missing &ACCESS and its safety interrupts is exactly what a
+// structural validator (and, it turns out, the robot itself) rejects.
+// This fixture mimics that real shape closely enough to catch it: a
+// safety-looking header, a joint-space safe-pose PTP (which the parser
+// tracks separately as object.startPoint, not as a Path -- see
+// SrcParser.cpp), a short print body, and a shutdown footer.
+std::vector<std::string> realisticEidosShapedLines() {
+    return {
+        "&ACCESS RVP",
+        "DEF TestPart()",
+        "GLOBAL INTERRUPT DECL 3 WHEN $STOPMESS==TRUE DO IR_STOPM ( )",
+        "INTERRUPT ON 3",
+        "BAS (#INITMOV,0 )",
+        "$OUT[7]=TRUE",
+        "PTP {A1 0.000, A2 -89.990, A3 99.400, A4 0.000, A5 -9.410, A6 0.000}",
+        "LIN {X 100, Y 100, Z 4, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 100, Y 100, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        ";travel end",
+        "$VEL.CP = 0.040",
+        "LIN {X 100, Y 100, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 110, Y 100, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 110, Y 110, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 100, Y 100, Z 4, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 110, Y 100, Z 4, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 110, Y 110, Z 4, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        ";travel start",
+        "$VEL.CP = 0.060",
+        "LIN {X 100, Y 100, Z 4, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 100, Y 100, Z 40, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        ";AIR COMMAND",
+        "$OUT[5]=FALSE",
+        ";EXTRUDER MOTOR COMMAND",
+        "$OUT[7]=FALSE",
+        ";HITT TURNING BED HEAT OFF",
+        "$OUT[6]=FALSE",
+        "$TIMER_STOP[ 7 ] = TRUE",
+        "END",
+    };
+}
+
+void testInterleavePreservesHeaderAndFooter() {
+    Scene scene;
+    SceneObject part = parseSrc("TestPart", realisticEidosShapedLines());
+    check(part.startPoint.present, "InterleaveHeaderFooter: precondition -- the source has a joint-space safe point");
+    int sourceId = scene.addObject(std::move(part)).id;
+
+    MirrorInterleaveOptions options;
+    options.copies = 5;
+    options.gapMm = 200.0;
+    options.detourMarginMm = 100.0;
+
+    auto merged = mirrorAndInterleave(scene, sourceId, options);
+    check(merged.has_value(), "InterleaveHeaderFooter: 5-copy mirror+interleave succeeds");
+    if (!merged.has_value()) return;
+
+    // The safe-pose joint move must survive -- it's not a Path (no X/Y/Z),
+    // so it can only come through via object.startPoint, which the merge
+    // used to leave untouched (present=false).
+    check(merged->startPoint.present,
+          "InterleaveHeaderFooter: the merged object keeps the first copy's safe-pose start point");
+
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(*merged, result);
+    check(result.success, "InterleaveHeaderFooter: merged program exports");
+
+    auto containsLine = [&](const std::string& needle) {
+        for (const auto& line : exported) if (line.find(needle) != std::string::npos) return true;
+        return false;
+    };
+    check(containsLine("&ACCESS"), "InterleaveHeaderFooter: exported program still has &ACCESS");
+    check(containsLine("INTERRUPT ON 3"), "InterleaveHeaderFooter: exported program keeps the safety interrupt declaration");
+    check(containsLine("PTP {A1"), "InterleaveHeaderFooter: exported program keeps the safe-pose PTP line");
+    check(containsLine("$OUT[7]=FALSE"), "InterleaveHeaderFooter: exported program still turns the extruder off at the end");
+    check(containsLine("$OUT[6]=FALSE"), "InterleaveHeaderFooter: exported program still turns the bed heat off at the end");
+    check(containsLine("$OUT[5]=FALSE"), "InterleaveHeaderFooter: exported program still turns cooling/air off at the end");
+    check(!exported.empty() && exported.back() == "END",
+          "InterleaveHeaderFooter: exported program still ends with a real END");
+
+    // The header/footer travels are real, first-class paths now -- not
+    // just inert background text -- matching what the user actually asked
+    // for: "keep the starting travels and safe position point for the
+    // first object" and "keep the ending travels for the last mirrored
+    // object." Re-parsing the export should find exactly the same total
+    // path count the model itself reports.
+    SceneObject reparsed = parseSrc("reparsed", exported);
+    check(reparsed.paths.size() == merged->paths.size(),
+          "InterleaveHeaderFooter: re-parsed export has the same path count as the merged model "
+          "(header/footer travels are tracked paths, not just text)");
+    check(reparsed.startPoint.present,
+          "InterleaveHeaderFooter: re-parsed export still has a safe-pose start point");
+}
+
 void testMirrorAndInterleave() {
     Scene scene;
     SceneObject part = parseSrc("Part", sampleSrcLinesForExport());
@@ -1651,6 +1749,7 @@ int main() {
     testMirrorAndInterleave();
     testMirrorAndInterleaveKeepsSpeed();
     testInterleaveTravelsKeepFullAxisSet();
+    testInterleavePreservesHeaderAndFooter();
     testProjectRoundTrip();
     testDirectPathEditExports();
     testSpeedColorGradient();

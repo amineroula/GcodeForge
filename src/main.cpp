@@ -516,6 +516,51 @@ int main() {
             } else {
                 std::printf("  4-copy interleave: FAILED to build a merged object\n");
             }
+
+            // Reported from real use, with photos: a real Eidos file
+            // mirrored 5 times and interleaved would not load on the
+            // robot at all. Root cause: the merged program discarded
+            // &ACCESS, safety interrupt declarations, BAS(#INITMOV,0),
+            // the safe-pose PTP, and the shutdown block entirely.
+            Scene fiveCopyCheck;
+            SceneObject copyForFive = scene.objects.back();
+            copyForFive.id = 0;
+            int idFive = fiveCopyCheck.addObject(std::move(copyForFive)).id;
+            MirrorInterleaveOptions fiveOpts;
+            fiveOpts.copies = 5;
+            fiveOpts.gapMm = 200.0;
+            fiveOpts.detourMarginMm = 100.0;
+            auto merged5 = mirrorAndInterleave(fiveCopyCheck, idFive, fiveOpts);
+            if (merged5) {
+                ExportResult merged5Export;
+                std::vector<std::string> merged5Lines = buildExportedLines(*merged5, merged5Export);
+                auto containsLine = [&](const std::string& needle) {
+                    for (const auto& l : merged5Lines) if (l.find(needle) != std::string::npos) return true;
+                    return false;
+                };
+                bool hasAccess = containsLine("&ACCESS");
+                bool hasInterrupt = containsLine("INTERRUPT");
+                bool hasSafePose = containsLine("PTP {A1");
+                bool hasShutdown = containsLine("$OUT[7]=FALSE") || containsLine("$OUT[6]=FALSE") || containsLine("$OUT[5]=FALSE");
+                bool endsWithEnd = false;
+                for (auto it = merged5Lines.rbegin(); it != merged5Lines.rend(); ++it) {
+                    if (it->empty()) continue; // real files can have a trailing blank line after END
+                    endsWithEnd = (*it == "END");
+                    break;
+                }
+                std::printf("  5-copy interleave: &ACCESS=%s INTERRUPT=%s safe-pose-PTP=%s shutdown-outs=%s ends-with-END=%s startPoint=%s %s\n",
+                            hasAccess ? "yes" : "NO", hasInterrupt ? "yes" : "NO", hasSafePose ? "yes" : "NO",
+                            hasShutdown ? "yes" : "NO", endsWithEnd ? "yes" : "NO",
+                            merged5->startPoint.present ? "present" : "MISSING",
+                            (hasAccess && hasInterrupt && hasSafePose && hasShutdown && endsWithEnd && merged5->startPoint.present)
+                                ? "(GOOD)" : "(BUG!)");
+                SceneObject reparsed5 = parseSrc("reparsed5", merged5Lines);
+                std::printf("  5-copy interleave: model paths=%zu, re-parsed export paths=%zu %s\n",
+                            merged5->paths.size(), reparsed5.paths.size(),
+                            (reparsed5.paths.size() == merged5->paths.size()) ? "(match)" : "(MISMATCH!)");
+            } else {
+                std::printf("  5-copy interleave: FAILED to build a merged object\n");
+            }
         }
 
         // Real-world round-trip validation: export the untouched object
