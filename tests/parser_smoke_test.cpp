@@ -24,6 +24,7 @@
 #include "editor/RotatePaths.h"
 #include "editor/CellTemplate.h"
 #include "editor/ExportValidation.h"
+#include "editor/PrintAnimation.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
@@ -1626,6 +1627,115 @@ void testVerifyCompiledSpeedsCatchesMismatch() {
           "ExportValidation: a PATH COUNT mismatch (structural) stays CRITICAL, never downgraded");
 }
 
+// Print-time animation: buildAnimationSequence() (subdivision + timing)
+// and stateAtTime() (the shared play/scrub primitive). A 100mm straight
+// print path at exactly 0.1 m/s (100mm/s) takes exactly 1 second -- easy
+// round numbers make every check exact rather than approximate.
+void testAnimationSequenceSubdivisionAndTiming() {
+    std::vector<std::string> lines = {
+        "DEF Part()",
+        "$VEL.CP = 0.100",
+        "LIN {X 0, Y 0, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 100, Y 0, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "END",
+    };
+    SceneObject object = parseSrc("Part", lines);
+
+    AnimationSequence seq = buildAnimationSequence(object, 5.0, 0.04, true, true);
+    checkNear(seq.totalDistanceMm, 100.0, "PrintAnimation: total distance matches the single 100mm path");
+    checkNear(seq.totalTimeSeconds, 1.0, "PrintAnimation: 100mm at 100mm/s takes exactly 1 second");
+    check(seq.segments.size() == 20,
+          "PrintAnimation: a 100mm path split at a 5mm limit produces exactly 20 sub-segments");
+    for (const auto& seg : seq.segments) {
+        checkNear(seg.lengthMm, 5.0, "PrintAnimation: every sub-segment is exactly 5mm (equal subdivision, not leftover chunks)");
+    }
+
+    // A path shorter than the limit stays whole -- one segment, not split.
+    AnimationSequence wholeSeq = buildAnimationSequence(object, 500.0, 0.04, true, true);
+    check(wholeSeq.segments.size() == 1, "PrintAnimation: a path shorter than the split limit stays a single segment");
+}
+
+void testAnimationFallbackSpeedAndVisibilityFilter() {
+    std::vector<std::string> lines = {
+        "DEF Part()",
+        ";travel start",
+        "LIN {X 0, Y 0, Z 10, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 }",
+        "LIN {X 50, Y 0, Z 10, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 }", // travel, NO speed at all
+        ";travel end",
+        "$VEL.CP = 0.200",
+        "LIN {X 60, Y 0, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "END",
+    };
+    SceneObject object = parseSrc("Part", lines);
+
+    // A path with no $VEL.CP ever seen gets speed=0 from the parser --
+    // effectiveSpeed() returns 0, which must fall back to the configured
+    // fallback speed rather than producing an infinite (stalled) time.
+    AnimationSequence both = buildAnimationSequence(object, 500.0, 0.04, true, true);
+    check(std::isfinite(both.totalTimeSeconds) && both.totalTimeSeconds > 0.0,
+          "PrintAnimation: a path with no recorded speed uses the fallback instead of stalling (infinite time)");
+
+    AnimationSequence printOnly = buildAnimationSequence(object, 500.0, 0.04, true, false);
+    for (const auto& seg : printOnly.segments) {
+        check(seg.type == PathType::Print, "PrintAnimation: includeTravel=false excludes every travel segment");
+    }
+    check(!printOnly.segments.empty(), "PrintAnimation: includeTravel=false still keeps the print segment");
+
+    AnimationSequence travelOnly = buildAnimationSequence(object, 500.0, 0.04, false, true);
+    for (const auto& seg : travelOnly.segments) {
+        check(seg.type == PathType::Travel, "PrintAnimation: includePrint=false excludes every print segment");
+    }
+}
+
+void testAnimationStateAtTimeSharedByPlayAndScrub() {
+    std::vector<std::string> lines = {
+        "DEF Part()",
+        "$VEL.CP = 0.100",
+        "LIN {X 0, Y 0, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 100, Y 0, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "END",
+    };
+    SceneObject object = parseSrc("Part", lines);
+    AnimationSequence seq = buildAnimationSequence(object, 10.0, 0.04, true, true);
+
+    PlaybackState start = stateAtTime(seq, 0.0);
+    check(!start.finished, "PrintAnimation: time 0 is not finished");
+    checkNear(start.headPosition.x, 0.0, "PrintAnimation: at time 0 the head is at the path's start (X)");
+    checkNear(start.progress, 0.0, "PrintAnimation: progress at time 0 is 0");
+
+    PlaybackState half = stateAtTime(seq, 0.5); // half of 1.0 total seconds
+    checkNear(half.headPosition.x, 50.0, "PrintAnimation: at half the total time, the head is halfway along X");
+    checkNear(half.progress, 0.5, "PrintAnimation: progress at half time is 0.5");
+
+    PlaybackState end = stateAtTime(seq, 1.0);
+    check(end.finished, "PrintAnimation: time == totalTimeSeconds is finished");
+    checkNear(end.headPosition.x, 100.0, "PrintAnimation: at the total time, the head is at the path's end (X)");
+
+    // Scrubbing PAST the end or BEFORE the start must clamp, not misbehave.
+    PlaybackState overshoot = stateAtTime(seq, 999.0);
+    check(overshoot.finished, "PrintAnimation: scrubbing past the end clamps to finished");
+    checkNear(overshoot.headPosition.x, 100.0, "PrintAnimation: scrubbing past the end clamps the head to the actual end");
+    PlaybackState undershoot = stateAtTime(seq, -5.0);
+    checkNear(undershoot.headPosition.x, 0.0, "PrintAnimation: scrubbing before the start clamps the head to the actual start");
+
+    check(start.headDirection.x > 0.99, "PrintAnimation: head direction points along the path (+X)");
+
+    // Same time value from two independent calls (simulating a play-step
+    // and a scrub landing on the same instant) must agree exactly --
+    // that's the whole point of sharing one function for both.
+    PlaybackState playStep = stateAtTime(seq, 0.37);
+    PlaybackState scrubJump = stateAtTime(seq, 0.37);
+    checkNear(playStep.headPosition.x, scrubJump.headPosition.x, "PrintAnimation: play and scrub agree exactly at the same time value");
+}
+
+void testAnimationEmptySequence() {
+    SceneObject empty;
+    AnimationSequence seq = buildAnimationSequence(empty, 5.0, 0.04, true, true);
+    check(seq.segments.empty(), "PrintAnimation: an object with no paths produces an empty sequence");
+    PlaybackState state = stateAtTime(seq, 0.0);
+    check(state.finished, "PrintAnimation: stateAtTime on an empty sequence reports finished, not a crash");
+}
+
 void testMirrorAndInterleave() {
     Scene scene;
     SceneObject part = parseSrc("Part", sampleSrcLinesForExport());
@@ -1990,6 +2100,10 @@ int main() {
     testSafePointRoundTrip();
     testMirrorAndInterleave();
     testMirrorAndInterleaveKeepsSpeed();
+    testAnimationSequenceSubdivisionAndTiming();
+    testAnimationFallbackSpeedAndVisibilityFilter();
+    testAnimationStateAtTimeSharedByPlayAndScrub();
+    testAnimationEmptySequence();
     testInterleaveTravelsKeepFullAxisSet();
     testInterleavePreservesHeaderAndFooter();
     testCellTemplateFixesSlicedImport();

@@ -37,6 +37,7 @@
 #include "editor/MirrorObject.h"
 #include "editor/ObjectLinking.h"
 #include "editor/Picking.h"
+#include "editor/PrintAnimation.h"
 #include "editor/Selection.h"
 #include "editor/SrcExporter.h"
 #include "editor/UndoStack.h"
@@ -47,10 +48,12 @@
 #include "model/Scene.h"
 #include "parser/SrcParser.h"
 #include "parser/GcodeParser.h"
+#include "render/AnimationRenderer.h"
 #include "render/BedHeightmapRenderer.h"
 #include "render/BedSettings.h"
 #include "render/Camera.h"
 #include "render/GeometryRenderer.h"
+#include "render/PrintHeadRenderer.h"
 #include "render/GizmoRenderer.h"
 #include "render/GridRenderer.h"
 #include "render/LightingSettings.h"
@@ -271,6 +274,8 @@ int main() {
     LinkPreviewRenderer linkPreviewRenderer;
     StartPointRenderer startPointRenderer;
     VertexRenderer vertexRenderer;
+    AnimationRenderer animationRenderer;
+    PrintHeadRenderer printHeadRenderer;
     Scene scene;
     g_scene = &scene;
     EditorUI editorUi;
@@ -639,6 +644,41 @@ int main() {
                             issue.message.c_str());
             }
         }
+
+        // Print animation GL smoke test: there's no way to drive the
+        // ImGui "Build simulation" button headlessly, so exercise the
+        // same buildAnimationSequence() + AnimationRenderer::build()/
+        // draw() + PrintHeadRenderer::rebuild()/draw() path directly here
+        // against the real file, the only way to catch a GL-side crash
+        // (bad attribute layout, etc.) before it ships.
+        if (!scene.objects.empty()) {
+            auto t8 = std::chrono::steady_clock::now();
+            AnimationSequence animCheckSeq = buildAnimationSequence(scene.objects.back(), 5.0, 0.04, true, true);
+            auto t9 = std::chrono::steady_clock::now();
+            std::printf("Animation smoke test: build sequence %.1fms, %zu segment(s), totalDistance=%.1fmm, totalTime=%.1fs\n",
+                        std::chrono::duration<double, std::milli>(t9 - t8).count(), animCheckSeq.segments.size(),
+                        animCheckSeq.totalDistanceMm, animCheckSeq.totalTimeSeconds);
+
+            animationRenderer.build(animCheckSeq, 7.0f, 3.0f, glm::vec3(0.85f, 0.55f, 0.15f), glm::vec3(0.35f, 0.55f, 0.85f));
+            GLenum errAfterBuild = glGetError();
+            std::printf("Animation smoke test: reveal mesh built, %zu triangle(s), glGetError=%u %s\n",
+                        animationRenderer.triangleCount(), errAfterBuild, (errAfterBuild == GL_NO_ERROR) ? "(GOOD)" : "(BUG!)");
+
+            // Draw at a few points along the timeline (start, mid, end) --
+            // needs SOME view/projection matrix; identity is fine, this is
+            // only checking for GL errors, not visual correctness.
+            glm::mat4 dummyViewProj(1.0f);
+            LightingSettings dummyLighting;
+            for (double frac : {0.0, 0.5, 1.0}) {
+                PlaybackState s = stateAtTime(animCheckSeq, animCheckSeq.totalTimeSeconds * frac);
+                animationRenderer.draw(dummyViewProj, dummyLighting, static_cast<float>(s.coveredDistanceMm));
+                printHeadRenderer.rebuild(glm::vec3(s.headPosition), 180.0f, 140.0f, 170.0f, 90.0f, 35.0f);
+                printHeadRenderer.draw(dummyViewProj, dummyLighting);
+            }
+            GLenum errAfterDraw = glGetError();
+            std::printf("Animation smoke test: drew reveal + print head at start/mid/end, glGetError=%u %s\n",
+                        errAfterDraw, (errAfterDraw == GL_NO_ERROR) ? "(GOOD)" : "(BUG!)");
+        }
         std::fflush(stdout);
     }
 
@@ -676,6 +716,21 @@ int main() {
     // the pre-export report modal opens (editor/ExportValidation.h), read
     // back once the user picks Proceed/Cancel on a LATER frame.
     int pendingSrcExportObjectId = -1;
+
+    // Print animation playback state (editor/PrintAnimation.h). The
+    // sequence is built once (on request, or when the active object
+    // changes) and reused every frame; only animTimeSeconds changes
+    // during normal playback, driven by wall-clock delta time * the
+    // speed multiplier -- the exact same stateAtTime() call scrubbing
+    // uses, so play and scrub can never disagree about where the head is
+    // for a given time value.
+    AnimationSequence animSequence;
+    bool animBuilt = false;
+    bool animRunning = false;
+    double animTimeSeconds = 0.0;
+    int animBuiltForObjectId = -1;
+    double animLastFrameTime = 0.0;
+    PlaybackState animState; // recomputed every frame from animTimeSeconds; read again at the draw call site below
 
     // Whatever path the cursor is currently over (not selected -- just
     // hovered), recomputed every frame for the status-bar readout.
@@ -845,6 +900,84 @@ int main() {
         } else if (editorUi.exportDecision() == EditorUI::ExportDecision::Cancel) {
             editorUi.clearExportDecision();
             pendingSrcExportObjectId = -1;
+        }
+
+        // Print animation (editor/PrintAnimation.h). Build/rebuild only
+        // on request or when the active object changes underneath a
+        // stale sequence -- never every frame, since it walks and
+        // subdivides every path. Play/pause/stop/scrub all funnel down
+        // to the ONE shared stateAtTime() call, so the timeline slider
+        // and real-time playback can never show a different head
+        // position for the same time value.
+        {
+            EditorUI::AnimationSettings& animSettings = editorUi.animationSettings();
+            SceneObject* animActive = scene.activeObject();
+
+            if (editorUi.animationBuildRequested()) {
+                editorUi.clearAnimationBuildRequest();
+                if (animActive) {
+                    animSequence = buildAnimationSequence(*animActive, animSettings.maxSegmentLengthMm,
+                                                           animSettings.fallbackSpeedMps,
+                                                           animSettings.includePrint, animSettings.includeTravel);
+                    animationRenderer.build(animSequence, renderSettings.beadWidthMm, renderSettings.beadHeightMm,
+                                             glm::vec3(0.85f, 0.55f, 0.15f), glm::vec3(0.35f, 0.55f, 0.85f));
+                    animBuilt = !animSequence.segments.empty();
+                    animBuiltForObjectId = animActive->id;
+                    animTimeSeconds = 0.0;
+                    animRunning = false;
+                }
+            }
+            // A stale sequence (built for an object that's since been
+            // deleted, or a different object made active) shouldn't keep
+            // claiming to be "built" -- next Play/scrub would silently
+            // simulate the wrong thing.
+            if (animBuilt && (!animActive || animActive->id != animBuiltForObjectId)) {
+                animBuilt = false;
+                animRunning = false;
+            }
+
+            if (editorUi.animationPlayRequested()) {
+                editorUi.clearAnimationPlayRequest();
+                if (animBuilt) {
+                    if (animTimeSeconds >= animSequence.totalTimeSeconds - 1e-9) animTimeSeconds = 0.0; // restart if it already finished
+                    animRunning = true;
+                    animLastFrameTime = glfwGetTime();
+                }
+            }
+            if (editorUi.animationPauseRequested()) {
+                editorUi.clearAnimationPauseRequest();
+                animRunning = false;
+            }
+            if (editorUi.animationStopRequested()) {
+                editorUi.clearAnimationStopRequest();
+                animRunning = false;
+                animTimeSeconds = 0.0;
+            }
+            if (editorUi.animationScrubbed()) {
+                animTimeSeconds = editorUi.animationScrubTimeSeconds();
+                animRunning = false; // scrubbing pauses -- matches every other timeline UI
+                editorUi.clearAnimationScrub();
+            }
+
+            if (animRunning && animBuilt) {
+                double now = glfwGetTime();
+                double delta = std::max(0.0, std::min(0.1, now - animLastFrameTime)); // cap a stall/breakpoint from causing a huge jump
+                animLastFrameTime = now;
+                animTimeSeconds += delta * static_cast<double>(animSettings.speedMultiplier);
+                if (animTimeSeconds >= animSequence.totalTimeSeconds) {
+                    animTimeSeconds = animSequence.totalTimeSeconds;
+                    animRunning = false;
+                }
+            }
+
+            animState = animBuilt ? stateAtTime(animSequence, animTimeSeconds) : PlaybackState{};
+            if (animBuilt && animSettings.showHead && !animState.finished) {
+                printHeadRenderer.rebuild(glm::vec3(animState.headPosition), animSettings.headWidthMm,
+                                           animSettings.headDepthMm, animSettings.headHeightMm,
+                                           animSettings.nozzleLengthMm, animSettings.nozzleWidthMm);
+            }
+            editorUi.setAnimationReadout(animTimeSeconds, animSequence.totalTimeSeconds, animRunning,
+                                          animState.finished, animBuilt);
         }
 
         int width, height;
@@ -1206,7 +1339,18 @@ int main() {
             // leaving only the wide highlight's edges visible as an
             // outline/border. See SelectionHighlightRenderer.h.
             selectionHighlight.draw(viewProj);
-            if (renderSettings.mode == RenderMode::Lines) {
+            // While a print simulation is built, its own progressively-
+            // revealed mesh replaces the normal always-fully-drawn scene
+            // geometry entirely -- showing both at once would defeat the
+            // reveal (the "already printed" object sitting underneath,
+            // fully visible, the whole time). Known simplification: this
+            // hides ALL objects, not just the one being animated -- fine
+            // for the common single-object workflow, a rough edge in a
+            // multi-object scene.
+            if (animBuilt) {
+                animationRenderer.draw(viewProj, lightingSettings, static_cast<float>(animState.coveredDistanceMm));
+                if (editorUi.animationSettings().showHead && !animState.finished) printHeadRenderer.draw(viewProj, lightingSettings);
+            } else if (renderSettings.mode == RenderMode::Lines) {
                 sceneRenderer.draw(viewProj);
             } else {
                 geometryRenderer.draw(viewProj, lightingSettings, renderSettings.backfaceCulling,

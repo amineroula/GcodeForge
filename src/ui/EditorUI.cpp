@@ -109,6 +109,11 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
             ImGui::EndTabItem();
         }
 
+        if (ImGui::BeginTabItem("Animate")) {
+            drawAnimationPanel();
+            ImGui::EndTabItem();
+        }
+
         ImGui::EndTabBar();
     }
 
@@ -259,6 +264,68 @@ void EditorUI::drawExportReportModal() {
         }
         ImGui::EndPopup();
     }
+}
+
+void EditorUI::drawAnimationPanel() {
+    AnimationSettings& s = animationSettings_;
+
+    sectionLabel("Print simulation");
+    ImGui::TextWrapped("Simulates printing the active object in real time -- the bead geometry reveals itself "
+                        "as the head moves, synced to each path's actual speed (not just a marker over "
+                        "already-drawn geometry).");
+
+    ImGui::Checkbox("Include print paths", &s.includePrint);
+    ImGui::SameLine();
+    ImGui::Checkbox("Include travels", &s.includeTravel);
+
+    ImGui::DragFloat("Max segment length (mm)", &s.maxSegmentLengthMm, 0.1f, 0.5f, 200.0f, "%.1f");
+    ImGui::TextDisabled("Long straight paths split into pieces this long or shorter, so printing reveals "
+                         "gradually instead of the whole path popping in at once.");
+    ImGui::DragFloat("Fallback speed (m/s)", &s.fallbackSpeedMps, 0.001f, 0.001f, 5.0f, "%.3f");
+    ImGui::TextDisabled("Used for any path with no recorded speed, so the simulation never stalls.");
+
+    if (ImGui::Button(animBuilt_ ? "Rebuild" : "Build simulation")) animationBuildRequested_ = true;
+    ImGui::SameLine();
+    ImGui::TextDisabled(animBuilt_ ? "Ready." : "Not built yet -- click to simulate the active object.");
+
+    ImGui::Spacing();
+    sectionLabel("Print head");
+    ImGui::Checkbox("Show print head", &s.showHead);
+    ImGui::DragFloat("Head width (mm)", &s.headWidthMm, 1.0f, 1.0f, 2000.0f, "%.0f");
+    ImGui::DragFloat("Head depth (mm)", &s.headDepthMm, 1.0f, 1.0f, 2000.0f, "%.0f");
+    ImGui::DragFloat("Head height (mm)", &s.headHeightMm, 1.0f, 1.0f, 2000.0f, "%.0f");
+    ImGui::DragFloat("Nozzle length (mm)", &s.nozzleLengthMm, 1.0f, 1.0f, 1000.0f, "%.0f");
+    ImGui::DragFloat("Nozzle width (mm)", &s.nozzleWidthMm, 1.0f, 1.0f, 500.0f, "%.0f");
+
+    ImGui::Spacing();
+    sectionLabel("Playback");
+    ImGui::BeginDisabled(!animBuilt_);
+    ImGui::SliderFloat("Speed", &s.speedMultiplier, 0.1f, 50.0f, "%.2fx (1x = real time)");
+
+    if (ImGui::Button(animRunning_ ? "Pause" : "Play")) {
+        if (animRunning_) animationPauseRequested_ = true; else animationPlayRequested_ = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Stop")) animationStopRequested_ = true;
+
+    float sliderTime = static_cast<float>(animCurrentTime_);
+    float sliderMax = static_cast<float>(std::max(animTotalTime_, 0.0001));
+    if (ImGui::SliderFloat("##animTimeline", &sliderTime, 0.0f, sliderMax, "")) {
+        animationScrubbed_ = true;
+        animationScrubTimeSeconds_ = static_cast<double>(sliderTime);
+    }
+
+    auto formatTime = [](double seconds) {
+        int totalSeconds = static_cast<int>(seconds + 0.5);
+        int minutes = totalSeconds / 60, secs = totalSeconds % 60;
+        char buffer[32];
+        std::snprintf(buffer, sizeof(buffer), "%d:%02d", minutes, secs);
+        return std::string(buffer);
+    };
+    double progress = (animTotalTime_ > 1e-9) ? (animCurrentTime_ / animTotalTime_) : 0.0;
+    ImGui::Text("%s / %s  (%.1f%%)%s", formatTime(animCurrentTime_).c_str(), formatTime(animTotalTime_).c_str(),
+                progress * 100.0, animFinished_ ? "  -- Completed" : "");
+    ImGui::EndDisabled();
 }
 
 void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty) {

@@ -2050,3 +2050,68 @@ validator doesn't false-positive on a genuinely correct file -- a
 validator that does just trains the operator to click through it). The
 5-copy mirror+interleave export (the exact scenario that used to fail to
 load on the robot) ALSO reports 0 critical/0 warning now, end to end.
+
+## Print animation: real-time simulation with progressive geometry reveal
+
+Requested after discussing whether to just port more web-editor features
+wholesale (decided not to -- targeted, verifiable asks work better than
+a blanket dump). The web Gcode Editor DOES already have an Animation
+Module (checked directly: `_learn/-Gcode-Editor/index.html` around
+`buildAnimationSequence`/`stepAnimation`/`drawPrintHead`), but reading it
+revealed it isn't what was actually wanted: it drives a moving marker dot
+by DISTANCE over geometry that's already fully, permanently drawn -- no
+time readout, no progressive reveal. A single long straight LIN move
+would have the dot crawl across a bead that was visible the whole time,
+which is exactly the "can't simulate realistic printing" gap raised.
+Built deliberately more than a port:
+
+**Core model** (`editor/PrintAnimation.h/.cpp`, GL-free and fully unit
+tested): every path is split into equal-length sub-segments no longer
+than a configurable limit (default 5mm) so a long straight move reveals
+gradually instead of popping in whole. Each segment carries its own
+cumulative distance AND cumulative TIME (`length / effectiveSpeed()`,
+mm/s), giving a total print-time estimate for the whole sequence. The
+single shared primitive, `stateAtTime(sequence, timeSeconds)`, is called
+both by real-time playback (stepped by wall-clock delta * speed
+multiplier) and by timeline scrubbing (jumping straight to a time value)
+-- same function either way, so play and scrub can never show a
+different head position for the same instant. A path with no recorded
+speed falls back to a configurable speed rather than stalling the whole
+simulation at that one path.
+
+**Reveal rendering** (`render/AnimationRenderer.h/.cpp` +
+`render/AnimationShader.h/.cpp`): the real engineering question was how
+to reveal geometry on a 20k+ segment real file without a per-frame CPU
+mesh rebuild. Each segment becomes a small independent box (no mitred
+joints between neighbors -- an acceptable seam for a preview, and far
+simpler than GeometryRenderer's mitred-run algorithm, which is built for
+a different job); every vertex carries the distance at which its own
+segment starts printing. The mesh uploads ONCE when the simulation is
+built; every frame afterward just updates a single `uRevealDistanceMm`
+uniform and the fragment shader discards anything not printed yet.
+Confirmed on the real file: 20,309 segments, 162,472 triangles, zero GL
+errors building the mesh or drawing at the start/middle/end of a
+2648-second (~44 minute) simulated print.
+
+**Print head** (`render/PrintHeadRenderer.h/.cpp`): a simple two-box
+marker (head body + nozzle) whose nozzle tip sits exactly at the current
+playback position, reusing the existing MeshShader/MeshVertex pipeline
+rather than a new shader -- rebuilt fresh every frame, which is cheap
+regardless of file size since it's always just two boxes. Deliberately
+axis-aligned rather than matched to the robot's real tool orientation
+(Path::a/b/c) -- noted as a follow-up, not required for the simulation to
+read correctly.
+
+**UI**: new "Animate" tab -- scope filters (include print/travel),
+subdivision length, fallback speed, print-head dimensions, Play/Pause/
+Stop, a scrub timeline, and elapsed/total time + percentage. While a
+simulation is built, it replaces the normal always-visible scene geometry
+entirely (showing both at once would defeat the reveal) -- a known
+simplification hides every object, not just the one being animated, an
+acceptable rough edge for the common single-object workflow.
+
+**Verified**: 374 tests (42 new), Debug and Release clean. Real file GL
+smoke test (parser_smoke_test can't create a GL context, so this runs
+inside the `GCODEFORGE_TEST_FILE` diagnostic instead, the only way to
+catch a GL-side bug before it ships): build + draw at three timeline
+points, zero `glGetError()` at every step.

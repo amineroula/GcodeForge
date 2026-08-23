@@ -61,6 +61,51 @@ public:
     ExportDecision exportDecision() const { return exportDecision_; }
     void clearExportDecision() { exportDecision_ = ExportDecision::Pending; }
 
+    // Print animation panel. main.cpp owns the actual AnimationSequence,
+    // GL renderers, and playback clock (this class stays GL-free) -- it
+    // reads user-editable settings from the struct below, and passes the
+    // computed readout (current/total time, running/finished) back in
+    // each frame so the timeline slider and HUD text stay in sync with
+    // whatever's actually playing.
+    struct AnimationSettings {
+        bool includePrint = true;
+        bool includeTravel = true;
+        float maxSegmentLengthMm = 5.0f; // long straight paths split into pieces this long or shorter, for a gradual reveal
+        float fallbackSpeedMps = 0.04f;  // used for any path with no recorded speed
+        float speedMultiplier = 1.0f;    // 1.0 = real time
+        bool showHead = true;
+        float headWidthMm = 180.0f;
+        float headDepthMm = 140.0f;
+        float headHeightMm = 170.0f;
+        float nozzleLengthMm = 90.0f;
+        float nozzleWidthMm = 35.0f;
+    };
+    // Read/write settings (speed, subdivision length, head size...) main.cpp
+    // uses when building the sequence and stepping playback.
+    AnimationSettings& animationSettings() { return animationSettings_; }
+
+    // Playback readout -- main.cpp calls this once per frame with
+    // whatever it just computed, same pattern as setHoverInfo().
+    void setAnimationReadout(double currentTimeSeconds, double totalTimeSeconds, bool running, bool finished, bool built) {
+        animCurrentTime_ = currentTimeSeconds;
+        animTotalTime_ = totalTimeSeconds;
+        animRunning_ = running;
+        animFinished_ = finished;
+        animBuilt_ = built;
+    }
+
+    bool animationBuildRequested() const { return animationBuildRequested_; }
+    void clearAnimationBuildRequest() { animationBuildRequested_ = false; }
+    bool animationPlayRequested() const { return animationPlayRequested_; }
+    void clearAnimationPlayRequest() { animationPlayRequested_ = false; }
+    bool animationPauseRequested() const { return animationPauseRequested_; }
+    void clearAnimationPauseRequest() { animationPauseRequested_ = false; }
+    bool animationStopRequested() const { return animationStopRequested_; }
+    void clearAnimationStopRequest() { animationStopRequested_ = false; }
+    bool animationScrubbed() const { return animationScrubbed_; }
+    double animationScrubTimeSeconds() const { return animationScrubTimeSeconds_; }
+    void clearAnimationScrub() { animationScrubbed_ = false; }
+
     bool saveBedRequested() const { return saveBedRequested_; }
     void clearSaveBedRequest() { saveBedRequested_ = false; }
     bool loadBedRequested() const { return loadBedRequested_; }
@@ -101,6 +146,7 @@ private:
     void drawMenuBar(Scene& scene, UndoStack& undoStack, bool& sceneDirty);
     void drawStatusBar();
     void drawExportReportModal();
+    void drawAnimationPanel();
     void drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty);
     void drawBedPanel(BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& heightmap,
                        SceneObject* activeObject, bool& bedDirty);
@@ -132,6 +178,19 @@ private:
     ValidationReport exportReport_;
     bool exportReportOpen_ = false;
     ExportDecision exportDecision_ = ExportDecision::Pending;
+
+    bool animationBuildRequested_ = false;
+    bool animationPlayRequested_ = false;
+    bool animationPauseRequested_ = false;
+    bool animationStopRequested_ = false;
+    bool animationScrubbed_ = false;
+    double animationScrubTimeSeconds_ = 0.0;
+    AnimationSettings animationSettings_;
+    double animCurrentTime_ = 0.0;
+    double animTotalTime_ = 0.0;
+    bool animRunning_ = false;
+    bool animFinished_ = false;
+    bool animBuilt_ = false;
     bool saveProjectRequested_ = false;
     bool loadProjectRequested_ = false;
 
