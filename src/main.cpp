@@ -442,9 +442,19 @@ int main() {
                                 : "NOT alternating -- one part runs consecutively!");
 
                 // The reported problem: cross-part travels must be FLAT.
+                // Only SYNTHETIC cross-part transitions count here -- not
+                // the source object's own header/footer travels (the
+                // approach down to print start, the retreat away from it
+                // before shutdown), which are genuine, deliberate, large
+                // Z changes by design and are now also preserved as real
+                // travel paths (see editor/Boilerplate.h).
                 double maxTravelDz = 0.0;
                 for (const auto& tp : merged->paths) {
                     if (tp.type != PathType::Travel) continue;
+                    if (tp.srcLine < 0 || tp.srcLine >= static_cast<int>(merged->sourceLines.size())) continue;
+                    const std::string& tl = merged->sourceLines[static_cast<size_t>(tp.srcLine)];
+                    if (tl.find("GCODEFORGE INTERLEAVE TRAVEL") == std::string::npos &&
+                        tl.find("GCODEFORGE in-layer reposition") == std::string::npos) continue;
                     maxTravelDz = std::max(maxTravelDz, std::abs(tp.to.z - tp.from.z));
                 }
                 // A layer-to-layer move MUST rise by one layer height --
@@ -558,6 +568,20 @@ int main() {
                 std::printf("  5-copy interleave: model paths=%zu, re-parsed export paths=%zu %s\n",
                             merged5->paths.size(), reparsed5.paths.size(),
                             (reparsed5.paths.size() == merged5->paths.size()) ? "(match)" : "(MISMATCH!)");
+
+                // The retreat travel's actual MOTION (not just the
+                // shutdown text around it) must survive: the source
+                // file's own retreat lifts to Z 508.00 before moving to
+                // its far park/drip-avoidance position, and that lift
+                // must come BEFORE the shutdown outputs fire.
+                int liftIdx = -1, shutdownIdx = -1;
+                for (int i = 0; i < static_cast<int>(merged5Lines.size()); ++i) {
+                    if (liftIdx < 0 && merged5Lines[static_cast<size_t>(i)].find("Z 508.00") != std::string::npos) liftIdx = i;
+                    if (shutdownIdx < 0 && merged5Lines[static_cast<size_t>(i)].find("$OUT[5]=FALSE") != std::string::npos) shutdownIdx = i;
+                }
+                std::printf("  5-copy interleave: retreat lift (Z 508.00) at line=%d, shutdown at line=%d %s\n",
+                            liftIdx, shutdownIdx,
+                            (liftIdx >= 0 && shutdownIdx >= 0 && liftIdx < shutdownIdx) ? "(GOOD)" : "(BUG! retreat motion missing or out of order)");
             } else {
                 std::printf("  5-copy interleave: FAILED to build a merged object\n");
             }

@@ -1,4 +1,5 @@
 #include "editor/InterleavePrint.h"
+#include "editor/Boilerplate.h"
 #include "editor/KrlLineEdit.h"
 #include "editor/MirrorObject.h"
 #include "model/Transform.h"
@@ -93,71 +94,11 @@ bool segmentCrossesFootprint(const glm::dvec3& a, const glm::dvec3& b, const Foo
     return t0 <= t1;
 }
 
-// The literal source lines (and any Cartesian paths among them, coordinate-
-// patched through the object's own transform) in [startLine, endLine), a
-// half-open range against ONE object's own sourceLines. Used to lift the
-// real boilerplate at the front and back of a real Eidos program -- safety
-// interrupt declarations, BAS(#INITMOV,0), the safe-pose PTP, and at the
-// end the retreat travel + $OUT[...]=FALSE shutdown block + END -- into
-// the merged interleaved object, instead of discarding it.
-struct BoilerplateSlice {
-    std::vector<std::string> lines;
-    // srcLine here is relative to `lines` (0-based within this slice), NOT
-    // yet the absolute index it will end up at in merged.sourceLines --
-    // the caller fixes that up once it knows where this slice landed.
-    std::vector<Path> paths;
-};
-
-BoilerplateSlice extractBoilerplate(const SceneObject& object, int startLine, int endLineExclusive) {
-    BoilerplateSlice slice;
-    startLine = std::max(startLine, 0);
-    endLineExclusive = std::min(endLineExclusive, static_cast<int>(object.sourceLines.size()));
-    if (startLine >= endLineExclusive) return slice;
-
-    std::map<int, const Path*> byLine;
-    for (const auto& path : object.paths) {
-        if (path.srcLine >= startLine && path.srcLine < endLineExclusive) byLine[path.srcLine] = &path;
-    }
-
-    for (int i = startLine; i < endLineExclusive; ++i) {
-        std::string line = object.sourceLines[static_cast<size_t>(i)];
-        auto it = byLine.find(i);
-        if (it != byLine.end()) {
-            const Path* srcPath = it->second;
-            glm::dvec3 worldTo = applyTransform(object.transform, srcPath->to);
-            glm::dvec3 worldFrom = applyTransform(object.transform, srcPath->from);
-            line = replaceKrlAxisValue(line, 'X', worldTo.x);
-            line = replaceKrlAxisValue(line, 'Y', worldTo.y);
-            line = replaceKrlAxisValue(line, 'Z', worldTo.z);
-
-            Path cloned = *srcPath;
-            cloned.from = worldFrom;
-            cloned.to = worldTo;
-            cloned.srcLine = static_cast<int>(slice.lines.size());
-            slice.paths.push_back(cloned);
-        }
-        slice.lines.push_back(line);
-    }
-    return slice;
-}
-
-// The [minSrcLine, maxSrcLine] span of an object's own real Cartesian
-// paths -- everything before it is header boilerplate, everything after
-// is footer boilerplate. std::nullopt if the object has no real paths at
-// all (shouldn't happen here: buildInterleavedObject already requires
-// highestLayer() > 0, so there's at least one Print path with a real
-// srcLine).
-std::optional<std::pair<int, int>> pathSrcLineSpan(const SceneObject& object) {
-    int minLine = std::numeric_limits<int>::max();
-    int maxLine = -1;
-    for (const auto& path : object.paths) {
-        if (path.srcLine < 0) continue;
-        minLine = std::min(minLine, path.srcLine);
-        maxLine = std::max(maxLine, path.srcLine);
-    }
-    if (maxLine < 0) return std::nullopt;
-    return std::make_pair(minLine, maxLine);
-}
+// pathSrcLineSpan() and extractBoilerplate() (header/footer boilerplate
+// extraction) now live in editor/Boilerplate.h -- shared with
+// editor/CellTemplate, which captures one object's header/footer as a
+// reusable per-cell template for objects that have none of their own
+// (e.g. a plain sliced .gcode import with no KRL structure at all).
 
 } // namespace
 

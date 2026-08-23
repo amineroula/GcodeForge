@@ -23,6 +23,17 @@ bool saveBedSettings(const std::string& path, const BedSettings& bed, const BedH
     file << "safePointY " << bed.safePointYMm << "\n";
     file << "safePointZ " << bed.safePointZMm << "\n";
 
+    // Cell template (see editor/CellTemplate.h): the real header/footer
+    // KRL boilerplate, captured once from a known-good file, used to
+    // "fix" an object that has none of its own. One line per source
+    // line, each carrying its own arbitrary text (braces, commas,
+    // whitespace) after the key -- can't go through the generic
+    // "key value" numeric reader below, so header/footer lines are
+    // written and read as their own special case, same as heightmapPoint.
+    file << "cellTemplateCaptured " << (bed.cellTemplate.captured ? 1 : 0) << "\n";
+    for (const auto& line : bed.cellTemplate.headerLines) file << "cellTemplateHeaderLine " << line << "\n";
+    for (const auto& line : bed.cellTemplate.footerLines) file << "cellTemplateFooterLine " << line << "\n";
+
     file << "heightmapVisible " << (heightmap.visible ? 1 : 0) << "\n";
     file << "heightmapCols " << heightmap.cols << "\n";
     file << "heightmapRows " << heightmap.rows << "\n";
@@ -56,6 +67,8 @@ bool loadBedSettings(const std::string& path, BedSettings& bed, BedHeightmap& he
     BedHeightmap resultHeightmap;
     int declaredCols = 0, declaredRows = 0;
     std::vector<float> pointElevations; // parsed in file order, Z only -- X/Y are read but not needed to reconstruct the grid
+    bool cellTemplateCaptured = false;
+    std::vector<std::string> headerLines, footerLines; // in file order, matching write order
 
     std::string key;
     std::string line;
@@ -67,6 +80,18 @@ bool loadBedSettings(const std::string& path, BedSettings& bed, BedHeightmap& he
         if (key == "heightmapPoint") {
             float x = 0.0f, y = 0.0f, z = 0.0f;
             if (lineStream >> x >> y >> z) pointElevations.push_back(z);
+            continue;
+        }
+
+        // Arbitrary text (braces, commas, whitespace) follows the key --
+        // can't go through the generic single-`value` reader below, so
+        // take everything after the one separating space instead.
+        if (key == "cellTemplateHeaderLine" || key == "cellTemplateFooterLine") {
+            std::string rest;
+            std::getline(lineStream, rest);
+            if (!rest.empty() && rest.front() == ' ') rest.erase(0, 1);
+            (key == "cellTemplateHeaderLine" ? headerLines : footerLines).push_back(rest);
+            sawAnyKey = true;
             continue;
         }
 
@@ -84,12 +109,17 @@ bool loadBedSettings(const std::string& path, BedSettings& bed, BedHeightmap& he
         else if (key == "safePointX") resultBed.safePointXMm = static_cast<float>(value);
         else if (key == "safePointY") resultBed.safePointYMm = static_cast<float>(value);
         else if (key == "safePointZ") resultBed.safePointZMm = static_cast<float>(value);
+        else if (key == "cellTemplateCaptured") cellTemplateCaptured = (value != 0.0);
         else if (key == "heightmapVisible") resultHeightmap.visible = (value != 0.0);
         else if (key == "heightmapCols") declaredCols = static_cast<int>(value);
         else if (key == "heightmapRows") declaredRows = static_cast<int>(value);
     }
 
     if (!sawAnyKey) return false;
+
+    resultBed.cellTemplate.captured = cellTemplateCaptured && !headerLines.empty() && !footerLines.empty();
+    resultBed.cellTemplate.headerLines = std::move(headerLines);
+    resultBed.cellTemplate.footerLines = std::move(footerLines);
 
     // Only trust the saved grid data if the point count we actually read
     // matches what the file declared -- a partially-written or hand-edited

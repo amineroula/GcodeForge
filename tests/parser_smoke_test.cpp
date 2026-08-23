@@ -22,6 +22,7 @@
 #include "editor/ObjectLinking.h"
 #include "editor/PathSplit.h"
 #include "editor/RotatePaths.h"
+#include "editor/CellTemplate.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
@@ -971,13 +972,24 @@ void testInterleavePrint() {
         const auto& L = scene.findObject(idA)->layers;
         if (L.size() >= 2) layerStep = std::abs(L[1].z - L[0].z);
     }
+    // Only the SYNTHETIC cross-part transitions this check is actually
+    // about -- not the source object's own header/footer travels (the
+    // approach down to print start, the retreat away from it before
+    // shutdown), which are genuine, deliberate, large Z changes by
+    // design and are now also preserved as real travel paths (see
+    // editor/Boilerplate.h). Synthetic transitions are the only ones
+    // tagged with a GCODEFORGE marker comment on their own source line.
     double worstTravelDz = 0.0;
     for (const auto& p : merged->paths) {
         if (p.type != PathType::Travel) continue;
+        if (p.srcLine < 0 || p.srcLine >= static_cast<int>(merged->sourceLines.size())) continue;
+        const std::string& line = merged->sourceLines[static_cast<size_t>(p.srcLine)];
+        if (line.find("GCODEFORGE INTERLEAVE TRAVEL") == std::string::npos &&
+            line.find("GCODEFORGE in-layer reposition") == std::string::npos) continue;
         worstTravelDz = std::max(worstTravelDz, std::abs(p.to.z - p.from.z));
     }
     check(worstTravelDz <= layerStep + 1e-6,
-          "InterleavePrint: no travel hops above the layer step (no clearance lift)");
+          "InterleavePrint: no SYNTHETIC cross-part travel hops above the layer step (no clearance lift)");
 
     // Alternation is the whole point: consecutive printed segments must
     // come from different parts. Both parts sit at disjoint X ranges
@@ -1370,6 +1382,25 @@ void testInterleavePreservesHeaderAndFooter() {
     check(!exported.empty() && exported.back() == "END",
           "InterleaveHeaderFooter: exported program still ends with a real END");
 
+    // The retreat travel's actual MOTION must survive too, not just the
+    // shutdown text around it -- an earlier version of pathSrcLineSpan()
+    // drew the header/footer boundary using ANY path type, which put it
+    // AFTER the retreat travel (itself a tracked Travel-type path) and
+    // silently excluded it: the exported program would jump straight
+    // from the last print position to $OUT[...]=FALSE with no travel
+    // away from the part first. The fixture's retreat lifts to Z 40
+    // (distinctly higher than the Z 2/Z 4 print layers) before the
+    // shutdown outputs -- check it's actually there, and before them.
+    size_t liftIndex = exported.size(), shutdownIndex = exported.size();
+    for (size_t i = 0; i < exported.size(); ++i) {
+        if (liftIndex == exported.size() && exported[i].find("Z 40") != std::string::npos) liftIndex = i;
+        if (shutdownIndex == exported.size() && exported[i].find("$OUT[5]=FALSE") != std::string::npos) shutdownIndex = i;
+    }
+    check(liftIndex < exported.size(),
+          "InterleaveHeaderFooter: the retreat travel's own lift motion (Z 40) survives, not just the shutdown text");
+    check(liftIndex < shutdownIndex,
+          "InterleaveHeaderFooter: the retreat travel happens BEFORE the shutdown outputs (moves away before shutting off)");
+
     // The header/footer travels are real, first-class paths now -- not
     // just inert background text -- matching what the user actually asked
     // for: "keep the starting travels and safe position point for the
@@ -1382,6 +1413,80 @@ void testInterleavePreservesHeaderAndFooter() {
           "(header/footer travels are tracked paths, not just text)");
     check(reparsed.startPoint.present,
           "InterleaveHeaderFooter: re-parsed export still has a safe-pose start point");
+}
+
+// Forward-looking real-use question: "next I want to import sliced
+// objects and they will not have start and end, and you have to fix it
+// with a button or a check." A plain sliced .gcode import (via
+// parser/GcodeParser.h) has none of the header/footer fix above could
+// lift -- it's just G0/G1 motion lines, no &ACCESS, no DEF, no shutdown.
+// Checks the "check" (objectHasBoilerplate) correctly flags such an
+// object, and the "fix" (captureCellTemplate + applyCellTemplate)
+// correctly wraps it using a template captured from a real-shaped file,
+// anchored to the sliced object's OWN print start/end -- not the
+// template's original position.
+void testCellTemplateFixesSlicedImport() {
+    // The "known-good" source to capture a template from.
+    SceneObject known = parseSrc("Known", realisticEidosShapedLines());
+    check(objectHasBoilerplate(known), "CellTemplate: precondition -- the known-good fixture has real boilerplate");
+
+    auto tmpl = captureCellTemplate(known);
+    check(tmpl.has_value(), "CellTemplate: capture succeeds on an object with real boilerplate");
+    if (!tmpl.has_value()) return;
+
+    // A plain sliced import, far away from the template's own part, with
+    // no header/footer at all -- exactly a "slines object."
+    std::vector<std::string> plainGcode = {
+        "G0 X5000 Y5000 Z10",
+        "G1 X5010 Y5000 Z2 F600",
+        "G1 X5010 Y5010 Z2 F600",
+        "G1 X5000 Y5010 Z2 F600",
+        "G0 X5000 Y5000 Z4",
+        "G1 X5010 Y5000 Z4 F600",
+        "G1 X5010 Y5010 Z4 F600",
+    };
+    SceneObject sliced = parseGcode("Sliced", plainGcode);
+    check(!sliced.paths.empty(), "CellTemplate: precondition -- the sliced import actually has paths");
+    check(!objectHasBoilerplate(sliced),
+          "CellTemplate: the check correctly flags a plain sliced import as missing boilerplate");
+
+    glm::dvec3 slicedFirst = sliced.paths.front().from;
+    glm::dvec3 slicedLast = sliced.paths.back().to;
+    size_t pathsBeforeFix = sliced.paths.size();
+
+    bool fixed = applyCellTemplate(sliced, *tmpl);
+    check(fixed, "CellTemplate: applying the template to the sliced import succeeds");
+    check(objectHasBoilerplate(sliced),
+          "CellTemplate: the fixed object now passes the same check that flagged it");
+    check(sliced.paths.size() > pathsBeforeFix,
+          "CellTemplate: the fix adds real header/footer paths, not just text");
+    check(sliced.startPoint.present, "CellTemplate: the fix gives the sliced object a safe-pose start point");
+
+    // The header's approach must end (and the footer's retreat must
+    // start) at the SLICED object's own actual print start/end -- not
+    // wherever the template's original part happened to be -- or the fix
+    // would silently teleport the robot across the bed before printing.
+    checkNear(sliced.paths.front().to.x, slicedFirst.x, "CellTemplate: header approach lands at the sliced object's own print start (X)");
+    checkNear(sliced.paths.front().to.y, slicedFirst.y, "CellTemplate: header approach lands at the sliced object's own print start (Y)");
+
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(sliced, result);
+    check(result.success, "CellTemplate: the fixed object exports successfully");
+    auto containsLine = [&](const std::string& needle) {
+        for (const auto& line : exported) if (line.find(needle) != std::string::npos) return true;
+        return false;
+    };
+    check(containsLine("&ACCESS"), "CellTemplate: fixed export has &ACCESS");
+    check(containsLine("$OUT[7]=FALSE"), "CellTemplate: fixed export turns the extruder off at the end");
+    check(!exported.empty() && exported.back() == "END", "CellTemplate: fixed export ends with a real END");
+
+    // Symmetric check on the footer end: its retreat must start from the
+    // sliced object's own actual print END, not the template's.
+    bool foundFooterAnchor = false;
+    for (const auto& p : sliced.paths) {
+        if (glm::length(p.from - slicedLast) < 0.01) { foundFooterAnchor = true; break; }
+    }
+    check(foundFooterAnchor, "CellTemplate: footer retreat starts from the sliced object's own actual print end");
 }
 
 void testMirrorAndInterleave() {
@@ -1750,6 +1855,7 @@ int main() {
     testMirrorAndInterleaveKeepsSpeed();
     testInterleaveTravelsKeepFullAxisSet();
     testInterleavePreservesHeaderAndFooter();
+    testCellTemplateFixesSlicedImport();
     testProjectRoundTrip();
     testDirectPathEditExports();
     testSpeedColorGradient();

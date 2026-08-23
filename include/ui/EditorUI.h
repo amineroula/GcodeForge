@@ -86,7 +86,8 @@ private:
     void drawMenuBar(Scene& scene, UndoStack& undoStack, bool& sceneDirty);
     void drawStatusBar();
     void drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty);
-    void drawBedPanel(BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& heightmap, bool& bedDirty);
+    void drawBedPanel(BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& heightmap,
+                       SceneObject* activeObject, bool& bedDirty);
     void drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dirty);
     void drawMultiPartPanel(Scene& scene, UndoStack& undoStack, bool& dirty);
     void drawTransformPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty);
@@ -95,6 +96,16 @@ private:
     void drawSpeedPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty);
     void drawBedConformPanel(Scene& scene, SceneObject& object, const BedHeightmap& heightmap,
                               const BedSettings& bed, UndoStack& undoStack, bool& dirty);
+    // The "check" and "fix" the user asked for after seeing an interleaved
+    // export that had lost its whole safety header and shutdown footer --
+    // and a heads-up about what's coming next: a plain sliced import has
+    // NO boilerplate of its own at all. Warns when `object` is missing it
+    // (editor/CellTemplate.h's objectHasBoilerplate()) and offers a "Fix"
+    // button that applies the cell-level template captured via the Bed
+    // panel (drawBedPanel's own capture button, since the template itself
+    // is cell-level, not object-level -- see render/BedSettings.h).
+    void drawCellTemplatePanel(Scene& scene, SceneObject& object, const BedSettings& bed,
+                                UndoStack& undoStack, bool& dirty);
     void drawColorModePanel(ColorMode& colorMode, bool& dirty);
     void drawStatsPanel(const Scene& scene, RenderMode mode, size_t renderedPrimitiveCount);
 

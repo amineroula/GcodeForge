@@ -1,5 +1,6 @@
 #include "ui/EditorUI.h"
 #include "editor/BedConform.h"
+#include "editor/CellTemplate.h"
 #include "editor/InterleavePrint.h"
 #include "editor/MirrorObject.h"
 #include "editor/ObjectLinking.h"
@@ -95,6 +96,7 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
                                             : std::string("Object###objtab");
         if (ImGui::BeginTabItem(objectTabLabel.c_str())) {
             if (active) {
+                drawCellTemplatePanel(scene, *active, bedSettings, undoStack, sceneDirty);
                 drawTransformPanel(scene, *active, undoStack, sceneDirty);
                 drawLayerTablePanel(scene, *active, undoStack, sceneDirty, selectionDirty);
                 drawSelectionGroupPanel(scene, *active, undoStack, sceneDirty, selectionDirty);
@@ -115,7 +117,7 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
     ImGui::SetNextWindowPos(ImVec2(displayWidth - 332, 32), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(320, 320), ImGuiCond_FirstUseEver);
     ImGui::Begin("Bed");
-    drawBedPanel(bedSettings, lightingSettings, bedHeightmap, bedDirty);
+    drawBedPanel(bedSettings, lightingSettings, bedHeightmap, active, bedDirty);
     ImGui::End();
 }
 
@@ -295,7 +297,8 @@ void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, boo
     ImGui::TextDisabled("rotation always spins around the same Object/Start/End/Whole target set above.");
 }
 
-void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHeightmap& heightmap, bool& bedDirty) {
+void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHeightmap& heightmap,
+                             SceneObject* activeObject, bool& bedDirty) {
     sectionLabel("Bed size");
     if (ImGui::InputFloat("Width (mm)", &bed.widthMm, 10.0f, 100.0f, "%.0f")) { bed.widthMm = std::max(bed.widthMm, 10.0f); bedDirty = true; }
     if (ImGui::InputFloat("Depth (mm)", &bed.depthMm, 10.0f, 100.0f, "%.0f")) { bed.depthMm = std::max(bed.depthMm, 10.0f); bedDirty = true; }
@@ -349,11 +352,52 @@ void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHei
                             "Not measured -- marker falls back to the program's first point, which is NOT the safe pose.");
     }
 
+    // Cell template: also a CELL property (safety interrupts and I/O
+    // indices are specific to this robot, not to any one file), captured
+    // once from a real known-good program and reused to "fix" an object
+    // that has none of its own -- see editor/CellTemplate.h. Real-use
+    // report: an interleaved 5-copy export had lost &ACCESS, the safety
+    // interrupts, and the shutdown block entirely; a plain sliced .gcode
+    // import will have NONE of that to begin with.
+    ImGui::Spacing();
+    sectionLabel("Cell template (header/footer fix)");
+    ImGui::TextWrapped("The real header (safety interrupts, safe-pose PTP) and footer (retreat travel, "
+                        "extruder/bed/cooling shutoff) a program needs to actually run. Capture it once "
+                        "from a known-good file, then use it to fix an object missing its own -- a plain "
+                        "sliced import, for instance.");
+    if (bed.cellTemplate.captured) {
+        ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.50f, 1.0f), "Captured: %d header line(s), %d footer line(s).",
+                            static_cast<int>(bed.cellTemplate.headerLines.size()),
+                            static_cast<int>(bed.cellTemplate.footerLines.size()));
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear##celltemplate")) {
+            bed.cellTemplate = CellTemplate{};
+            bedDirty = true;
+        }
+    } else {
+        ImGui::TextColored(ImVec4(1.0f, 0.70f, 0.30f, 1.0f), "Not captured yet.");
+    }
+
+    bool canCapture = activeObject && objectHasBoilerplate(*activeObject);
+    ImGui::BeginDisabled(!canCapture);
+    if (ImGui::Button("Capture from active object")) {
+        if (auto tmpl = captureCellTemplate(*activeObject)) {
+            bed.cellTemplate = *tmpl;
+            bedDirty = true;
+        }
+    }
+    ImGui::EndDisabled();
+    if (!canCapture) {
+        ImGui::TextDisabled(activeObject
+                                 ? "Active object has no real header/footer of its own to capture."
+                                 : "No object loaded.");
+    }
+
     ImGui::Spacing();
     if (ImGui::Button("Save Bed...")) saveBedRequested_ = true;
     ImGui::SameLine();
     if (ImGui::Button("Load Bed...")) loadBedRequested_ = true;
-    ImGui::TextDisabled("Bed file stores size, origin, grid, heightmap, and the safe point.");
+    ImGui::TextDisabled("Bed file stores size, origin, grid, heightmap, the safe point, and the cell template.");
 
     // Lighting affects only Geometry-mode shading (a per-frame shader
     // uniform, not baked into any mesh) -- no bedDirty/sceneDirty needed,
@@ -676,6 +720,32 @@ void EditorUI::drawMultiPartPanel(Scene& scene, UndoStack& undoStack, bool& dirt
     ImGui::EndDisabled();
     if (active == nullptr) ImGui::TextDisabled("Load a file and select an object first.");
     if (!lastMirrorResult_.empty()) ImGui::TextDisabled("%s", lastMirrorResult_.c_str());
+}
+
+void EditorUI::drawCellTemplatePanel(Scene& scene, SceneObject& object, const BedSettings& bed,
+                                      UndoStack& undoStack, bool& dirty) {
+    if (objectHasBoilerplate(object)) return; // nothing to warn about -- stay out of the way
+
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.85f, 0.55f, 0.15f, 1.0f));
+    ImGui::BeginChild("##missingBoilerplate", ImVec2(0, 0), ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
+    ImGui::TextColored(ImVec4(1.0f, 0.70f, 0.30f, 1.0f), "Missing header/footer");
+    ImGui::TextWrapped("This object has no &ACCESS, safety interrupts, or shutdown block of its own -- "
+                        "a plain sliced import, or a merge whose sources all lacked one. Exporting it as-is "
+                        "will very likely fail to load on the robot, or finish printing without ever "
+                        "turning off the extruder/bed heat/cooling.");
+
+    if (bed.cellTemplate.captured) {
+        if (ImGui::Button("Fix using cell template")) {
+            undoStack.snapshotBeforeChange(scene);
+            applyCellTemplate(object, bed.cellTemplate);
+            dirty = true;
+        }
+    } else {
+        ImGui::TextDisabled("Capture a cell template first (Bed panel > Cell template) from a known-good file.");
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::Spacing();
 }
 
 void EditorUI::drawTransformPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty) {

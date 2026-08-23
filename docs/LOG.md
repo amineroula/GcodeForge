@@ -1905,3 +1905,90 @@ times (the exact scenario reported): exported program has `&ACCESS`,
 real `END`, `startPoint.present = true`, and re-parsing the export
 recovers all 33,227 paths the model reports (exact match). Round-trip
 export of the untouched original file is still `byteIdentical=yes`.
+
+## Cell template: capture + check + fix for objects with no boilerplate of their own
+
+Forward-looking question after the header/footer preservation fix: "next
+I want to import sliced objects and they will not have start and end, and
+you have to fix it with a button or a check." A plain sliced .gcode/.nc
+import (parser/GcodeParser.h) has no &ACCESS, no safety interrupts, no
+safe-pose PTP, and no shutdown block at all -- the header/footer fix only
+works when SOME object being merged/exported already has boilerplate to
+lift, so a set of objects that all lack one would still fall back to a
+bare "DEF .../END", reproducing the exact bug that fix solved.
+
+**A real bug found while building this**: writing the test surfaced that
+the header/footer boundary (`pathSrcLineSpan`) was computed over paths of
+ANY type, including the object's own approach/retreat TRAVEL paths --
+which put the boundary AFTER the retreat travel too, silently excluding
+its actual motion (the lift + step-back that keeps the nozzle from
+dripping on the finished part) from "footer boilerplate." Only the
+shutdown $OUT/END *text* survived; the travel that's supposed to happen
+before it did not. This affected the interleave fix already shipped, not
+just the new cell-template feature -- confirmed and fixed by redefining
+the span as PRINT-type paths only (`PathType::Print`), so travel paths on
+either side of the print body -- both the interleave's own header/footer
+lift and this feature's cell-template application -- are correctly
+included. Caught by a new positional check (retreat's lift line must
+appear, and must appear BEFORE the shutdown outputs) added to both the
+test suite and the main.cpp real-file diagnostic; confirmed on the real
+1-up file mirrored 5 times: `Z 508.00` (the real retreat lift) now
+appears at line 34684, `$OUT[5]=FALSE` at line 34689 -- lift before
+shutdown, as it must be.
+
+**Design**: `editor/Boilerplate.h` is now a shared module (`pathSrcLineSpan`,
+`extractBoilerplate`) used by both `editor/InterleavePrint.cpp` (unchanged
+behavior, just refactored to share code) and the new `editor/CellTemplate.h`.
+`CellTemplate` (header lines + footer lines) is a new field on
+`BedSettings` -- cell-level, not object-level, matching the safe point:
+the safety interrupts and I/O indices are properties of the robot cell,
+not any one file. `objectHasBoilerplate()` is the "check" (true only if
+BOTH a header and a footer exist). `captureCellTemplate()` lifts an
+object's own header/footer (world-space, via editor/Boilerplate.h) into a
+reusable template. `applyCellTemplate()` is the "fix": rigidly translates
+the template's approach geometry so its own last coordinate-bearing line
+lands exactly at the TARGET object's actual first print position, and the
+retreat geometry so its first coordinate-bearing line lands exactly at
+the target's actual last print position -- preserving the template's
+relative shape (how far the approach descends, how far the retreat steps
+back) regardless of where the new object sits on the bed. Non-coordinate
+lines (safety declarations, the joint-space safe-pose PTP, $OUT/$TIMER
+commands) are untouched, since `replaceKrlAxisValue` only acts where an
+axis token is actually present. World-space template text is converted
+back into the target object's own LOCAL space via `inverseApplyTransform`
+before being stored as Path::from/to, since the target's own transform
+still applies on top at render/export time.
+
+**UI**: Bed panel gets a new "Cell template" section -- capture status,
+"Capture from active object" (enabled only when the active object passes
+`objectHasBoilerplate()`), and Clear; persisted with the rest of
+`BedSettings` via `io/BedIO.cpp` (one line per header/footer source line,
+since arbitrary KRL text with braces/commas can't go through the existing
+generic "key value" numeric reader -- same special-casing as
+`heightmapPoint`). The Object tab shows a warning panel (only when the
+active object fails the check) explaining what's missing and why it
+matters, with a "Fix using cell template" button when a template has been
+captured, or a note to capture one first when it hasn't.
+
+New tests: `testCellTemplateFixesSlicedImport()` -- captures a template
+from a realistic fixture, applies it to a `parseGcode()`-origin object
+(genuinely no boilerplate at all, the real target scenario) far away on
+the bed, and checks the check correctly flags it before the fix and
+clears after, the approach/retreat anchor to the sliced object's OWN
+actual print start/end (not the template's original position), and the
+export has &ACCESS/shutdown/END. `testInterleaveTravelsKeepFullAxisSet`
+and `testInterleavePreservesHeaderAndFooter` extended with the
+lift-before-shutdown positional check described above.
+
+**Verified**: 313 tests, Debug and Release clean. Real 1-up file
+(`E:\CELL01-HUB_SMALL_B2B_REV_B-1UP-.src`) mirrored 5 times: &ACCESS,
+INTERRUPT, safe-pose PTP, all three shutdown outputs, real END,
+startPoint present, matching re-parsed path count (33,232), retreat lift
+present and correctly ordered before shutdown. Round-trip export of the
+untouched file still byte-identical. (Note: the same 5-copy check hangs
+under a Debug build specifically, taking minutes instead of seconds on
+this ~14-25k-line real file -- confirmed via Release, which completes in
+under a second with identical, correct results, that this is Debug's
+iterator-checked container overhead on repeated large-scale diagnostics,
+not a logic bug; the parser_smoke_test suite's smaller fixtures pass
+quickly in both configs.)

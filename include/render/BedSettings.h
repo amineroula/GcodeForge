@@ -1,5 +1,24 @@
 #pragma once
 
+#include <string>
+#include <vector>
+
+// The real KRL boilerplate a program needs to actually load and run on
+// the robot -- safety interrupt declarations, BAS(#INITMOV,0), the
+// safe-pose PTP, initial travel down to print start (the "header"); the
+// retreat travel + $OUT[...]=FALSE shutdown block + END (the "footer") --
+// captured once from a known-good real file and reused to "fix" an object
+// that has none of its own (a plain sliced .gcode import, or a merge of
+// objects that all happen to lack it). Cell-level, not part-level: the
+// safety interrupts and I/O indices are specific to this robot cell, not
+// to any one file, so it's saved alongside the bed and the safe point
+// rather than per-object. See editor/CellTemplate.h for capture/apply.
+struct CellTemplate {
+    bool captured = false;
+    std::vector<std::string> headerLines; // world-space text, as captured
+    std::vector<std::string> footerLines;
+};
+
 // The print bed: its physical size, where it sits in world space ("bed
 // movement" -- repositioning the whole bed, not an object), and how the
 // reference grid on top of it is drawn.
@@ -27,4 +46,6 @@ struct BedSettings {
     float safePointXMm = 0.0f;
     float safePointYMm = 0.0f;
     float safePointZMm = 0.0f;
+
+    CellTemplate cellTemplate;
 };
