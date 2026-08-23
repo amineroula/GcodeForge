@@ -914,7 +914,13 @@ void testMirrorObject() {
     SceneObject source = parseSrc("Part", sampleSrcLinesForExport());
     SceneObject mirror = mirrorObject(source, 200.0);
 
-    check(mirror.transform.flipX != source.transform.flipX, "MirrorObject: mirror has flipX toggled relative to the source");
+    // A plain translated COPY, not a true mirror -- flipping used to be
+    // the default and was a real reported safety bug (see
+    // testMirrorTransitionApproachesNearEdgeNotFarEdge): it could
+    // relocate a layer's first print point to the far side of the copy's
+    // own footprint, making the interleave's cross-part transition drag
+    // the nozzle across already-deposited material at travel speed.
+    check(mirror.transform.flipX == source.transform.flipX, "MirrorObject: the copy does NOT flip (a plain translation, not a mirror)");
     check(mirror.paths.size() == source.paths.size(), "MirrorObject: mirror has the same path count as the source");
     check(mirror.name != source.name, "MirrorObject: mirror gets a distinct name");
     check(mirror.selectedPaths.empty(), "MirrorObject: mirror starts with an empty selection");
@@ -931,6 +937,77 @@ void testMirrorObject() {
         mirrorMinX = std::min({mirrorMinX, applyTransform(mirror.transform, p.from).x, applyTransform(mirror.transform, p.to).x});
     }
     check(mirrorMinX >= sourceMaxX, "MirrorObject: mirror is placed entirely clear of the source in X (no overlap)");
+}
+
+// Real-use report, found via the print animation: after mirroring and
+// interleaving, the cross-part transition into the mirrored copy landed
+// on the FAR edge of the copy (the side away from the part it was
+// transitioning FROM) instead of the near edge -- meaning the travel had
+// to cross the copy's own footprint (material already printed, or about
+// to be) at travel speed to get there. A collision/dripping hazard, not
+// just a cosmetic one. Root cause: mirrorObject() flips the copy's local
+// X, which relocates whichever point happens to be "the layer's first
+// point" in file order to a different SIDE of the copy's own bounding
+// box -- flipping doesn't reorder the path list, so the print still
+// starts at the same FILE-ORDER point, but that point's physical
+// position can end up on the opposite side purely because of the flip,
+// with no relationship to which side actually faces the neighboring
+// part.
+void testMirrorTransitionApproachesNearEdgeNotFarEdge() {
+    Scene scene;
+    // A single-layer object whose print path clearly starts at its own
+    // LOW-X corner (X=20) and ends at its HIGH-X corner (X=100) -- local
+    // X deliberately doesn't start at 0, matching the note in
+    // MirrorObject.cpp about real KUKA files never doing that either.
+    std::vector<std::string> lines = {
+        "DEF Part()",
+        "$VEL.CP = 0.100",
+        "LIN {X 20, Y 0, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 100, Y 0, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "END",
+    };
+    SceneObject a = parseSrc("A", lines);
+    int idA = scene.addObject(a).id;
+    SceneObject b = mirrorObject(*scene.findObject(idA), 50.0);
+    int idB = scene.addObject(std::move(b)).id;
+
+    // B sits entirely to the right of A (higher X) -- confirmed by the
+    // existing MirrorObject test elsewhere. A transition INTO B should
+    // therefore always land on B's own LOW-X (near, left) edge, the side
+    // actually facing A, never B's HIGH-X (far, right) edge.
+    const SceneObject* bObj = scene.findObject(idB);
+    double bMinX = std::numeric_limits<double>::max(), bMaxX = std::numeric_limits<double>::lowest();
+    for (const auto& p : bObj->paths) {
+        bMinX = std::min({bMinX, applyTransform(bObj->transform, p.from).x, applyTransform(bObj->transform, p.to).x});
+        bMaxX = std::max({bMaxX, applyTransform(bObj->transform, p.from).x, applyTransform(bObj->transform, p.to).x});
+    }
+
+    InterleaveOptions options;
+    options.detourMarginMm = 100.0;
+    auto merged = buildInterleavedObject(scene, {idA, idB}, options);
+    check(merged.has_value(), "MirrorTransition: interleave succeeds");
+    if (!merged.has_value()) return;
+
+    // Find the LAST synthetic cross-part transition travel (a detour, if
+    // one fired, is 2-3 hops -- the one that matters is the FINAL landing
+    // point right before printing resumes, not an intermediate lane hop)
+    // and check which edge of B it landed on.
+    bool foundTransition = false;
+    double transitionTargetX = 0.0;
+    for (const auto& p : merged->paths) {
+        if (p.srcLine < 0 || p.srcLine >= static_cast<int>(merged->sourceLines.size())) continue;
+        if (merged->sourceLines[static_cast<size_t>(p.srcLine)].find("GCODEFORGE INTERLEAVE TRAVEL") == std::string::npos) continue;
+        foundTransition = true;
+        transitionTargetX = p.to.x; // keeps overwriting -- last match wins
+    }
+    check(foundTransition, "MirrorTransition: precondition -- a cross-part transition travel was generated");
+
+    double distToNearEdge = std::abs(transitionTargetX - bMinX);
+    double distToFarEdge = std::abs(transitionTargetX - bMaxX);
+    check(distToNearEdge < distToFarEdge,
+          "MirrorTransition: the transition into the mirrored copy lands on its NEAR edge (facing the previous "
+          "part), not its far edge -- landing on the far edge means the travel just crossed the whole copy's own "
+          "footprint at travel speed (the reported safety issue)");
 }
 
 void testInterleavePrint() {
@@ -2100,6 +2177,7 @@ int main() {
     testSafePointRoundTrip();
     testMirrorAndInterleave();
     testMirrorAndInterleaveKeepsSpeed();
+    testMirrorTransitionApproachesNearEdgeNotFarEdge();
     testAnimationSequenceSubdivisionAndTiming();
     testAnimationFallbackSpeedAndVisibilityFilter();
     testAnimationStateAtTimeSharedByPlayAndScrub();

@@ -308,12 +308,19 @@ void EditorUI::drawAnimationPanel() {
     ImGui::SameLine();
     if (ImGui::Button("Stop")) animationStopRequested_ = true;
 
+    // Full panel width and noticeably taller than a default slider --
+    // this is the primary scrub control, not a minor setting, so it
+    // should read as the biggest thing in the tab and grow with the
+    // panel instead of a small fixed-width bar.
     float sliderTime = static_cast<float>(animCurrentTime_);
     float sliderMax = static_cast<float>(std::max(animTotalTime_, 0.0001));
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 10.0f));
     if (ImGui::SliderFloat("##animTimeline", &sliderTime, 0.0f, sliderMax, "")) {
         animationScrubbed_ = true;
         animationScrubTimeSeconds_ = static_cast<double>(sliderTime);
     }
+    ImGui::PopStyleVar();
 
     auto formatTime = [](double seconds) {
         int totalSeconds = static_cast<int>(seconds + 0.5);
@@ -795,14 +802,17 @@ void EditorUI::drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dir
 void EditorUI::drawMultiPartPanel(Scene& scene, UndoStack& undoStack, bool& dirty) {
     ImGui::Separator();
     if (boldFont_) ImGui::PushFont(boldFont_);
-    bool open = ImGui::CollapsingHeader("Mirror the object", ImGuiTreeNodeFlags_DefaultOpen);
+    bool open = ImGui::CollapsingHeader("Copy the object", ImGuiTreeNodeFlags_DefaultOpen);
     if (boldFont_) ImGui::PopFont();
     if (!open) return;
 
-    ImGui::TextWrapped("Mirrors the active part, spreads the copies out, and links them layer by layer "
-                        "into one program -- part A layer 1, part B layer 1, back to A layer 2, and so "
-                        "on -- so each part cools while the others print. The travels between parts are "
-                        "tagged for cutting apart afterward, leaving separate finished parts.");
+    ImGui::TextWrapped("Duplicates the active part (a plain translated copy -- NOT a true mirror; an "
+                        "earlier version flipped the copy, which could route the entry travel across the "
+                        "copy's own already-printed material), spreads the copies out, and links them "
+                        "layer by layer into one program -- part A layer 1, part B layer 1, back to A "
+                        "layer 2, and so on -- so each part cools while the others print. The travels "
+                        "between parts are tagged for cutting apart afterward, leaving separate finished "
+                        "parts.");
 
     SceneObject* active = scene.activeObject();
     ImGui::InputInt("Total copies (incl. original)", &multiPartCopies_);
@@ -816,11 +826,11 @@ void EditorUI::drawMultiPartPanel(Scene& scene, UndoStack& undoStack, bool& dirt
     // ONE button for one intent. This used to be two ("Mirror the
     // object", then "Build interleaved print"), which made the second
     // step look optional and the first look broken when used alone --
-    // reported as "mirror doesn't work". Mirroring without the
+    // reported as "mirror doesn't work". Copying without the
     // layer-by-layer linking isn't a thing anyone wanted here.
     ImGui::Spacing();
     ImGui::BeginDisabled(active == nullptr);
-    if (ImGui::Button("Mirror and link layer by layer")) {
+    if (ImGui::Button("Copy and link layer by layer")) {
         undoStack.snapshotBeforeChange(scene);
         MirrorInterleaveOptions options;
         options.copies = multiPartCopies_;

@@ -2115,3 +2115,59 @@ smoke test (parser_smoke_test can't create a GL context, so this runs
 inside the `GCODEFORGE_TEST_FILE` diagnostic instead, the only way to
 catch a GL-side bug before it ships): build + draw at three timeline
 points, zero `glGetError()` at every step.
+
+## Mirroring was actually a safety bug: copy, don't flip
+
+Real-use report, found via the new print animation: after mirroring and
+interleaving, the animation showed the nozzle traveling FAST across an
+already-printed line right after entering a mirrored copy -- the entry
+travel was landing on the FAR edge of the copy instead of the near edge
+facing the previous part. The user's own diagnosis was exactly right: "I
+should have not called it mirroring, it's just copying" -- flipping the
+geometry was never actually needed for the "print several copies,
+interleaved so each cools" workflow, and it was actively dangerous.
+
+**Root cause**: `mirrorObject()` flipped the copy's local X. Flipping
+doesn't reorder the path list -- the print still starts at the same
+FILE-ORDER point it always did -- but flipping the geometry can relocate
+THAT point to a different SIDE of the copy's own bounding box, with no
+relationship to which side actually faces the neighboring part.
+`InterleavePrint.cpp`'s `emitTransition()` targets a layer's first point
+directly and deliberately never checks whether the straight line to it
+crosses the TARGET's own footprint -- it can't, structurally: the target
+point is always ON that footprint's boundary by definition, so the check
+is written to skip the target object entirely (`if (i == targetObjectIndex)
+continue;`). If flipping put that first point on the far edge instead of
+the near one, the "direct" transition would drag the nozzle across the
+copy's own just-deposited material at full travel speed to reach it.
+
+**Fix**: `mirrorObject()` is now a plain translated copy -- no flip. Kept
+the function name (avoiding an invasive rename across every caller and
+UI string) but updated every doc comment and the user-facing "Mirror the
+object" panel, "Mirror and link layer by layer" button, and copy naming
+(now "(copy)" not "(mirror)") to say what it actually does. The placement
+math also needed fixing: the old formula (`2*maxLocalX + safeDistanceMm`)
+was specifically derived for the flip case (mirrored range becomes
+`[-maxX, -minX]`, so only the far edge matters); the plain-translation
+case needs the object's actual WIDTH (`maxLocalX - minLocalX`), which
+requires tracking `minLocalX` too (previously unused).
+
+New test `testMirrorTransitionApproachesNearEdgeNotFarEdge()`: an
+asymmetric single-layer fixture (local X range 20-100, so a flip
+actually relocates something -- an earlier fixture attempt starting at
+local X=0 didn't, since 0 negates to itself) with two copies, checking
+the cross-part transition's actual landing point is closer to the
+target's near edge than its far edge. Failed correctly against the old
+flipping behavior (landed exactly on the far edge, confirming the exact
+reported bug) before the fix, passes after. Existing `testMirrorObject()`
+updated to assert flipX is now UNCHANGED, not toggled.
+
+Also, unrelated but requested alongside this: the Animate tab's timeline
+scrub bar now stretches to the full panel width and is noticeably taller
+(it's the primary control in that tab, not a minor setting).
+
+**Verified**: 377 tests, Debug and Release clean. Real file (4-copy and
+5-copy interleave): all existing invariants (alternation, no clearance
+hop, full axis set, header/footer preservation, retreat-before-shutdown,
+zero validation issues, byte-identical untouched round-trip) still hold
+with the corrected copy behavior.
