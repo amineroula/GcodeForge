@@ -1,5 +1,6 @@
 #pragma once
 
+#include "editor/ExportValidation.h"
 #include "editor/UndoStack.h"
 #include "model/BedHeightmap.h"
 #include <string>
@@ -46,6 +47,20 @@ public:
     bool saveSrcRequested() const { return saveSrcRequested_; }
     void clearSaveSrcRequest() { saveSrcRequested_ = false; }
 
+    // Pre-export report (editor/ExportValidation.h): main.cpp compiles
+    // the object BEFORE opening the save dialog and calls this if the
+    // report has any issues. A clean report (main.cpp checks
+    // report.issues.empty() itself) skips this entirely and goes
+    // straight to the file dialog -- no point interrupting a clean save.
+    enum class ExportDecision { Pending, Proceed, Cancel };
+    void showExportReport(const ValidationReport& report) {
+        exportReport_ = report;
+        exportReportOpen_ = true;
+        exportDecision_ = ExportDecision::Pending;
+    }
+    ExportDecision exportDecision() const { return exportDecision_; }
+    void clearExportDecision() { exportDecision_ = ExportDecision::Pending; }
+
     bool saveBedRequested() const { return saveBedRequested_; }
     void clearSaveBedRequest() { saveBedRequested_ = false; }
     bool loadBedRequested() const { return loadBedRequested_; }
@@ -85,6 +100,7 @@ private:
 
     void drawMenuBar(Scene& scene, UndoStack& undoStack, bool& sceneDirty);
     void drawStatusBar();
+    void drawExportReportModal();
     void drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty);
     void drawBedPanel(BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& heightmap,
                        SceneObject* activeObject, bool& bedDirty);
@@ -113,6 +129,9 @@ private:
     bool saveBedRequested_ = false;
     bool loadBedRequested_ = false;
     bool saveSrcRequested_ = false;
+    ValidationReport exportReport_;
+    bool exportReportOpen_ = false;
+    ExportDecision exportDecision_ = ExportDecision::Pending;
     bool saveProjectRequested_ = false;
     bool loadProjectRequested_ = false;
 

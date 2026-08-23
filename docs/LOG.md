@@ -1992,3 +1992,61 @@ under a second with identical, correct results, that this is Debug's
 iterator-checked container overhead on repeated large-scale diagnostics,
 not a logic bug; the parser_smoke_test suite's smaller fixtures pass
 quickly in both configs.)
+
+## Pre-export validation report (structural + speed reparse), from Codex's read of the web original
+
+Asked Codex (working from the web Gcode Editor's real source,
+`_learn/-Gcode-Editor/index.html` + `export-verification-v481.js`) to
+write up everything non-obvious about its export logic, specifically so
+gaps in GcodeForge could be found and fixed against the original's actual
+behavior rather than guesswork. Most of what came back already matched
+(path recognition, travel-state-via-comments including the implicit-
+initial-travel rule, literal Z-delta layer detection, the two-timeline
+speed model, PTP excluded from `$VEL.CP`, first-object-header/last-
+object-footer for combined exports, transforms only touching XYZ). The
+one real gap: GcodeForge had no pre-export validation at all -- no
+structural check, no speed-value verification, nothing standing between
+a broken export and the file dialog.
+
+Added `editor/ExportValidation.h/.cpp`, matching the web validator's
+exact rules:
+- **Structural (CRITICAL, blocks export)**: exactly one `&ACCESS`,
+  exactly one `DEF`, exactly one standalone `END`, no recognized motion
+  after that `END`, and every `LIN` target line must carry the full
+  `X Y Z A B C E1 E2 E3 E4 E5 E6` set. That last rule is the SAME
+  completeness check that would have caught, automatically and before
+  ever reaching the user, the exact bug reported earlier this session --
+  a synthetic interleave travel line shaped like `"LIN {X 0,Y 0,Z 0}"`
+  with no A/B/C/E1-E6 at all, which the web editor's own validator had
+  flagged with 1630 CRITICAL issues. A regression test reproduces that
+  exact line shape and confirms it's caught.
+- **Travel markers (WARNING)**: an unmatched `;travel end` is flagged,
+  except the one legitimate implicit-initial-travel case (a real Eidos
+  file may begin already inside a travel section) and ending the program
+  while still in travel state (the real shutdown sequence does this) --
+  ported the pre-scan technique `parser/SrcParser.cpp` already uses to
+  establish initial travel state, after an earlier version's inline
+  "have I used my one free pass" bookkeeping let a SECOND unmatched
+  `;travel end` slip through uncaught (caught by a repeated-marker test).
+- **Speed verification (structural mismatch CRITICAL, value mismatch
+  WARNING)**: reparses the compiled text as a fresh object via the real
+  `parseSrc()` (not comparing internal bookkeeping) and checks every
+  non-PTP path's actual speed against what the object intended, at 1e-9
+  tolerance, capped at 12 reported mismatches -- matching
+  export-verification-v481.js's behavior exactly: a PATH COUNT mismatch
+  stays a hard failure (something structural broke), but a pure
+  speed-VALUE mismatch downgrades to a warning rather than blocking.
+
+UI: "Save SRC As..." now compiles the object first and runs the full
+report before ever opening the file dialog. A clean report (the common
+case) skips the modal entirely. Otherwise a popup lists every issue,
+color-coded by severity, with "Save Anyway" available only when nothing
+is CRITICAL (matching the web app's `SRC EXPORT BLOCKED` behavior for
+structural failures having no override).
+
+**Verified**: 332 tests, Debug and Release clean. Real 1-up file: the
+untouched round-trip export reports 0 critical/0 warning (confirming the
+validator doesn't false-positive on a genuinely correct file -- a
+validator that does just trains the operator to click through it). The
+5-copy mirror+interleave export (the exact scenario that used to fail to
+load on the robot) ALSO reports 0 critical/0 warning now, end to end.

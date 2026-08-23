@@ -51,6 +51,7 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
                      UndoStack& undoStack, size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty) {
     drawMenuBar(scene, undoStack, sceneDirty);
     drawStatusBar();
+    drawExportReportModal(); // must run even if panels are hidden -- it's a decision the user has to make
 
     // Panels collapsed: skip both floating windows entirely, leaving an
     // unobstructed view of the viewport. The menu bar and status bar stay
@@ -202,6 +203,62 @@ void EditorUI::drawStatusBar() {
     }
     ImGui::End();
     ImGui::PopStyleVar();
+}
+
+void EditorUI::drawExportReportModal() {
+    if (!exportReportOpen_) return;
+    ImGui::OpenPopup("Pre-export report");
+
+    ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_Appearing);
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("Pre-export report", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        int criticalCount = exportReport_.criticalCount();
+        int warningCount = exportReport_.warningCount();
+
+        if (criticalCount > 0) {
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.30f, 1.0f),
+                                "%d critical issue(s) -- export blocked.", criticalCount);
+            ImGui::TextWrapped("The exported file is structurally broken and would very likely fail to load "
+                                "or run on the robot. Fix these before saving.");
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.30f, 1.0f),
+                                "%d warning(s) -- structurally OK, worth reviewing.", warningCount);
+        }
+        ImGui::Separator();
+
+        ImGui::BeginChild("##reportList", ImVec2(0, 220), ImGuiChildFlags_Border);
+        for (const auto& issue : exportReport_.issues) {
+            bool critical = (issue.severity == ValidationSeverity::Critical);
+            ImGui::PushStyleColor(ImGuiCol_Text, critical ? ImVec4(1.0f, 0.45f, 0.40f, 1.0f)
+                                                           : ImVec4(1.0f, 0.80f, 0.40f, 1.0f));
+            ImGui::TextWrapped("%s: %s", critical ? "CRITICAL" : "WARNING", issue.message.c_str());
+            ImGui::PopStyleColor();
+        }
+        ImGui::EndChild();
+
+        ImGui::Spacing();
+        if (criticalCount > 0) {
+            if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+                exportDecision_ = ExportDecision::Cancel;
+                exportReportOpen_ = false;
+                ImGui::CloseCurrentPopup();
+            }
+        } else {
+            if (ImGui::Button("Save Anyway", ImVec2(120, 0))) {
+                exportDecision_ = ExportDecision::Proceed;
+                exportReportOpen_ = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+                exportDecision_ = ExportDecision::Cancel;
+                exportReportOpen_ = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
+    }
 }
 
 void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty) {

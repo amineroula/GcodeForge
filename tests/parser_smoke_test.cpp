@@ -23,6 +23,7 @@
 #include "editor/PathSplit.h"
 #include "editor/RotatePaths.h"
 #include "editor/CellTemplate.h"
+#include "editor/ExportValidation.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
@@ -1489,6 +1490,142 @@ void testCellTemplateFixesSlicedImport() {
     check(foundFooterAnchor, "CellTemplate: footer retreat starts from the sliced object's own actual print end");
 }
 
+// Ported from the web Gcode Editor's validateLines() spec (relayed via
+// Codex, who read the original index.html/export-verification-v481.js):
+// exactly one &ACCESS/DEF/END, no motion after END, every LIN target
+// needs the full X Y Z A B C E1-E6 set. That last rule is the SAME
+// completeness check that would have caught, automatically, the exact
+// bug reported from real use earlier this session -- a synthetic
+// interleave travel line shaped like "LIN {X 0,Y 0,Z 0}" with no A/B/C/
+// E1-E6 at all, rejected by the web editor's own validator with 1630
+// CRITICAL issues (see docs/LOG.md). Confirms a general validator now
+// exists to catch that CLASS of bug, not just this one instance of it.
+void testValidateStructureCatchesKnownBugClasses() {
+    std::vector<std::string> clean = {
+        "&ACCESS RVP",
+        "DEF Part()",
+        "LIN {X 0, Y 0, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "LIN {X 10, Y 0, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 } C_VEL",
+        "END",
+    };
+    ValidationReport cleanReport;
+    validateStructure(clean, cleanReport);
+    check(cleanReport.criticalCount() == 0, "ExportValidation: a clean, complete program has zero critical issues");
+
+    // The exact shape of the shipped-and-fixed bug: a LIN target with
+    // only X/Y/Z, no A/B/C/E1-E6.
+    std::vector<std::string> incompleteLin = {
+        "&ACCESS RVP",
+        "DEF Part()",
+        "LIN {X 0,Y 0,Z 0} ; GCODEFORGE INTERLEAVE TRAVEL -- cut here after printing",
+        "END",
+    };
+    ValidationReport incompleteReport;
+    validateStructure(incompleteLin, incompleteReport);
+    check(incompleteReport.hasCritical(),
+          "ExportValidation: a LIN target missing A/B/C/E1-E6 is CRITICAL (the exact bug class from real use)");
+
+    std::vector<std::string> noAccess = {"DEF Part()", "END"};
+    ValidationReport noAccessReport;
+    validateStructure(noAccess, noAccessReport);
+    check(noAccessReport.hasCritical(), "ExportValidation: a missing &ACCESS is CRITICAL");
+
+    std::vector<std::string> doubleEnd = {"&ACCESS RVP", "DEF Part()", "END", "END"};
+    ValidationReport doubleEndReport;
+    validateStructure(doubleEnd, doubleEndReport);
+    check(doubleEndReport.hasCritical(), "ExportValidation: more than one END is CRITICAL");
+
+    std::vector<std::string> motionAfterEnd = {
+        "&ACCESS RVP", "DEF Part()", "END",
+        "LIN {X 0, Y 0, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 }",
+    };
+    ValidationReport motionAfterEndReport;
+    validateStructure(motionAfterEnd, motionAfterEndReport);
+    check(motionAfterEndReport.hasCritical(), "ExportValidation: a motion command after END is CRITICAL");
+
+    // The web editor's specific carve-out: a real Eidos file may legally
+    // begin already inside travel (first marker is ";travel end", no
+    // preceding ";travel start") and may legally END while still in
+    // travel state (the real shutdown sequence does this) -- neither is
+    // an issue by itself.
+    std::vector<std::string> implicitInitialTravel = {
+        "&ACCESS RVP", "DEF Part()",
+        ";travel end",
+        "LIN {X 0, Y 0, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 }",
+        ";travel start",
+        "END",
+    };
+    ValidationReport implicitReport;
+    validateStructure(implicitInitialTravel, implicitReport);
+    check(implicitReport.issues.empty(),
+          "ExportValidation: implicit initial travel and ending-in-travel-state are both fine, not flagged");
+
+    // A GENUINELY repeated unmatched ";travel end" is worth a warning
+    // (not critical -- the file may still be structurally exportable).
+    std::vector<std::string> repeatedUnmatchedEnd = {
+        "&ACCESS RVP", "DEF Part()",
+        ";travel end", ";travel end",
+        "LIN {X 0, Y 0, Z 2, A 90, B 0, C 180, E1 0, E2 0, E3 0, E4 0, E5 0, E6 0 }",
+        "END",
+    };
+    ValidationReport repeatedReport;
+    validateStructure(repeatedUnmatchedEnd, repeatedReport);
+    check(!repeatedReport.hasCritical(), "ExportValidation: a repeated unmatched travel end is NOT critical");
+    check(repeatedReport.warningCount() > 0, "ExportValidation: a repeated unmatched travel end IS a warning");
+}
+
+// The reparse-based speed verification: compiled text is parsed FRESH
+// and compared against what the object actually intended, rather than
+// trusting internal bookkeeping -- this is what would have caught the
+// "exported speed is 0" bug directly, instead of it needing to be
+// diagnosed by hand from a bug report.
+void testVerifyCompiledSpeedsCatchesMismatch() {
+    SceneObject object = parseSrc("Part", sampleSrcLinesForExport());
+    ExportResult result;
+    std::vector<std::string> compiled = buildExportedLines(object, result);
+    check(result.success, "ExportValidation: precondition -- the object exports successfully");
+
+    ValidationReport cleanReport;
+    verifyCompiledSpeeds(object, compiled, cleanReport);
+    check(cleanReport.issues.empty(),
+          "ExportValidation: a correctly exported program has no speed-verification issues");
+
+    // Deliberately corrupt one path's compiled speed (simulating the
+    // exact reported bug: a real motion command whose $VEL.CP silently
+    // doesn't match what the object intended).
+    std::vector<std::string> corrupted = compiled;
+    bool foundVelCp = false;
+    for (auto& line : corrupted) {
+        if (line.find("$VEL.CP") != std::string::npos) {
+            line = "$VEL.CP = 0.000000";
+            foundVelCp = true;
+            break;
+        }
+    }
+    check(foundVelCp, "ExportValidation: precondition -- the compiled program has a $VEL.CP line to corrupt");
+    ValidationReport corruptedReport;
+    verifyCompiledSpeeds(object, corrupted, corruptedReport);
+    check(!corruptedReport.issues.empty(),
+          "ExportValidation: a corrupted speed value IS caught by reparsing the compiled text");
+    check(!corruptedReport.hasCritical(),
+          "ExportValidation: a speed-VALUE mismatch is a WARNING, not critical (matches export-verification-v481's downgrade)");
+
+    // A path-count mismatch (something dropped or duplicated a motion)
+    // IS structural, and stays critical -- this is the one case
+    // export-verification-v481.js explicitly does NOT downgrade. Erase an
+    // actual MOTION line (not a comment/speed line, which would just
+    // shift a speed assertion around without changing the path count).
+    std::vector<std::string> truncated = compiled;
+    auto motionIt = std::find_if(truncated.begin(), truncated.end(),
+        [](const std::string& l) { return l.find("LIN {X 1020") != std::string::npos; });
+    check(motionIt != truncated.end(), "ExportValidation: precondition -- found a motion line to remove");
+    if (motionIt != truncated.end()) truncated.erase(motionIt);
+    ValidationReport truncatedReport;
+    verifyCompiledSpeeds(object, truncated, truncatedReport);
+    check(truncatedReport.hasCritical(),
+          "ExportValidation: a PATH COUNT mismatch (structural) stays CRITICAL, never downgraded");
+}
+
 void testMirrorAndInterleave() {
     Scene scene;
     SceneObject part = parseSrc("Part", sampleSrcLinesForExport());
@@ -1856,6 +1993,8 @@ int main() {
     testInterleaveTravelsKeepFullAxisSet();
     testInterleavePreservesHeaderAndFooter();
     testCellTemplateFixesSlicedImport();
+    testValidateStructureCatchesKnownBugClasses();
+    testVerifyCompiledSpeedsCatchesMismatch();
     testProjectRoundTrip();
     testDirectPathEditExports();
     testSpeedColorGradient();

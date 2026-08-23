@@ -30,6 +30,7 @@
 #include <backends/imgui_impl_opengl3.h>
 
 #include "editor/ConnectedDrag.h"
+#include "editor/ExportValidation.h"
 #include "editor/Framing.h"
 #include "editor/Gizmo.h"
 #include "editor/InterleavePrint.h"
@@ -582,6 +583,15 @@ int main() {
                 std::printf("  5-copy interleave: retreat lift (Z 508.00) at line=%d, shutdown at line=%d %s\n",
                             liftIdx, shutdownIdx,
                             (liftIdx >= 0 && shutdownIdx >= 0 && liftIdx < shutdownIdx) ? "(GOOD)" : "(BUG! retreat motion missing or out of order)");
+
+                ValidationReport merged5Report = validateForExport(*merged5, merged5Lines);
+                std::printf("  5-copy interleave: pre-export validation: %d critical, %d warning %s\n",
+                            merged5Report.criticalCount(), merged5Report.warningCount(),
+                            merged5Report.issues.empty() ? "(GOOD)" : "(check issues below)");
+                for (const auto& issue : merged5Report.issues) {
+                    std::printf("    %s: %s\n", (issue.severity == ValidationSeverity::Critical) ? "CRITICAL" : "WARNING",
+                                issue.message.c_str());
+                }
             } else {
                 std::printf("  5-copy interleave: FAILED to build a merged object\n");
             }
@@ -613,6 +623,20 @@ int main() {
                         break;
                     }
                 }
+            }
+
+            // Sanity check for the new pre-export validator: an untouched,
+            // correctly-exported real production file must report ZERO
+            // issues -- a validator that false-positives on a genuinely
+            // correct file would just train the operator to click through
+            // it, which defeats the point.
+            ValidationReport realFileReport = validateForExport(scene.objects.back(), exportedLines);
+            std::printf("Pre-export validation on the real file: %d critical, %d warning %s\n",
+                        realFileReport.criticalCount(), realFileReport.warningCount(),
+                        (realFileReport.issues.empty()) ? "(GOOD)" : "(check issues below)");
+            for (const auto& issue : realFileReport.issues) {
+                std::printf("  %s: %s\n", (issue.severity == ValidationSeverity::Critical) ? "CRITICAL" : "WARNING",
+                            issue.message.c_str());
             }
         }
         std::fflush(stdout);
@@ -647,6 +671,11 @@ int main() {
     bool ctrlZWasDown = false;
     bool ctrlYWasDown = false;
     bool tabWasDown = false;
+
+    // Which object a pending "Save SRC As..." is actually for -- set when
+    // the pre-export report modal opens (editor/ExportValidation.h), read
+    // back once the user picks Proceed/Cancel on a LATER frame.
+    int pendingSrcExportObjectId = -1;
 
     // Whatever path the cursor is currently over (not selected -- just
     // hovered), recomputed every frame for the status-bar readout.
@@ -774,20 +803,48 @@ int main() {
                 }
             }
         }
+        auto doSaveSrc = [&](SceneObject& object) {
+            if (auto path = showSaveSrcDialog(window, object.name + ".src")) {
+                ExportResult exportResult = exportSrcToFile(object, *path);
+                if (exportResult.success) {
+                    std::printf("Exported %s: %d coordinate patch(es), %d speed insertion(s), %d layer action(s)\n",
+                                path->c_str(), exportResult.patchedCoordinateLines,
+                                exportResult.insertedSpeedLines, exportResult.insertedLayerActions);
+                } else {
+                    std::fprintf(stderr, "Export failed: %s\n", exportResult.errorMessage.c_str());
+                }
+            }
+        };
+
         if (editorUi.saveSrcRequested()) {
             editorUi.clearSaveSrcRequest();
             if (SceneObject* active = scene.activeObject()) {
-                if (auto path = showSaveSrcDialog(window, active->name + ".src")) {
-                    ExportResult exportResult = exportSrcToFile(*active, *path);
-                    if (exportResult.success) {
-                        std::printf("Exported %s: %d coordinate patch(es), %d speed insertion(s), %d layer action(s)\n",
-                                    path->c_str(), exportResult.patchedCoordinateLines,
-                                    exportResult.insertedSpeedLines, exportResult.insertedLayerActions);
-                    } else {
-                        std::fprintf(stderr, "Export failed: %s\n", exportResult.errorMessage.c_str());
-                    }
+                // Compile first (without writing to disk) and run the
+                // pre-export checks (editor/ExportValidation.h -- ported
+                // from the web Gcode Editor's validateLines() and
+                // reparse-based speed verification). A clean report skips
+                // the modal entirely; any issue shows it, blocking on
+                // CRITICAL ones (structurally broken output) and offering
+                // "Save Anyway" for WARNING-only ones (matches
+                // export-verification-v481.js's downgrade behavior).
+                ExportResult previewResult;
+                std::vector<std::string> compiled = buildExportedLines(*active, previewResult);
+                ValidationReport report = validateForExport(*active, compiled);
+                if (report.issues.empty()) {
+                    doSaveSrc(*active);
+                } else {
+                    pendingSrcExportObjectId = active->id;
+                    editorUi.showExportReport(report);
                 }
             }
+        }
+        if (editorUi.exportDecision() == EditorUI::ExportDecision::Proceed) {
+            editorUi.clearExportDecision();
+            if (SceneObject* object = scene.findObject(pendingSrcExportObjectId)) doSaveSrc(*object);
+            pendingSrcExportObjectId = -1;
+        } else if (editorUi.exportDecision() == EditorUI::ExportDecision::Cancel) {
+            editorUi.clearExportDecision();
+            pendingSrcExportObjectId = -1;
         }
 
         int width, height;
