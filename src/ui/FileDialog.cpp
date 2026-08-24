@@ -30,7 +30,7 @@ std::optional<std::string> showOpenSrcDialog(GLFWwindow* window) {
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = glfwGetWin32Window(window);
-    ofn.lpstrFilter = L"KUKA SRC / G-code\0*.src;*.gcode;*.nc\0All files\0*.*\0";
+    ofn.lpstrFilter = L"KUKA SRC / G-code / DXF\0*.src;*.gcode;*.nc;*.dxf\0All files\0*.*\0";
     ofn.lpstrFile = fileBuffer;
     ofn.nMaxFile = MAX_PATH;
     ofn.lpstrTitle = L"Open toolpath file";

@@ -4,15 +4,50 @@
 #include "model/Transform.h"
 #include "parser/SrcParser.h"
 
+#include <algorithm>
+#include <cctype>
 #include <optional>
 
 namespace {
 
-bool hasHeader(const std::pair<int, int>& span) {
-    return span.first > 0;
+std::string toLowerCopy(const std::string& s) {
+    std::string out = s;
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+}
+
+std::string trimCopy(const std::string& s) {
+    size_t start = s.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return "";
+    size_t end = s.find_last_not_of(" \t\r\n");
+    return s.substr(start, end - start + 1);
+}
+
+// Real header/footer boilerplate, not just "some lines happen to exist"
+// before/after the print body. A structurally valid KRL program needs a
+// DEF line at minimum -- and now that objects can be built from nothing
+// (a DXF spline import, same as a plain sliced .gcode import), that bare
+// DEF/END wrapper alone would satisfy a pure line-count check, silently
+// hiding exactly the objects the Cell Template fix exists for. &ACCESS
+// is present in every real Eidos/KRL header and in none of GcodeForge's
+// own synthesized ones; a real shutdown footer always has more than a
+// bare END (the $OUT[...]=FALSE commands, $TIMER_STOP).
+bool hasHeader(const SceneObject& object, const std::pair<int, int>& span) {
+    if (span.first <= 0) return false;
+    for (int i = 0; i < span.first; ++i) {
+        if (toLowerCopy(object.sourceLines[static_cast<size_t>(i)]).find("&access") != std::string::npos) return true;
+    }
+    return false;
 }
 bool hasFooter(const SceneObject& object, const std::pair<int, int>& span) {
-    return span.second + 1 < static_cast<int>(object.sourceLines.size());
+    int size = static_cast<int>(object.sourceLines.size());
+    for (int i = span.second + 1; i < size; ++i) {
+        std::string trimmed = trimCopy(object.sourceLines[static_cast<size_t>(i)]);
+        if (trimmed.empty()) continue;
+        if (toLowerCopy(trimmed) == "end") continue; // a bare END isn't a shutdown footer
+        return true;
+    }
+    return false;
 }
 
 // The line to anchor a translation on: the LAST coordinate-bearing line
@@ -49,13 +84,13 @@ void translateLines(std::vector<std::string>& lines, const glm::dvec3& delta) {
 bool objectHasBoilerplate(const SceneObject& object) {
     auto span = pathSrcLineSpan(object);
     if (!span) return false;
-    return hasHeader(*span) && hasFooter(object, *span);
+    return hasHeader(object, *span) && hasFooter(object, *span);
 }
 
 std::optional<CellTemplate> captureCellTemplate(const SceneObject& object) {
     auto span = pathSrcLineSpan(object);
     if (!span) return std::nullopt;
-    if (!hasHeader(*span) || !hasFooter(object, *span)) return std::nullopt;
+    if (!hasHeader(object, *span) || !hasFooter(object, *span)) return std::nullopt;
 
     CellTemplate tmpl;
     tmpl.headerLines = extractBoilerplate(object, 0, span->first).lines;

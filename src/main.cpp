@@ -48,6 +48,7 @@
 #include "model/Scene.h"
 #include "parser/SrcParser.h"
 #include "parser/GcodeParser.h"
+#include "parser/DxfParser.h"
 #include "render/AnimationRenderer.h"
 #include "render/BedHeightmapRenderer.h"
 #include "render/BedSettings.h"
@@ -165,7 +166,17 @@ void loadFileIntoScene(const std::string& path, Scene& scene) {
     }
     std::string name = fileStem(path);
     std::string ext = fileExtensionLower(path);
-    SceneObject object = (ext == "gcode" || ext == "nc") ? parseGcode(name, lines) : parseSrc(name, lines);
+    SceneObject object;
+    if (ext == "dxf") {
+        // DXF carries no header/footer/speed/tool-orientation of its own
+        // -- built from nothing, same as a plain sliced .gcode import.
+        // Use the Bed panel's Cell Template fix before exporting.
+        object = parseDxfSplineLayers(name, lines, DxfImportOptions{});
+    } else if (ext == "gcode" || ext == "nc") {
+        object = parseGcode(name, lines);
+    } else {
+        object = parseSrc(name, lines);
+    }
     std::printf("Loaded %s (%s): %zu paths, %zu layers\n",
                 object.name.c_str(), path.c_str(), object.paths.size(), object.layers.size());
     // Every SceneObject starts with the same hardcoded default color (see

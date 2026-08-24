@@ -2171,3 +2171,75 @@ scrub bar now stretches to the full panel width and is noticeably taller
 hop, full axis set, header/footer preservation, retreat-before-shutdown,
 zero validation issues, byte-identical untouched round-trip) still hold
 with the corrected copy behavior.
+
+## DXF spline import: 3ds Max splines become a layer-by-layer toolpath
+
+Real request: the user modeled a rounded "picture frame" donut in 3ds Max
+as a stack of splines, one per print layer, and wanted GcodeForge to read
+them directly rather than requiring an Eidos slice first.
+
+**Format, established from the real file**: DXF is a flat sequence of
+(group code, value) line pairs. 3ds Max's own exporter emits far more
+than the requested geometry -- light-gizmo BLOCK definitions, material
+dictionaries, viewport/dimstyle tables -- so `DxfParser.cpp` only looks
+inside the top-level `ENTITIES` section. Within it, the real file
+contains 31 CLOSED 4-vertex `POLYLINE` rings at increasing Z (the actual
+print layers, already pre-sliced, tracing a tapering rounded-rectangle
+silhouette -- NOT identical stacked copies) plus several OPEN `POLYLINE`
+entities spanning the full Z range that turned out to be 3ds Max's own
+internal loft/rail construction curves, not layers at all. The DXF
+"closed" flag (group code 70, bit 0) is what tells the two apart --
+verified this distinction against the real pasted `ENTITIES` data before
+writing any parsing code, since guessing wrong here would silently
+"print" a construction curve.
+
+**Units**: converted via the file's own `$INSUNITS` header value to
+millimeters (GcodeForge's native unit). The real file uses centimeters
+($INSUNITS=5, ×10); the resulting ~3.046mm layer spacing matched the
+user's independently-stated "each spline is in 3mm increment" almost
+exactly, confirming the parse was right before ever loading it into the
+app.
+
+**No implicit tool pose**: DXF is pure geometry -- no speed, no A/B/C
+orientation. Both come from `DxfImportOptions` (asked the user directly:
+"nozzle is straight down" -> `toolBDegrees = 90.0`), applied uniformly to
+every synthesized line, rather than guessed -- a silently wrong tool pose
+is a real safety issue on an actual robot, same principle as the existing
+`coolingOutputIndex_` pattern.
+
+**Speed and completeness**: same two-timeline mechanics as
+`InterleavePrint.cpp` -- a synthesized object has no source `$VEL.CP` to
+inherit "for free," so `emit()` writes an explicit `$VEL.CP` whenever the
+required speed changes, and every `LIN` line carries the full
+X/Y/Z/A/B/C/E1-E6 field set from the start (the exact completeness rule
+`ExportValidation.h` enforces, and the exact bug class fixed earlier this
+session for interleave travels).
+
+**A design gap this surfaced in `CellTemplate.cpp`**: `objectHasBoilerplate()`'s
+`hasHeader()` was pure line-count (`span.first > 0`), which would have
+reported a DXF-imported object (which always has *some* line, its bare
+synthetic `DEF` wrapper, before the first path) as "already has real
+safety boilerplate" -- silently defeating the Cell Template fix for
+exactly the objects it exists to protect. Fixed to require actual
+`&ACCESS` content in the header and more than a bare `END` in the
+footer.
+
+**A real parser bug caught by its own test**: the very first ring's
+first print path had `from == to` (both the ring's *second* vertex) --
+the loop starts its print segments at the ring's second point, but
+`cursor` (which supplies `path.from`) was never seeded with the ring's
+actual first point before that. Harmless for the exported KRL text
+itself, but wrong for `CellTemplate`'s header-anchor logic, which reads
+`paths.front().from` as "the object's real print start." Fixed by
+seeding `cursor` from the first ring's own first vertex before the print
+loop runs, instead of only via an inter-layer travel (which only exists
+from the second ring onward).
+
+**Verified**: 15 new synthetic-fixture tests (ring/layer count, Z
+ascending order + unit conversion, open-polyline exclusion, uniform tool
+orientation, `$VEL.CP` insertion, full-field `LIN` lines, and that the
+result still needs the Cell Template fix) plus a one-off end-to-end run
+against the real `spline.dxf`: 31 layers, 154 paths, Z range 3.046mm to
+94.418mm (~2.95mm average spacing), `objectHasBoilerplate` correctly
+`false`. Wired into File > Open (`.dxf` extension dispatch) and the
+native file dialog's filter. 392 tests total, Debug and Release clean.

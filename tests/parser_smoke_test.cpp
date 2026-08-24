@@ -25,6 +25,7 @@
 #include "editor/CellTemplate.h"
 #include "editor/ExportValidation.h"
 #include "editor/PrintAnimation.h"
+#include "parser/DxfParser.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
@@ -1504,6 +1505,144 @@ void testInterleavePreservesHeaderAndFooter() {
 // correctly wraps it using a template captured from a real-shaped file,
 // anchored to the sliced object's OWN print start/end -- not the
 // template's original position.
+// Shaped after the real spline.dxf the user provided (3ds Max donut
+// export): a $INSUNITS=5 (centimeter) header, a handful of small CLOSED
+// 4-vertex rectangular POLYLINE rings at increasing Z (~0.3046 native
+// units apart -- ×10 for cm->mm is ~3.046mm, matching the user's stated
+// "each spline is in 3mm increment"), plus one OPEN POLYLINE with many
+// vertices spanning the full Z range, standing in for the loft/rail
+// construction curves 3ds Max's own exporter also emits and that must
+// never be mistaken for a printable layer.
+std::vector<std::string> dxfHeaderAndEntitiesLines() {
+    std::vector<std::string> lines = {
+        "0", "SECTION",
+        "2", "HEADER",
+        "9", "$INSUNITS",
+        "70", "5",
+        "0", "ENDSEC",
+        "0", "SECTION",
+        "2", "ENTITIES",
+    };
+
+    auto addRing = [&](double z, double halfWidth) {
+        lines.insert(lines.end(), {"0", "POLYLINE", "100", "AcDb3dPolyline", "70", "1"});
+        double coords[4][2] = {
+            {-halfWidth, -halfWidth}, {halfWidth, -halfWidth}, {halfWidth, halfWidth}, {-halfWidth, halfWidth},
+        };
+        for (auto& xy : coords) {
+            char zbuf[32];
+            std::snprintf(zbuf, sizeof(zbuf), "%.4f", z);
+            char xbuf[32];
+            std::snprintf(xbuf, sizeof(xbuf), "%.4f", xy[0]);
+            char ybuf[32];
+            std::snprintf(ybuf, sizeof(ybuf), "%.4f", xy[1]);
+            lines.insert(lines.end(), {"0", "VERTEX", "10", xbuf, "20", ybuf, "30", zbuf});
+        }
+        lines.insert(lines.end(), {"0", "SEQEND"});
+    };
+
+    addRing(0.0000, 1.0);
+    addRing(0.3046, 1.1);
+    addRing(0.6092, 1.2);
+    addRing(0.9138, 1.1);
+
+    // The non-printable construction curve: OPEN (group 70 has bit 0
+    // clear), spans the same Z range as the real rings, many vertices.
+    lines.insert(lines.end(), {"0", "POLYLINE", "100", "AcDb3dPolyline", "70", "0"});
+    for (int i = 0; i <= 10; ++i) {
+        double z = 0.9138 * (static_cast<double>(i) / 10.0);
+        char zbuf[32];
+        std::snprintf(zbuf, sizeof(zbuf), "%.4f", z);
+        lines.insert(lines.end(), {"0", "VERTEX", "10", "5.0", "20", "5.0", "30", zbuf});
+    }
+    lines.insert(lines.end(), {"0", "SEQEND"});
+
+    lines.insert(lines.end(), {"0", "ENDSEC"});
+    return lines;
+}
+
+void testDxfParserSplineLayers() {
+    DxfImportOptions options;
+    options.printSpeedMps = 0.04;
+    options.travelSpeedMps = 0.5;
+    options.toolADegrees = 180.0;
+    options.toolBDegrees = 90.0;
+    options.toolCDegrees = 180.0;
+
+    SceneObject object = parseDxfSplineLayers("Donut", dxfHeaderAndEntitiesLines(), options);
+
+    check(object.layers.size() == 4, "DxfParser: only the 4 CLOSED rings become layers (open polyline excluded)");
+
+    // Z-ascending order, ×10 for $INSUNITS=5 (centimeters) -> millimeters.
+    if (object.layers.size() == 4) {
+        checkNear(object.layers[0].z, 0.0, "DxfParser: layer 1 Z is 0mm");
+        checkNear(object.layers[1].z, 3.046, "DxfParser: layer 2 Z is 3.046mm (cm->mm conversion)");
+        checkNear(object.layers[2].z, 6.092, "DxfParser: layer 3 Z is 6.092mm");
+        checkNear(object.layers[3].z, 9.138, "DxfParser: layer 4 Z is 9.138mm (ascending order)");
+    }
+
+    // Each ring is a 4-vertex rectangle: 4 print segments to close the
+    // loop (3 sides + the closing segment back to the start).
+    int totalPrintPaths = 0;
+    int totalTravelPaths = 0;
+    for (const auto& p : object.paths) {
+        if (p.type == PathType::Print) ++totalPrintPaths;
+        if (p.type == PathType::Travel) ++totalTravelPaths;
+    }
+    check(totalPrintPaths == 16, "DxfParser: 4 rings x 4 closing segments each = 16 print paths");
+    check(totalTravelPaths == 3, "DxfParser: 3 inter-layer travels connect the 4 layers");
+
+    // The open construction polyline's vertices (all at X=5,Y=5) must
+    // never appear in the printable path set.
+    bool sawConstructionVertex = false;
+    for (const auto& p : object.paths) {
+        if (std::abs(p.to.x - 50.0) < 0.01 && std::abs(p.to.y - 50.0) < 0.01) sawConstructionVertex = true;
+    }
+    check(!sawConstructionVertex, "DxfParser: the open construction curve's vertices never appear in a Path");
+
+    // Coordinate spot-check: ring 1's start vertex is (-1,-1) cm -> (-10,-10) mm,
+    // and must be readable as the first path's FROM (not its TO) -- this
+    // is exactly the field CellTemplate's header anchor reads as "the
+    // object's real print start."
+    if (!object.paths.empty()) {
+        checkNear(object.paths.front().from.x, -10.0, "DxfParser: first vertex X converted cm->mm");
+        checkNear(object.paths.front().from.y, -10.0, "DxfParser: first vertex Y converted cm->mm");
+    }
+
+    // Every synthesized path carries the uniform tool orientation from options.
+    bool allOrientationsMatch = true;
+    for (const auto& p : object.paths) {
+        if (!p.a.has_value() || !p.b.has_value() || !p.c.has_value() ||
+            std::abs(*p.a - options.toolADegrees) > 1e-9 || std::abs(*p.b - options.toolBDegrees) > 1e-9 ||
+            std::abs(*p.c - options.toolCDegrees) > 1e-9) {
+            allOrientationsMatch = false;
+        }
+    }
+    check(allOrientationsMatch, "DxfParser: every path carries the uniform A/B/C tool orientation from options");
+
+    // Real KRL text: $VEL.CP inserted whenever speed changes (print vs
+    // travel), and every LIN line carries the full A/B/C/E1-E6 field set
+    // -- the exact completeness rule ExportValidation.h enforces, and the
+    // exact "speed=0" bug class fixed earlier this session for synthetic
+    // objects with no file-asserted speed to inherit for free.
+    int velLineCount = 0;
+    bool sawFullFieldLin = false;
+    for (const auto& line : object.sourceLines) {
+        if (line.rfind("$VEL.CP", 0) == 0) ++velLineCount;
+        if (line.find("E6 0.0") != std::string::npos && line.find("A 180.000") != std::string::npos) {
+            sawFullFieldLin = true;
+        }
+    }
+    check(velLineCount >= 2, "DxfParser: $VEL.CP is written at least once per print/travel speed change");
+    check(sawFullFieldLin, "DxfParser: LIN lines carry the full A/B/C/E1-E6 field set");
+
+    // Built from nothing -- no real &ACCESS/safety footer of its own,
+    // exactly like a plain sliced .gcode import -- so the Cell Template
+    // fix must still see it as needing a fix.
+    check(!objectHasBoilerplate(object),
+          "DxfParser: a DXF-imported object correctly still needs the Cell Template fix");
+}
+
 void testCellTemplateFixesSlicedImport() {
     // The "known-good" source to capture a template from.
     SceneObject known = parseSrc("Known", realisticEidosShapedLines());
@@ -2184,6 +2323,7 @@ int main() {
     testAnimationEmptySequence();
     testInterleaveTravelsKeepFullAxisSet();
     testInterleavePreservesHeaderAndFooter();
+    testDxfParserSplineLayers();
     testCellTemplateFixesSlicedImport();
     testValidateStructureCatchesKnownBugClasses();
     testVerifyCompiledSpeedsCatchesMismatch();
