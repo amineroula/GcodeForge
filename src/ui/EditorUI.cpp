@@ -8,6 +8,7 @@
 #include "editor/RotatePaths.h"
 #include "editor/Selection.h"
 #include "editor/SpeedEditing.h"
+#include "editor/Visibility.h"
 
 #include <imgui.h>
 #include <algorithm>
@@ -1005,8 +1006,9 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
     ImGui::TextWrapped("Click a row to select that layer's print paths "
                         "(Shift = range-select from the last clicked layer, Ctrl = subtract).");
 
-    if (ImGui::BeginTable("layers", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
+    if (ImGui::BeginTable("layers", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
                            ImVec2(0, 200))) {
+        ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthFixed, 50.0f);
         ImGui::TableSetupColumn("Layer");
         ImGui::TableSetupColumn("Z");
         ImGui::TableSetupColumn("Start");
@@ -1019,6 +1021,14 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
         for (const auto& layer : object.layers) {
             ImGui::TableNextRow();
             ImGui::PushID(layer.layer);
+
+            ImGui::TableNextColumn();
+            bool layerVisible = !isLayerHidden(object, layer.layer);
+            if (ImGui::Checkbox("##layerVisible", &layerVisible)) {
+                undoStack.snapshotBeforeChange(scene);
+                setLayerHidden(object, layer.layer, !layerVisible);
+                dirty = true;
+            }
 
             ImGui::TableNextColumn();
             char label[32];
@@ -1154,6 +1164,31 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
     ImGui::TextDisabled("View > Display > Vertices to see the new point appear.");
 
     ImGui::Spacing();
+    ImGui::BeginDisabled(object.selectedPaths.empty());
+    if (ImGui::SmallButton("Hide selected")) {
+        undoStack.snapshotBeforeChange(scene);
+        hideSelectedPaths(object);
+        dirty = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(object.hiddenPaths.empty());
+    if (ImGui::SmallButton("Show all")) {
+        undoStack.snapshotBeforeChange(scene);
+        showAllPaths(object);
+        dirty = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::Text("(%zu hidden)", object.hiddenPaths.size());
+    // Hiding is a VIEWPORT-ONLY aid, same as the object list's Visible
+    // checkbox above it -- a hidden path still exports and still prints.
+    // It exists to declutter a busy scene while working, not to exclude
+    // geometry from the job; use Layer actions or actually delete paths
+    // for that.
+    ImGui::TextDisabled("Hiding only affects this view -- hidden paths still export and print.");
+
+    ImGui::Spacing();
     ImGui::SetNextItemWidth(100.0f);
     ImGui::DragFloat("##rotateAngle", &rotateSelectedAngleDeg_, 0.5f, -360.0f, 360.0f, "%.1f deg");
     ImGui::SameLine();
@@ -1267,6 +1302,13 @@ void EditorUI::drawSelectionGroupPanel(Scene& scene, SceneObject& object, UndoSt
             undoStack.snapshotBeforeChange(scene);
             applySelectionCompose(object.selectedPaths, group.pathNumbers, currentSelectionCompose());
             selectionDirty = true;
+        }
+        ImGui::SameLine();
+        bool groupVisible = !isGroupHidden(object, group);
+        if (ImGui::Checkbox("##groupVisible", &groupVisible)) {
+            undoStack.snapshotBeforeChange(scene);
+            setGroupHidden(object, group, !groupVisible);
+            dirty = true;
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("Delete")) {

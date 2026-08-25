@@ -2243,3 +2243,54 @@ against the real `spline.dxf`: 31 layers, 154 paths, Z range 3.046mm to
 94.418mm (~2.95mm average spacing), `objectHasBoilerplate` correctly
 `false`. Wired into File > Open (`.dxf` extension dispatch) and the
 native file dialog's filter. 392 tests total, Debug and Release clean.
+
+## Hide layers, paths, selections, and groups (viewport-only)
+
+Real request: "we forgot to add the most important part... hiding layers
+and paths. Hide selected... for groups also." Object-level `visible`
+already existed (`SceneObject::visible`, wired into `GeometryRenderer`),
+but there was no way to hide anything finer-grained -- a single layer, an
+arbitrary selection, or a saved selection group.
+
+**Scope decision, confirmed with the user first**: does hiding something
+also exclude it from the exported file, or is it purely a viewport aid?
+Went with viewport-only, matching the existing `visible` flag's behavior
+exactly -- one consistent rule for what "hide" means everywhere in the
+app, rather than two different meanings depending on which hide button
+was clicked. `SrcExporter` needed zero changes as a result; a dedicated
+test (`testVisibilityDoesNotAffectExport`) confirms exported output is
+byte-identical whether or not paths are hidden, hiding every print path
+in the fixture as the extreme case.
+
+**Design**: one new field, `SceneObject::hiddenPaths` (a `std::set<int>`
+of path numbers, mirroring the existing `selectedPaths`), plus
+`editor/Visibility.h/.cpp` with the actual operations. Layer-hide and
+group-hide are NOT separate stored flags -- both just resolve to a set of
+path numbers (reusing `pathNumbersForLayer()` from `editor/Selection.h`
+for layers) and hide/show those same path numbers. One source of truth
+avoids the layer table and a selection group ever disagreeing about
+whether a path is hidden. `isLayerHidden()`/`isGroupHidden()` are
+computed, not stored: a layer/group reads as hidden only when EVERY one
+of its paths is currently hidden, so a partially-hidden layer correctly
+shows as "not hidden" rather than lying with a checked box.
+
+**Rendering**: `GeometryRenderer.cpp`'s main build loop now skips any
+path whose number is in `hiddenPaths`, in both the geometry pass and the
+selection-outline pass. A hidden print path also breaks a connected-run
+boundary (same as a real position gap or a travel) so it can never
+silently bridge two now-adjacent visible segments into one continuous
+bead.
+
+**UI**: a "Visible" checkbox column on the layer table (mirrors the
+object list's existing one), "Hide selected" / "Show all" buttons next
+to the existing selection tools, and a visibility checkbox per selection
+group -- all following the established `undoStack.snapshotBeforeChange()`
++ `dirty = true` pattern the object-visible checkbox already used.
+
+**Persistence**: `hiddenPaths` round-trips through `.gfproj` project
+files (new `hidden <n>` line per path, ignored by older readers).
+
+**Verified**: 23 new tests (hide/show/hide-selected/show-all, per-layer
+hide with the partial-hide edge case, per-group hide, export
+byte-identity, and project round-trip) plus every existing test still
+passing. 415 tests total, Debug and Release clean.

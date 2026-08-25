@@ -26,6 +26,7 @@
 #include "editor/ExportValidation.h"
 #include "editor/PrintAnimation.h"
 #include "parser/DxfParser.h"
+#include "editor/Visibility.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
@@ -1643,6 +1644,115 @@ void testDxfParserSplineLayers() {
           "DxfParser: a DXF-imported object correctly still needs the Cell Template fix");
 }
 
+// Two layers (paths 1-2 in layer 1, paths 3-4 in layer 2) plus one
+// travel (path 5), and a selection group covering layer 1's paths --
+// enough surface to exercise every Visibility.h entry point.
+SceneObject twoLayerObjectWithGroup() {
+    SceneObject object;
+    object.name = "twoLayer";
+    Path p1; p1.number = 1; p1.type = PathType::Print; p1.layer = 1;
+    p1.from = glm::dvec3(0, 0, 0); p1.to = glm::dvec3(10, 0, 0);
+    Path p2; p2.number = 2; p2.type = PathType::Print; p2.layer = 1;
+    p2.from = glm::dvec3(10, 0, 0); p2.to = glm::dvec3(20, 0, 0);
+    Path p3; p3.number = 3; p3.type = PathType::Print; p3.layer = 2;
+    p3.from = glm::dvec3(0, 0, 3); p3.to = glm::dvec3(10, 0, 3);
+    Path p4; p4.number = 4; p4.type = PathType::Print; p4.layer = 2;
+    p4.from = glm::dvec3(10, 0, 3); p4.to = glm::dvec3(20, 0, 3);
+    Path p5; p5.number = 5; p5.type = PathType::Travel; p5.layer = -1;
+    p5.from = glm::dvec3(20, 0, 0); p5.to = glm::dvec3(0, 0, 3);
+    object.paths = {p1, p2, p3, p4, p5};
+
+    SelectionGroup group;
+    group.id = "g1";
+    group.name = "Layer 1 group";
+    group.pathNumbers = {1, 2};
+    object.selectionGroups.push_back(group);
+    return object;
+}
+
+void testVisibilityHidePathsAndSelection() {
+    SceneObject object = twoLayerObjectWithGroup();
+
+    hidePaths(object, {1, 3});
+    check(object.hiddenPaths.count(1) == 1, "Visibility: hidePaths hides path 1");
+    check(object.hiddenPaths.count(3) == 1, "Visibility: hidePaths hides path 3");
+    check(object.hiddenPaths.count(2) == 0, "Visibility: hidePaths leaves path 2 untouched");
+
+    showPaths(object, {1});
+    check(object.hiddenPaths.count(1) == 0, "Visibility: showPaths un-hides path 1");
+    check(object.hiddenPaths.count(3) == 1, "Visibility: showPaths leaves path 3 still hidden");
+
+    object.selectedPaths = {2, 4};
+    hideSelectedPaths(object);
+    check(object.hiddenPaths.count(2) == 1, "Visibility: hideSelectedPaths hides path 2 (selected)");
+    check(object.hiddenPaths.count(4) == 1, "Visibility: hideSelectedPaths hides path 4 (selected)");
+
+    showAllPaths(object);
+    check(object.hiddenPaths.empty(), "Visibility: showAllPaths clears every hidden path");
+}
+
+void testVisibilityLayerHide() {
+    SceneObject object = twoLayerObjectWithGroup();
+
+    check(!isLayerHidden(object, 1), "Visibility: layer 1 starts NOT hidden");
+
+    hidePaths(object, {1});
+    check(!isLayerHidden(object, 1),
+          "Visibility: layer 1 reads as NOT hidden while only ONE of its two paths is hidden");
+
+    setLayerHidden(object, 1, true);
+    check(isLayerHidden(object, 1), "Visibility: setLayerHidden(true) hides every path in layer 1");
+    check(object.hiddenPaths.count(1) == 1 && object.hiddenPaths.count(2) == 1,
+          "Visibility: setLayerHidden(true) hid both of layer 1's paths");
+    check(!isLayerHidden(object, 2), "Visibility: hiding layer 1 does NOT affect layer 2");
+
+    setLayerHidden(object, 1, false);
+    check(!isLayerHidden(object, 1), "Visibility: setLayerHidden(false) un-hides layer 1 again");
+    check(object.hiddenPaths.empty(), "Visibility: un-hiding layer 1 leaves no paths hidden");
+}
+
+void testVisibilityGroupHide() {
+    SceneObject object = twoLayerObjectWithGroup();
+    const SelectionGroup& group = object.selectionGroups.front();
+
+    check(!isGroupHidden(object, group), "Visibility: group starts NOT hidden");
+
+    setGroupHidden(object, group, true);
+    check(isGroupHidden(object, group), "Visibility: setGroupHidden(true) hides the whole group");
+    check(object.hiddenPaths.count(1) == 1 && object.hiddenPaths.count(2) == 1,
+          "Visibility: hiding the group hid exactly its member paths");
+    check(object.hiddenPaths.count(3) == 0, "Visibility: hiding the group left an unrelated path alone");
+
+    setGroupHidden(object, group, false);
+    check(!isGroupHidden(object, group), "Visibility: setGroupHidden(false) un-hides the group");
+}
+
+// The load-bearing safety property: hiding is a VIEWPORT-ONLY aid.
+// Export must produce byte-identical output whether or not paths are
+// hidden -- confirmed by diffing exported lines with and without hiding
+// half the object.
+void testVisibilityDoesNotAffectExport() {
+    std::vector<std::string> lines = sampleSrcLinesForExport();
+    SceneObject baseline = parseSrc("Chair_01", lines);
+    ExportResult baselineResult;
+    std::vector<std::string> baselineExport = buildExportedLines(baseline, baselineResult);
+
+    SceneObject hiddenVersion = parseSrc("Chair_01", lines);
+    std::vector<int> allPrints;
+    for (const auto& p : hiddenVersion.paths) {
+        if (p.type == PathType::Print) allPrints.push_back(p.number);
+    }
+    hidePaths(hiddenVersion, allPrints);
+    check(!hiddenVersion.hiddenPaths.empty(), "Visibility: precondition -- something is actually hidden");
+
+    ExportResult hiddenResult;
+    std::vector<std::string> hiddenExport = buildExportedLines(hiddenVersion, hiddenResult);
+
+    check(hiddenResult.success, "Visibility: export still succeeds with every print path hidden");
+    check(hiddenExport == baselineExport,
+          "Visibility: exported output is byte-identical whether or not paths are hidden");
+}
+
 void testCellTemplateFixesSlicedImport() {
     // The "known-good" source to capture a template from.
     SceneObject known = parseSrc("Known", realisticEidosShapedLines());
@@ -2020,6 +2130,8 @@ void testProjectRoundTrip() {
     part.visible = false;
     part.selectedPaths.insert(2);
     part.selectedPaths.insert(4);
+    part.hiddenPaths.insert(3);
+    part.hiddenPaths.insert(5);
     part.paths[3].speedOverride = 0.0125;
 
     SelectionGroup group;
@@ -2076,6 +2188,8 @@ void testProjectRoundTrip() {
 
     check(a.selectedPaths.count(2) && a.selectedPaths.count(4),
           "Project: SELECTION round-trips (a .src has nowhere to store this)");
+    check(a.hiddenPaths.count(3) && a.hiddenPaths.count(5) && a.hiddenPaths.size() == 2,
+          "Project: HIDDEN paths round-trip (a .src has nowhere to store this either)");
     check(a.selectionGroups.size() == 1, "Project: selection groups round-trip");
     if (!a.selectionGroups.empty()) {
         check(a.selectionGroups[0].name == "Perimeters", "Project: group name round-trips");
@@ -2324,6 +2438,10 @@ int main() {
     testInterleaveTravelsKeepFullAxisSet();
     testInterleavePreservesHeaderAndFooter();
     testDxfParserSplineLayers();
+    testVisibilityHidePathsAndSelection();
+    testVisibilityLayerHide();
+    testVisibilityGroupHide();
+    testVisibilityDoesNotAffectExport();
     testCellTemplateFixesSlicedImport();
     testValidateStructureCatchesKnownBugClasses();
     testVerifyCompiledSpeedsCatchesMismatch();

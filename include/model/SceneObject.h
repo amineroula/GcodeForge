@@ -32,6 +32,13 @@ struct SceneObject {
     // got populated. See docs/PLAN.md's speed-editing note.
     std::set<int> selectedPaths;
 
+    // Viewport-only visibility, keyed by path number -- exactly like the
+    // object-level `visible` flag above, hiding a path never touches
+    // export (SrcExporter ignores it entirely). Layers and selection
+    // groups are hidden by resolving to path numbers and populating this
+    // same set (see editor/Visibility.h), not by their own separate flag.
+    std::set<int> hiddenPaths;
+
     std::vector<SelectionGroup> selectionGroups;
 
     // Operator-inserted commands at the start of specific layers (HALT,

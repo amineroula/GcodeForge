@@ -199,6 +199,8 @@ void GeometryRenderer::rebuild(const Scene& scene, ColorMode colorMode, float be
 
         size_t i = 0;
         while (i < paths.size()) {
+            if (object.hiddenPaths.count(paths[i].number)) { ++i; continue; }
+
             if (paths[i].type != PathType::Print) {
                 if (showTravels) {
                     glm::vec3 fromWorld(applyTransform(object.transform, paths[i].from));
@@ -216,11 +218,14 @@ void GeometryRenderer::rebuild(const Scene& scene, ColorMode colorMode, float be
             // position-connected (this path's `to` matches the next
             // path's `from`) -- a real gap in the source data (not just a
             // direction change) still correctly starts a new run/new caps.
+            // A hidden path also breaks the run, same as a type change or
+            // position gap: it must never bridge two visible segments.
             size_t runEnd = i;
             while (runEnd + 1 < paths.size()) {
                 const Path& cur = paths[runEnd];
                 const Path& next = paths[runEnd + 1];
                 if (next.type != PathType::Print) break;
+                if (object.hiddenPaths.count(next.number)) break;
                 if (glm::length(next.from - cur.to) > 1e-4) break;
                 ++runEnd;
             }
@@ -286,7 +291,8 @@ void GeometryRenderer::rebuild(const Scene& scene, ColorMode colorMode, float be
 
         size_t i = 0;
         while (i < paths.size()) {
-            bool selected = paths[i].type == PathType::Print && object.selectedPaths.count(paths[i].number) > 0;
+            bool selected = paths[i].type == PathType::Print && object.selectedPaths.count(paths[i].number) > 0 &&
+                             !object.hiddenPaths.count(paths[i].number);
             if (!selected) {
                 ++i;
                 continue;
@@ -298,6 +304,7 @@ void GeometryRenderer::rebuild(const Scene& scene, ColorMode colorMode, float be
                 const Path& next = paths[runEnd + 1];
                 if (next.type != PathType::Print) break;
                 if (!object.selectedPaths.count(next.number)) break;
+                if (object.hiddenPaths.count(next.number)) break;
                 if (glm::length(next.from - cur.to) > 1e-4) break;
                 ++runEnd;
             }

@@ -105,6 +105,7 @@ bool saveProject(const std::string& path, const ProjectData& project) {
         }
 
         for (int selected : object.selectedPaths) file << "selected " << selected << "\n";
+        for (int hidden : object.hiddenPaths) file << "hidden " << hidden << "\n";
 
         for (const auto& group : object.selectionGroups) {
             file << "groupBegin " << group.color.r << " " << group.color.g << " " << group.color.b << "\n";
@@ -226,6 +227,7 @@ bool loadProject(const std::string& path, ProjectData& project) {
                 current.layers.push_back(l);
             }
             else if (key == "selected") { int n; if (s >> n) current.selectedPaths.insert(n); }
+            else if (key == "hidden") { int n; if (s >> n) current.hiddenPaths.insert(n); }
             else if (key == "groupBegin") {
                 pendingGroup = SelectionGroup{};
                 s >> pendingGroup.color.r >> pendingGroup.color.g >> pendingGroup.color.b;
