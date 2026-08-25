@@ -1328,6 +1328,77 @@ void testMirrorAndInterleaveKeepsSpeed() {
     check(foundNonZeroVelCp, "MirrorInterleaveSpeed: exported file contains a real, nonzero $VEL.CP");
 }
 
+// Reported from real use: a speed override set on a layer (e.g. layer 1
+// given a deliberately different speed than the rest of the file) BEFORE
+// mirroring/interleaving silently reverted to the file's own original
+// speed once merged -- the interleave code read path.speed (the raw
+// parsed value) instead of path.effectiveSpeed() (override-if-present)
+// when baking each print path into the merged object, so any override
+// applied beforehand was discarded at exactly this step.
+void testMirrorAndInterleavePreservesSpeedOverride() {
+    Scene scene;
+    SceneObject part = parseSrc("Part", sampleSrcLinesForExport());
+
+    // Give layer 1 a deliberately different speed than the file's own
+    // (0.040) -- exactly the "first layer printed slower/faster on
+    // purpose" workflow the bug was reported from.
+    std::vector<int> layer1Paths = pathNumbersForLayer(part, 1);
+    check(!layer1Paths.empty(), "MirrorInterleaveOverride: precondition -- layer 1 has print paths to override");
+    applySpeedToPaths(part, layer1Paths, SpeedApplyMode::Exact, 0.075);
+
+    bool overrideStuck = true;
+    for (int number : layer1Paths) {
+        const Path* p = part.findPath(number);
+        if (!p || std::abs(p->effectiveSpeed() - 0.075) > 1e-9) overrideStuck = false;
+    }
+    check(overrideStuck, "MirrorInterleaveOverride: precondition -- the override actually took on the source object");
+
+    int sourceId = scene.addObject(std::move(part)).id;
+
+    MirrorInterleaveOptions options;
+    options.copies = 2;
+    options.gapMm = 200.0;
+
+    auto merged = mirrorAndInterleave(scene, sourceId, options);
+    check(merged.has_value(), "MirrorInterleaveOverride: mirror+interleave succeeds");
+    if (!merged.has_value()) return;
+
+    // The merged object's OWN layer 1 (the source's segment always becomes
+    // merged layer 1, since it's interleaved first) must carry the
+    // OVERRIDDEN speed, not the file's stale original 0.040.
+    std::vector<int> mergedLayer1Paths = pathNumbersForLayer(*merged, 1);
+    check(!mergedLayer1Paths.empty(), "MirrorInterleaveOverride: merged object's layer 1 has print paths");
+    bool allOverridden = !mergedLayer1Paths.empty();
+    for (int number : mergedLayer1Paths) {
+        const Path* p = merged->findPath(number);
+        if (!p || std::abs(p->effectiveSpeed() - 0.075) > 1e-6) allOverridden = false;
+    }
+    check(allOverridden,
+          "MirrorInterleaveOverride: merged layer 1 keeps the 0.075 override, not the file's stale 0.040 (the reported bug)");
+
+    // And that the actual exported KRL text -- what the robot will really
+    // run -- carries the override too, not just the in-memory model.
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(*merged, result);
+    check(result.success, "MirrorInterleaveOverride: merged program exports");
+    std::string joined;
+    for (const auto& line : exported) joined += line + "\n";
+    check(joined.find("$VEL.CP = 0.075000") != std::string::npos,
+          "MirrorInterleaveOverride: exported KRL text contains the overridden 0.075 speed");
+
+    // Only checking for the specific speed-mismatch message here -- this
+    // fixture's minimal LIN lines (no A/B/C/E1-E6) trip unrelated
+    // structural warnings from validateStructure() that have nothing to
+    // do with this bug (see testInterleaveTravelsKeepFullAxisSet for that
+    // concern, using a fixture built specifically to avoid them).
+    ValidationReport report;
+    verifyCompiledSpeeds(*merged, exported, report);
+    check(!std::any_of(report.issues.begin(), report.issues.end(), [](const ValidationIssue& i) {
+              return i.message.find("does not match the intended") != std::string::npos;
+          }),
+          "MirrorInterleaveOverride: pre-export speed verifier reports no mismatch (the exact warning from the bug report)");
+}
+
 // Reported from real use: a 4-copy mirror+interleave export was rejected
 // by the web editor's own structural validator (1630 CRITICAL issues) and
 // its points failed to load on the KUKA pendant. Root cause: synthetic
@@ -2430,6 +2501,7 @@ int main() {
     testSafePointRoundTrip();
     testMirrorAndInterleave();
     testMirrorAndInterleaveKeepsSpeed();
+    testMirrorAndInterleavePreservesSpeedOverride();
     testMirrorTransitionApproachesNearEdgeNotFarEdge();
     testAnimationSequenceSubdivisionAndTiming();
     testAnimationFallbackSpeedAndVisibilityFilter();

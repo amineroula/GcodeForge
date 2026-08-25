@@ -343,7 +343,21 @@ std::optional<SceneObject> buildInterleavedObject(const Scene& scene, const std:
                           syntheticTemplate("GCODEFORGE in-layer reposition"), "LIN", options.travelSpeed);
                 }
                 if (hasAxisFieldA(templateLine)) lastFullTemplateLine = templateLine;
-                emit(path.from, path.to, PathType::Print, currentLayerNumber, templateLine, path.motion, path.speed);
+                // effectiveSpeed(), not path.speed: a speed OVERRIDE applied
+                // to the source object before mirroring/interleaving must
+                // survive into the merged object. Passing path.speed here
+                // silently discarded any override -- the merged object has
+                // no override concept of its own (emit() bakes a real
+                // $VEL.CP + path.speed straight into merged.sourceLines), so
+                // an override lost at this step is gone for good: the
+                // interleaved copy reverts to whatever the ORIGINAL file
+                // speed was, with nothing left to restore the intended
+                // value. Reported from real use: layer 1 was deliberately
+                // set to a different speed than the file's own, but after
+                // interleaving the exported speed silently reverted to the
+                // file's original value.
+                emit(path.from, path.to, PathType::Print, currentLayerNumber, templateLine, path.motion,
+                     path.effectiveSpeed());
             }
         }
     }

@@ -2294,3 +2294,45 @@ files (new `hidden <n>` line per path, ignored by older readers).
 hide with the partial-hide edge case, per-group hide, export
 byte-identity, and project round-trip) plus every existing test still
 passing. 415 tests total, Debug and Release clean.
+
+## Speed override silently dropped by mirror/interleave
+
+Real-use report, with a pre-export report screenshot: exported speed
+0.02 for a run of layer-1 paths, "does not match the intended 0.06" --
+the user had deliberately set layer 1 to a different speed than the rest
+of the file (matching what an older reference tool showed as a distinct
+color/speed for that layer), and the viewport never visually reflected
+the change either.
+
+**Root cause**: `buildInterleavedObject()` (`InterleavePrint.cpp`) reads
+each source path's speed while re-emitting it into the merged object.
+The call was `emit(..., path.speed)` -- the raw, ORIGINAL parsed speed
+-- instead of `path.effectiveSpeed()`, which correctly prioritizes an
+active `speedOverride`. Any speed override set on the source object
+BEFORE mirroring/interleaving was silently discarded at exactly this
+step: the merged object has no override concept of its own (`emit()`
+bakes a real `$VEL.CP` + `path.speed` straight into the merged source
+text), so once the override was dropped here it was gone for good -- the
+interleaved copy reverted to whatever the file's own original speed was.
+
+This explains BOTH reported symptoms with one root cause: the exported
+text legitimately said 0.02 because the in-memory model's `path.speed`
+itself was already 0.02 post-interleave (the override never made it into
+the merged object at all) -- and the viewport wasn't failing to
+re-render, it was accurately showing the (wrong) data that resulted from
+the dropped override. `verifyCompiledSpeeds()` only compares the model
+against its own export, so it couldn't catch a case where the model
+itself already silently lost the user's intent before export ever ran.
+
+**Fix**: `emit(path.from, path.to, PathType::Print, currentLayerNumber, templateLine, path.motion, path.effectiveSpeed())` at the print-path call site.
+
+New test `testMirrorAndInterleavePreservesSpeedOverride()`: overrides
+layer 1 to a speed distinct from the file's own (0.075 vs 0.040) on the
+source object, mirrors+interleaves it, and checks the merged object's
+layer 1 keeps 0.075 -- in the model, in the exported KRL text, and via
+`verifyCompiledSpeeds()` reporting no mismatch. Confirmed this test fails
+correctly against the pre-fix code (reproducing the exact "exported
+speed does not match the intended" warning from the report) before the
+fix, passes after.
+
+**Verified**: 424 tests total, Debug and Release clean.
