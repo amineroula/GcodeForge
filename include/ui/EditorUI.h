@@ -102,6 +102,14 @@ public:
     void clearAnimationPauseRequest() { animationPauseRequested_ = false; }
     bool animationStopRequested() const { return animationStopRequested_; }
     void clearAnimationStopRequest() { animationStopRequested_ = false; }
+    // Stop only pauses/rewinds playback -- it does NOT exit simulation
+    // mode, which suppresses the normal object view entirely while built
+    // (see main.cpp's draw dispatch). Reported from real use: "when I do
+    // the animation and want to go back to my file I can't" -- Stop alone
+    // left the user staring at a blank/reveal-in-progress mesh with no
+    // discoverable way back. This is the explicit exit.
+    bool animationExitRequested() const { return animationExitRequested_; }
+    void clearAnimationExitRequest() { animationExitRequested_ = false; }
     bool animationScrubbed() const { return animationScrubbed_; }
     double animationScrubTimeSeconds() const { return animationScrubTimeSeconds_; }
     void clearAnimationScrub() { animationScrubbed_ = false; }
@@ -183,6 +191,7 @@ private:
     bool animationPlayRequested_ = false;
     bool animationPauseRequested_ = false;
     bool animationStopRequested_ = false;
+    bool animationExitRequested_ = false;
     bool animationScrubbed_ = false;
     double animationScrubTimeSeconds_ = 0.0;
     AnimationSettings animationSettings_;

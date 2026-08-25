@@ -2336,3 +2336,34 @@ speed does not match the intended" warning from the report) before the
 fix, passes after.
 
 **Verified**: 424 tests total, Debug and Release clean.
+
+## Stuck in animation mode with no way back to the file
+
+Real-use report: "when i do the animation and i want to go back to my
+file i cant."
+
+**Root cause**: a built print simulation (`animBuilt`, a `main.cpp`-local
+bool) completely replaces the normal object viewport with the animation's
+progressive-reveal mesh (`main.cpp:1367-1374`) -- by design, so the
+already-fully-drawn object doesn't sit underneath defeating the reveal.
+But nothing in the UI ever cleared `animBuilt` back to false: the "Stop"
+button only paused playback and rewound time
+(`main.cpp:962-966`), the View tab's Lines/Geometry render-mode buttons
+have no effect while `animBuilt` is true (that branch is skipped
+entirely), and switching tabs does nothing to it either. The only code
+path that ever cleared it was an incidental side effect of making a
+*different* object active than the one the simulation was built for
+(`main.cpp:945-948`) -- unreachable in the common single-object case this
+was reported from.
+
+**Fix**: a new, explicitly-separate "Back to editor view" button in the
+Animate tab (`EditorUI.cpp`'s `drawAnimationPanel`, enabled only once a
+simulation is built), wired through a new `animationExitRequested_` flag
+to `main.cpp` clearing `animBuilt` (and rewinding playback) -- kept
+distinct from "Stop" specifically so pausing/stopping playback to scrub
+around doesn't also destroy the built simulation.
+
+**Verified**: builds clean, Debug and Release, 424 tests (no unit test
+added -- this is UI/main-loop wiring with no ImGui/GL context in the test
+binary, same as the pre-existing Stop button, which also has no unit
+test; verified by reading the draw-dispatch code path directly).

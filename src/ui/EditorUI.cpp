@@ -289,6 +289,16 @@ void EditorUI::drawAnimationPanel() {
     ImGui::SameLine();
     ImGui::TextDisabled(animBuilt_ ? "Ready." : "Not built yet -- click to simulate the active object.");
 
+    // While a simulation is built, it REPLACES the normal 3D view of the
+    // object entirely (see main.cpp's draw dispatch) -- this is the only
+    // way back. Stop alone doesn't do it (Stop just pauses/rewinds
+    // playback, so the simulation stays built and the normal view stays
+    // hidden), which is exactly the "I can't get back to my file" bug
+    // this button fixes.
+    ImGui::BeginDisabled(!animBuilt_);
+    if (ImGui::Button("Back to editor view")) animationExitRequested_ = true;
+    ImGui::EndDisabled();
+
     ImGui::Spacing();
     sectionLabel("Print head");
     ImGui::Checkbox("Show print head", &s.showHead);

@@ -964,6 +964,12 @@ int main() {
                 animRunning = false;
                 animTimeSeconds = 0.0;
             }
+            if (editorUi.animationExitRequested()) {
+                editorUi.clearAnimationExitRequest();
+                animBuilt = false;
+                animRunning = false;
+                animTimeSeconds = 0.0;
+            }
             if (editorUi.animationScrubbed()) {
                 animTimeSeconds = editorUi.animationScrubTimeSeconds();
                 animRunning = false; // scrubbing pauses -- matches every other timeline UI
