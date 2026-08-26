@@ -723,11 +723,6 @@ int main() {
     bool ctrlYWasDown = false;
     bool tabWasDown = false;
 
-    // Which object a pending "Save SRC As..." is actually for -- set when
-    // the pre-export report modal opens (editor/ExportValidation.h), read
-    // back once the user picks Proceed/Cancel on a LATER frame.
-    int pendingSrcExportObjectId = -1;
-
     // Print animation playback state (editor/PrintAnimation.h). The
     // sequence is built once (on request, or when the active object
     // changes) and reused every frame; only animTimeSeconds changes
@@ -869,48 +864,27 @@ int main() {
                 }
             }
         }
-        auto doSaveSrc = [&](SceneObject& object) {
-            if (auto path = showSaveSrcDialog(window, object.name + ".src")) {
-                ExportResult exportResult = exportSrcToFile(object, *path);
-                if (exportResult.success) {
-                    std::printf("Exported %s: %d coordinate patch(es), %d speed insertion(s), %d layer action(s)\n",
-                                path->c_str(), exportResult.patchedCoordinateLines,
-                                exportResult.insertedSpeedLines, exportResult.insertedLayerActions);
-                } else {
-                    std::fprintf(stderr, "Export failed: %s\n", exportResult.errorMessage.c_str());
-                }
-            }
-        };
-
-        if (editorUi.saveSrcRequested()) {
-            editorUi.clearSaveSrcRequest();
+        // The Export SRC dialog (editor/ExportValidation.h's individually-
+        // runnable checks, see EditorUI::drawExportDialog) decides WHETHER
+        // and WITH WHAT OPTIONS to save; this is the only place that
+        // actually touches disk, since it's the only place with a
+        // GLFWwindow* for the native save dialog.
+        if (editorUi.exportSaveRequested()) {
+            editorUi.clearExportSaveRequest();
             if (SceneObject* active = scene.activeObject()) {
-                // Compile first (without writing to disk) and run the
-                // pre-export checks (editor/ExportValidation.h -- ported
-                // from the web Gcode Editor's validateLines() and
-                // reparse-based speed verification). A clean report skips
-                // the modal entirely; any issue shows it, blocking on
-                // CRITICAL ones (structurally broken output) and offering
-                // "Save Anyway" for WARNING-only ones (matches
-                // export-verification-v481.js's downgrade behavior).
-                ExportResult previewResult;
-                std::vector<std::string> compiled = buildExportedLines(*active, previewResult);
-                ValidationReport report = validateForExport(*active, compiled);
-                if (report.issues.empty()) {
-                    doSaveSrc(*active);
-                } else {
-                    pendingSrcExportObjectId = active->id;
-                    editorUi.showExportReport(report);
+                if (auto path = showSaveSrcDialog(window, active->name + ".src")) {
+                    ExportOptions options;
+                    options.roundSpeedsTo4Decimals = editorUi.exportRoundSpeedsTo4Decimals();
+                    ExportResult exportResult = exportSrcToFile(*active, *path, options);
+                    if (exportResult.success) {
+                        std::printf("Exported %s: %d coordinate patch(es), %d speed insertion(s), %d layer action(s)\n",
+                                    path->c_str(), exportResult.patchedCoordinateLines,
+                                    exportResult.insertedSpeedLines, exportResult.insertedLayerActions);
+                    } else {
+                        std::fprintf(stderr, "Export failed: %s\n", exportResult.errorMessage.c_str());
+                    }
                 }
             }
-        }
-        if (editorUi.exportDecision() == EditorUI::ExportDecision::Proceed) {
-            editorUi.clearExportDecision();
-            if (SceneObject* object = scene.findObject(pendingSrcExportObjectId)) doSaveSrc(*object);
-            pendingSrcExportObjectId = -1;
-        } else if (editorUi.exportDecision() == EditorUI::ExportDecision::Cancel) {
-            editorUi.clearExportDecision();
-            pendingSrcExportObjectId = -1;
         }
 
         // Print animation (editor/PrintAnimation.h). Build/rebuild only

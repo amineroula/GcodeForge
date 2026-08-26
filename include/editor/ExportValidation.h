@@ -52,12 +52,34 @@ void validateStructure(const std::vector<std::string>& lines, ValidationReport& 
 // problem (critical -- something in compilation dropped or added a
 // motion). Otherwise, for every non-PTP path, compares the compiled
 // text's actual effective speed against what `object` intended
-// (Path::effectiveSpeed()) at a tolerance of 1e-9, reporting mismatches
-// as warnings (capped at 12, matching the web editor's own cap) rather
-// than blocking -- a speed-value mismatch means the exported file will
-// run at the wrong (but still well-formed) speed, not that it's broken.
+// (Path::effectiveSpeed()) at `toleranceMps`, reporting mismatches as
+// warnings (capped at 12, matching the web editor's own cap) rather than
+// blocking -- a speed-value mismatch means the exported file will run at
+// the wrong (but still well-formed) speed, not that it's broken. The
+// tolerance is a real parameter (not hardcoded) because a deliberate
+// export-time rounding option (SrcExporter's ExportOptions) makes a
+// small, EXPECTED gap between intended and exported speed -- widen it to
+// match whatever rounding was actually applied, or every rounded speed
+// would falsely report as a mismatch. Defaults to 1e-9 (no rounding).
 void verifyCompiledSpeeds(const SceneObject& object, const std::vector<std::string>& compiledLines,
-                           ValidationReport& report);
+                           ValidationReport& report, double toleranceMps = 1e-9);
 
 // Runs every check and returns the combined report.
 ValidationReport validateForExport(const SceneObject& object, const std::vector<std::string>& compiledLines);
+
+// One individually-runnable check, uniform signature so a UI can list and
+// run them one at a time (or all at once) before deciding whether to
+// save -- see EditorUI's Export SRC dialog. Structural checks ignore
+// `object` (they only look at `compiledLines`); ignore `speedToleranceMps`
+// except the speed-match check, which is exactly verifyCompiledSpeeds()
+// above under a name that fits this uniform signature.
+struct NamedValidationCheck {
+    std::string name;
+    void (*run)(const SceneObject& object, const std::vector<std::string>& compiledLines,
+                double speedToleranceMps, ValidationReport& report);
+};
+
+// The same 7 checks validateForExport() runs together (one &ACCESS, one
+// DEF, one END, no motion after END, complete LIN axis fields, balanced
+// travel markers, speed match), exposed individually.
+std::vector<NamedValidationCheck> exportValidationChecks();

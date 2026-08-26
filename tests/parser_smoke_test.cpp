@@ -655,6 +655,99 @@ void testSrcExporterSpeedOverride() {
     }
 }
 
+// Real request: an export-time option to round exported $VEL.CP values
+// to 4 decimal places (0.060000 -> 0.0600) instead of the default 6 --
+// a real change to what the robot runs, off by default.
+void testSrcExporterSpeedRounding() {
+    std::vector<std::string> lines = sampleSrcLinesForExport();
+    SceneObject object = parseSrc("Chair_01", lines);
+    object.paths[3].speedOverride = 0.0600125; // rounds to 0.0600, not 0.060013
+
+    ExportResult defaultResult;
+    std::vector<std::string> defaultExported = buildExportedLines(object, defaultResult);
+    std::string defaultJoined;
+    for (const auto& line : defaultExported) defaultJoined += line + "\n";
+    check(defaultJoined.find("$VEL.CP = 0.060013") != std::string::npos,
+          "SrcExporter: rounding OFF by default -- full 6-decimal precision written");
+
+    ExportOptions rounded;
+    rounded.roundSpeedsTo4Decimals = true;
+    ExportResult roundedResult;
+    std::vector<std::string> roundedExported = buildExportedLines(object, roundedResult, rounded);
+    std::string roundedJoined;
+    for (const auto& line : roundedExported) roundedJoined += line + "\n";
+    check(roundedJoined.find("$VEL.CP = 0.0600") != std::string::npos &&
+          roundedJoined.find("$VEL.CP = 0.060013") == std::string::npos,
+          "SrcExporter: rounding ON writes 4-decimal values, not the full-precision original");
+
+    // The rounding gap (up to 0.00005) between the intended 0.0600125 and
+    // the exported 0.0600 must NOT trip the speed-match check at a
+    // tolerance that accounts for it -- but must still be genuinely
+    // caught at the default (no-rounding) tolerance, proving the
+    // tolerance parameter actually does something rather than just
+    // silently widening every check.
+    ValidationReport strict;
+    verifyCompiledSpeeds(object, roundedExported, strict); // default tolerance, 1e-9
+    check(std::any_of(strict.issues.begin(), strict.issues.end(), [](const ValidationIssue& i) {
+              return i.message.find("does not match the intended") != std::string::npos;
+          }),
+          "SrcExporter: rounded output DOES mismatch at the strict default tolerance (proves rounding really changed the value)");
+
+    ValidationReport tolerant;
+    verifyCompiledSpeeds(object, roundedExported, tolerant, 6e-5);
+    check(!std::any_of(tolerant.issues.begin(), tolerant.issues.end(), [](const ValidationIssue& i) {
+              return i.message.find("does not match the intended") != std::string::npos;
+          }),
+          "SrcExporter: rounded output does NOT mismatch once tolerance accounts for the rounding gap");
+}
+
+// Real request: each of the 7 checks validateForExport() bundles together
+// should be individually runnable (a UI can run one at a time, or all at
+// once, before deciding to save) -- verifies the list has exactly the
+// expected checks and that each one, run alone, catches the SAME bug its
+// bundled counterpart already catches (testValidateStructureCatchesKnownBugClasses
+// covers the bundled behavior; this covers the individual entry points).
+void testExportValidationChecksIndividually() {
+    auto checks = exportValidationChecks();
+    check(checks.size() == 7, "ExportValidationChecks: exactly 7 named checks");
+
+    SceneObject dummy;
+    auto findCheck = [&](const std::string& name) -> const NamedValidationCheck* {
+        for (const auto& c : checks) if (c.name == name) return &c;
+        return nullptr;
+    };
+
+    const NamedValidationCheck* accessCheck = findCheck("Exactly one &ACCESS");
+    check(accessCheck != nullptr, "ExportValidationChecks: has an &ACCESS check");
+    if (accessCheck) {
+        ValidationReport report;
+        accessCheck->run(dummy, {"DEF Part()", "END"}, 0.0, report);
+        check(report.hasCritical(), "ExportValidationChecks: &ACCESS check alone catches a missing &ACCESS");
+    }
+
+    const NamedValidationCheck* axisCheck = findCheck("Every LIN has full X/Y/Z/A/B/C/E1-E6");
+    check(axisCheck != nullptr, "ExportValidationChecks: has a LIN-completeness check");
+    if (axisCheck) {
+        ValidationReport report;
+        axisCheck->run(dummy, {"&ACCESS RVP", "DEF Part()", "LIN {X 0,Y 0,Z 0}", "END"}, 0.0, report);
+        check(report.hasCritical(), "ExportValidationChecks: LIN-completeness check alone catches an incomplete LIN target");
+    }
+
+    const NamedValidationCheck* speedCheck = findCheck("Exported speeds match intended");
+    check(speedCheck != nullptr, "ExportValidationChecks: has a speed-match check");
+    if (speedCheck) {
+        SceneObject part = parseSrc("Chair_01", sampleSrcLinesForExport());
+        std::vector<std::string> untouched = part.sourceLines; // NOT re-exported -- the override never made it into the text
+        part.paths[3].speedOverride = 0.099;
+        ValidationReport report;
+        speedCheck->run(part, untouched, 1e-9, report);
+        check(std::any_of(report.issues.begin(), report.issues.end(), [](const ValidationIssue& i) {
+                  return i.message.find("does not match the intended") != std::string::npos;
+              }),
+              "ExportValidationChecks: speed-match check alone catches an intended-vs-exported mismatch");
+    }
+}
+
 void testSrcExporterLayerAction() {
     std::vector<std::string> lines = sampleSrcLinesForExport();
     SceneObject object = parseSrc("Chair_01", lines);
@@ -2485,6 +2578,8 @@ int main() {
     testSrcExporterRoundTrip();
     testSrcExporterTransform();
     testSrcExporterSpeedOverride();
+    testSrcExporterSpeedRounding();
+    testExportValidationChecksIndividually();
     testSrcExporterLayerAction();
     testPathSplitModel();
     testPathSplitExport();

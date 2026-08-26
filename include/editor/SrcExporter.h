@@ -35,9 +35,25 @@ struct ExportResult {
     int insertedLayerActions = 0;
 };
 
+// User-requested export-time behavior, kept separate from ExportResult
+// (which reports what happened) and from the SceneObject model (which
+// holds intent, not export formatting choices).
+struct ExportOptions {
+    // When true, every $VEL.CP value written is rounded to 4 decimal
+    // places (e.g. 0.060000 -> 0.0600) instead of the default 6. Off by
+    // default -- this is a real change to what the robot actually runs
+    // at, not a display setting, so it's opt-in per export. Widen
+    // editor/ExportValidation.h's verifyCompiledSpeeds() tolerance to
+    // match whenever this is on, or the expected rounding gap will
+    // falsely report as a mismatch.
+    bool roundSpeedsTo4Decimals = false;
+};
+
 // Builds the patched line list without touching disk -- exposed
 // separately from exportSrcToFile so the patching logic itself is
 // testable without file I/O.
-std::vector<std::string> buildExportedLines(const SceneObject& object, ExportResult& result);
+std::vector<std::string> buildExportedLines(const SceneObject& object, ExportResult& result,
+                                             const ExportOptions& options = {});
 
-ExportResult exportSrcToFile(const SceneObject& object, const std::string& path);
+ExportResult exportSrcToFile(const SceneObject& object, const std::string& path,
+                              const ExportOptions& options = {});

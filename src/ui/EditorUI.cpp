@@ -8,6 +8,7 @@
 #include "editor/RotatePaths.h"
 #include "editor/Selection.h"
 #include "editor/SpeedEditing.h"
+#include "editor/SrcExporter.h"
 #include "editor/Visibility.h"
 
 #include <imgui.h>
@@ -52,7 +53,7 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
                      UndoStack& undoStack, size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty) {
     drawMenuBar(scene, undoStack, sceneDirty);
     drawStatusBar();
-    drawExportReportModal(); // must run even if panels are hidden -- it's a decision the user has to make
+    drawExportDialog(scene); // must run even if panels are hidden -- it's a decision the user has to make
 
     // Panels collapsed: skip both floating windows entirely, leaving an
     // unobstructed view of the viewport. The menu bar and status bar stay
@@ -136,7 +137,8 @@ void EditorUI::drawMenuBar(Scene& scene, UndoStack& undoStack, bool& sceneDirty)
             }
             bool hasActive = (scene.activeObject() != nullptr);
             if (ImGui::MenuItem("Save SRC As...", nullptr, false, hasActive)) {
-                saveSrcRequested_ = true;
+                exportDialogOpen_ = true;
+                exportCheckOutcomes_.clear(); // fresh dialog -- no stale results from a previous object/edit
             }
             ImGui::Separator();
             // A .src is a robot program and can only hold what the robot
@@ -211,60 +213,150 @@ void EditorUI::drawStatusBar() {
     ImGui::PopStyleVar();
 }
 
-void EditorUI::drawExportReportModal() {
-    if (!exportReportOpen_) return;
-    ImGui::OpenPopup("Pre-export report");
+// Runs one check (or all of them) against a fresh compile of `object`
+// under the dialog's current rounding option, storing results into
+// exportCheckOutcomes_ so both the per-check row and the combined report
+// below can read them back. Re-compiles on every click rather than
+// caching -- exports are cheap (patch a copy of the source lines) and
+// this guarantees the result always reflects whatever the object/options
+// currently say, never a stale compile from before an edit.
+void EditorUI::drawExportDialog(Scene& scene) {
+    if (!exportDialogOpen_) return;
 
-    ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_Appearing);
+    SceneObject* active = scene.activeObject();
+    ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Appearing);
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (ImGui::BeginPopupModal("Pre-export report", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        int criticalCount = exportReport_.criticalCount();
-        int warningCount = exportReport_.warningCount();
+    if (!ImGui::Begin("Export SRC", &exportDialogOpen_, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::End();
+        return;
+    }
 
-        if (criticalCount > 0) {
-            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.30f, 1.0f),
-                                "%d critical issue(s) -- export blocked.", criticalCount);
-            ImGui::TextWrapped("The exported file is structurally broken and would very likely fail to load "
-                                "or run on the robot. Fix these before saving.");
+    if (!active) {
+        ImGui::TextDisabled("No object loaded.");
+        ImGui::End();
+        return;
+    }
+
+    auto checks = exportValidationChecks();
+    if (exportCheckOutcomes_.size() != checks.size()) exportCheckOutcomes_.assign(checks.size(), CheckOutcome{});
+
+    ImGui::Text("Exporting: %s", active->name.c_str());
+    ImGui::Separator();
+
+    sectionLabel("Options");
+    if (ImGui::Checkbox("Round exported speeds to 4 decimal places", &exportRoundSpeeds_)) {
+        // The option changed what a re-run would report -- stale results
+        // from before the toggle would be actively misleading (a fresh
+        // rounding gap that "Speed match" hasn't re-checked yet), so clear
+        // them rather than let them keep showing an outcome for the OLD
+        // setting.
+        exportCheckOutcomes_.assign(checks.size(), CheckOutcome{});
+    }
+    ImGui::TextDisabled("Off: $VEL.CP written with 6 decimals (0.060000). On: 4 (0.0600).");
+
+    // A rounding gap up to half of the 4th-decimal step (0.00005) between
+    // the intended and exported speed is EXPECTED once rounding is on --
+    // widen the speed-match tolerance to match, or it would flag every
+    // rounded speed as a false mismatch.
+    double speedTolerance = exportRoundSpeeds_ ? 6e-5 : 1e-9;
+
+    auto runCheck = [&](size_t i) {
+        ExportOptions options;
+        options.roundSpeedsTo4Decimals = exportRoundSpeeds_;
+        ExportResult exportResult;
+        std::vector<std::string> compiled = buildExportedLines(*active, exportResult, options);
+        ValidationReport single;
+        checks[i].run(*active, compiled, speedTolerance, single);
+        exportCheckOutcomes_[i].run = true;
+        exportCheckOutcomes_[i].issues = single.issues;
+    };
+
+    ImGui::Spacing();
+    sectionLabel("Checks");
+    ImGui::TextWrapped("Run one at a time to see its own result, or run everything at once.");
+
+    for (size_t i = 0; i < checks.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::SmallButton("Run")) runCheck(i);
+        ImGui::SameLine();
+        const CheckOutcome& outcome = exportCheckOutcomes_[i];
+        if (!outcome.run) {
+            ImGui::TextDisabled("%s -- not run yet", checks[i].name.c_str());
         } else {
-            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.30f, 1.0f),
-                                "%d warning(s) -- structurally OK, worth reviewing.", warningCount);
+            int critical = 0, warning = 0;
+            for (const auto& issue : outcome.issues) {
+                if (issue.severity == ValidationSeverity::Critical) ++critical; else ++warning;
+            }
+            if (critical > 0) {
+                ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.40f, 1.0f), "%s -- %d critical",
+                                    checks[i].name.c_str(), critical);
+            } else if (warning > 0) {
+                ImGui::TextColored(ImVec4(1.0f, 0.80f, 0.40f, 1.0f), "%s -- %d warning(s)",
+                                    checks[i].name.c_str(), warning);
+            } else {
+                ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.50f, 1.0f), "%s -- OK", checks[i].name.c_str());
+            }
         }
-        ImGui::Separator();
+        ImGui::PopID();
+    }
 
-        ImGui::BeginChild("##reportList", ImVec2(0, 220), ImGuiChildFlags_Border);
-        for (const auto& issue : exportReport_.issues) {
+    ImGui::Spacing();
+    if (ImGui::Button("Run all tests")) {
+        for (size_t i = 0; i < checks.size(); ++i) runCheck(i);
+    }
+
+    ImGui::Spacing();
+    sectionLabel("Report");
+    bool allRun = true;
+    int totalCritical = 0, totalWarning = 0;
+    for (const auto& outcome : exportCheckOutcomes_) {
+        if (!outcome.run) { allRun = false; continue; }
+        for (const auto& issue : outcome.issues) {
+            if (issue.severity == ValidationSeverity::Critical) ++totalCritical; else ++totalWarning;
+        }
+    }
+    if (!allRun) ImGui::TextDisabled("Not every check has been run yet.");
+
+    ImGui::BeginChild("##exportReportList", ImVec2(0, 180), ImGuiChildFlags_Border);
+    for (size_t i = 0; i < checks.size(); ++i) {
+        if (!exportCheckOutcomes_[i].run) continue;
+        for (const auto& issue : exportCheckOutcomes_[i].issues) {
             bool critical = (issue.severity == ValidationSeverity::Critical);
             ImGui::PushStyleColor(ImGuiCol_Text, critical ? ImVec4(1.0f, 0.45f, 0.40f, 1.0f)
                                                            : ImVec4(1.0f, 0.80f, 0.40f, 1.0f));
-            ImGui::TextWrapped("%s: %s", critical ? "CRITICAL" : "WARNING", issue.message.c_str());
+            ImGui::TextWrapped("[%s] %s: %s", checks[i].name.c_str(),
+                                critical ? "CRITICAL" : "WARNING", issue.message.c_str());
             ImGui::PopStyleColor();
         }
-        ImGui::EndChild();
-
-        ImGui::Spacing();
-        if (criticalCount > 0) {
-            if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-                exportDecision_ = ExportDecision::Cancel;
-                exportReportOpen_ = false;
-                ImGui::CloseCurrentPopup();
-            }
-        } else {
-            if (ImGui::Button("Save Anyway", ImVec2(120, 0))) {
-                exportDecision_ = ExportDecision::Proceed;
-                exportReportOpen_ = false;
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-                exportDecision_ = ExportDecision::Cancel;
-                exportReportOpen_ = false;
-                ImGui::CloseCurrentPopup();
-            }
-        }
-        ImGui::EndPopup();
     }
+    if (totalCritical == 0 && totalWarning == 0 && allRun) {
+        ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.50f, 1.0f), "All checks passed.");
+    }
+    ImGui::EndChild();
+
+    ImGui::Spacing();
+    // Critical issues block saving outright -- matches the structural-
+    // vs-warning severity split every other check in this codebase uses
+    // (a critical issue means the file would very likely fail to load or
+    // run on the robot). Only checks that have actually been RUN count
+    // here; an unrun check can't be known to be clean, so it doesn't
+    // block, but it also can't vouch for the file -- see the "not every
+    // check has been run yet" notice above.
+    ImGui::BeginDisabled(totalCritical > 0);
+    if (ImGui::Button("Save SRC...", ImVec2(140, 0))) {
+        exportSaveRequested_ = true;
+        exportDialogOpen_ = false;
+    }
+    ImGui::EndDisabled();
+    if (totalCritical > 0) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.40f, 1.0f), "Fix critical issues first.");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(100, 0))) exportDialogOpen_ = false;
+
+    ImGui::End();
 }
 
 void EditorUI::drawAnimationPanel() {
@@ -1013,12 +1105,22 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
         return;
     }
 
+    // A stale isolation set from a DIFFERENT object would apply to
+    // whatever layer numbers happen to coincide in this one -- reset
+    // rather than carry it across an active-object switch.
+    if (isolatedLayersObjectId_ != object.id) {
+        isolatedLayers_.clear();
+        isolatedLayersObjectId_ = object.id;
+    }
+
     ImGui::TextWrapped("Click a row to select that layer's print paths "
                         "(Shift = range-select from the last clicked layer, Ctrl = subtract).");
+    ImGui::TextWrapped("Iso isolates a layer -- click more to see several at once, click again to remove one.");
 
-    if (ImGui::BeginTable("layers", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
+    if (ImGui::BeginTable("layers", 9, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
                            ImVec2(0, 200))) {
         ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthFixed, 50.0f);
+        ImGui::TableSetupColumn("Iso", ImGuiTableColumnFlags_WidthFixed, 40.0f);
         ImGui::TableSetupColumn("Layer");
         ImGui::TableSetupColumn("Z");
         ImGui::TableSetupColumn("Start");
@@ -1037,6 +1139,47 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
             if (ImGui::Checkbox("##layerVisible", &layerVisible)) {
                 undoStack.snapshotBeforeChange(scene);
                 setLayerHidden(object, layer.layer, !layerVisible);
+                // Keep the Iso button's highlight (and "Show all layers"'
+                // enabled state) truthful even when visibility was toggled
+                // via this checkbox instead of Iso -- isolatedLayers_ means
+                // "currently isolated/shown while isolating," so it must
+                // track whichever control actually changed it.
+                if (!isolatedLayers_.empty()) {
+                    if (layerVisible) isolatedLayers_.insert(layer.layer);
+                    else isolatedLayers_.erase(layer.layer);
+                }
+                dirty = true;
+            }
+
+            ImGui::TableNextColumn();
+            bool isIsolated = isolatedLayers_.count(layer.layer) > 0;
+            if (isIsolated) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.55f, 0.85f, 1.0f));
+            bool isoClicked = ImGui::SmallButton("Iso");
+            if (isIsolated) ImGui::PopStyleColor();
+            if (isoClicked) {
+                undoStack.snapshotBeforeChange(scene);
+                if (isIsolated) {
+                    // Un-isolating this one: if it was the LAST isolated
+                    // layer, exit isolation mode entirely (show
+                    // everything) instead of leaving nothing visible.
+                    isolatedLayers_.erase(layer.layer);
+                    if (isolatedLayers_.empty()) showAllPaths(object);
+                    else setLayerHidden(object, layer.layer, true);
+                } else {
+                    bool enteringIsolation = isolatedLayers_.empty();
+                    isolatedLayers_.insert(layer.layer);
+                    if (enteringIsolation) {
+                        // First layer isolated this round: hide every
+                        // OTHER layer, show only this one.
+                        for (const auto& other : object.layers) {
+                            setLayerHidden(object, other.layer, other.layer != layer.layer);
+                        }
+                    } else {
+                        // Already isolating others -- just add this one
+                        // to what's visible, leave the rest as they are.
+                        setLayerHidden(object, layer.layer, false);
+                    }
+                }
                 dirty = true;
             }
 
@@ -1129,6 +1272,21 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
             ImGui::PopID();
         }
         ImGui::EndTable();
+    }
+
+    ImGui::BeginDisabled(isolatedLayers_.empty());
+    if (ImGui::SmallButton("Show all layers")) {
+        undoStack.snapshotBeforeChange(scene);
+        isolatedLayers_.clear();
+        showAllPaths(object);
+        dirty = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (!isolatedLayers_.empty()) {
+        ImGui::TextDisabled("Isolating %zu layer(s).", isolatedLayers_.size());
+    } else {
+        ImGui::TextDisabled("Not isolating.");
     }
 
     ImGui::Spacing();

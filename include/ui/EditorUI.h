@@ -3,6 +3,7 @@
 #include "editor/ExportValidation.h"
 #include "editor/UndoStack.h"
 #include "model/BedHeightmap.h"
+#include <set>
 #include <string>
 #include "model/Scene.h"
 #include "render/BedSettings.h"
@@ -44,22 +45,17 @@ public:
     bool openFileRequested() const { return openFileRequested_; }
     void clearOpenFileRequest() { openFileRequested_ = false; }
 
-    bool saveSrcRequested() const { return saveSrcRequested_; }
-    void clearSaveSrcRequest() { saveSrcRequested_ = false; }
-
-    // Pre-export report (editor/ExportValidation.h): main.cpp compiles
-    // the object BEFORE opening the save dialog and calls this if the
-    // report has any issues. A clean report (main.cpp checks
-    // report.issues.empty() itself) skips this entirely and goes
-    // straight to the file dialog -- no point interrupting a clean save.
-    enum class ExportDecision { Pending, Proceed, Cancel };
-    void showExportReport(const ValidationReport& report) {
-        exportReport_ = report;
-        exportReportOpen_ = true;
-        exportDecision_ = ExportDecision::Pending;
-    }
-    ExportDecision exportDecision() const { return exportDecision_; }
-    void clearExportDecision() { exportDecision_ = ExportDecision::Pending; }
+    // "Save SRC As..." opens this dialog instead of saving straight away
+    // (editor/ExportValidation.h's individually-runnable checks) --
+    // requested from real use: an explicit menu to set export options
+    // (currently just speed rounding), run each structural/speed check on
+    // its own or all at once, see the combined report, THEN save. main.cpp
+    // owns the actual file write (it needs the native save dialog + a
+    // GLFWwindow*, neither of which EditorUI has); this class only decides
+    // WHETHER and WITH WHAT OPTIONS to save.
+    bool exportSaveRequested() const { return exportSaveRequested_; }
+    void clearExportSaveRequest() { exportSaveRequested_ = false; }
+    bool exportRoundSpeedsTo4Decimals() const { return exportRoundSpeeds_; }
 
     // Print animation panel. main.cpp owns the actual AnimationSequence,
     // GL renderers, and playback clock (this class stays GL-free) -- it
@@ -153,7 +149,7 @@ private:
 
     void drawMenuBar(Scene& scene, UndoStack& undoStack, bool& sceneDirty);
     void drawStatusBar();
-    void drawExportReportModal();
+    void drawExportDialog(Scene& scene);
     void drawAnimationPanel();
     void drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty);
     void drawBedPanel(BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& heightmap,
@@ -182,10 +178,19 @@ private:
     bool openFileRequested_ = false;
     bool saveBedRequested_ = false;
     bool loadBedRequested_ = false;
-    bool saveSrcRequested_ = false;
-    ValidationReport exportReport_;
-    bool exportReportOpen_ = false;
-    ExportDecision exportDecision_ = ExportDecision::Pending;
+
+    // Export SRC dialog state. One CheckOutcome per exportValidationChecks()
+    // entry, index-aligned; `run=false` until that check's button (or "Run
+    // all") has actually been clicked -- lets the report distinguish "this
+    // passed" from "this was never checked."
+    bool exportDialogOpen_ = false;
+    bool exportSaveRequested_ = false;
+    bool exportRoundSpeeds_ = false;
+    struct CheckOutcome {
+        bool run = false;
+        std::vector<ValidationIssue> issues;
+    };
+    std::vector<CheckOutcome> exportCheckOutcomes_;
 
     bool animationBuildRequested_ = false;
     bool animationPlayRequested_ = false;
@@ -229,6 +234,15 @@ private:
     // object just produces an odd range on the very first shift-click
     // after switching, which is an acceptable edge case for a UI cursor.
     int layerSelectionAnchor_ = -1;
+
+    // Layer isolation ("solo"): clicking a layer's isolate button adds it
+    // to this set and hides every OTHER layer; clicking an already-
+    // isolated layer removes it (un-hiding everything again once the set
+    // empties). Scoped to whichever object it was built for -- switching
+    // the active object resets it, since a stale set of layer NUMBERS
+    // would otherwise apply to a completely different object's layers.
+    std::set<int> isolatedLayers_;
+    int isolatedLayersObjectId_ = -1;
 
     ImFont* boldFont_ = nullptr;
 

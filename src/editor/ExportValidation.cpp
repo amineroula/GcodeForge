@@ -51,33 +51,50 @@ int ValidationReport::warningCount() const {
         [](const ValidationIssue& i) { return i.severity == ValidationSeverity::Warning; }));
 }
 
-void validateStructure(const std::vector<std::string>& lines, ValidationReport& report) {
-    int accessCount = 0, defCount = 0, endCount = 0;
+namespace {
+
+// The 6 structural checks, each self-contained (own scan over `lines`)
+// so they can run individually from the UI, not just bundled together --
+// a little redundant scanning across checks, but these run against a
+// single robot program's worth of text (thousands of lines at most), so
+// clarity wins over the micro-optimization of sharing one combined pass.
+
+void checkSingleAccess(const SceneObject&, const std::vector<std::string>& lines, double, ValidationReport& report) {
+    int count = 0;
+    for (const auto& line : lines) if (std::regex_search(line, kAccessRe)) ++count;
+    if (count != 1) addIssue(report, ValidationSeverity::Critical,
+        "Expected exactly one &ACCESS; found " + std::to_string(count) + ".");
+}
+
+void checkSingleDef(const SceneObject&, const std::vector<std::string>& lines, double, ValidationReport& report) {
+    int count = 0;
+    for (const auto& line : lines) if (std::regex_search(line, kDefRe)) ++count;
+    if (count != 1) addIssue(report, ValidationSeverity::Critical,
+        "Expected exactly one DEF; found " + std::to_string(count) + ".");
+}
+
+void checkSingleEnd(const SceneObject&, const std::vector<std::string>& lines, double, ValidationReport& report) {
+    int count = 0;
+    for (const auto& line : lines) if (std::regex_search(line, kEndRe)) ++count;
+    if (count != 1) addIssue(report, ValidationSeverity::Critical,
+        "Expected exactly one END; found " + std::to_string(count) + ".");
+}
+
+void checkNoMotionAfterEnd(const SceneObject&, const std::vector<std::string>& lines, double, ValidationReport& report) {
     int firstEndIndex = -1;
     for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
-        if (std::regex_search(lines[static_cast<size_t>(i)], kAccessRe)) ++accessCount;
-        if (std::regex_search(lines[static_cast<size_t>(i)], kDefRe)) ++defCount;
-        if (std::regex_search(lines[static_cast<size_t>(i)], kEndRe)) {
-            ++endCount;
-            if (firstEndIndex < 0) firstEndIndex = i;
+        if (std::regex_search(lines[static_cast<size_t>(i)], kEndRe)) { firstEndIndex = i; break; }
+    }
+    if (firstEndIndex < 0) return;
+    for (int i = firstEndIndex + 1; i < static_cast<int>(lines.size()); ++i) {
+        if (std::regex_search(lines[static_cast<size_t>(i)], kMotionRe)) {
+            addIssue(report, ValidationSeverity::Critical,
+                "Motion command after END at line " + std::to_string(i + 1) + ".");
         }
     }
-    if (accessCount != 1) addIssue(report, ValidationSeverity::Critical,
-        "Expected exactly one &ACCESS; found " + std::to_string(accessCount) + ".");
-    if (defCount != 1) addIssue(report, ValidationSeverity::Critical,
-        "Expected exactly one DEF; found " + std::to_string(defCount) + ".");
-    if (endCount != 1) addIssue(report, ValidationSeverity::Critical,
-        "Expected exactly one END; found " + std::to_string(endCount) + ".");
+}
 
-    if (firstEndIndex >= 0) {
-        for (int i = firstEndIndex + 1; i < static_cast<int>(lines.size()); ++i) {
-            if (std::regex_search(lines[static_cast<size_t>(i)], kMotionRe)) {
-                addIssue(report, ValidationSeverity::Critical,
-                    "Motion command after END at line " + std::to_string(i + 1) + ".");
-            }
-        }
-    }
-
+void checkLinAxisCompleteness(const SceneObject&, const std::vector<std::string>& lines, double, ValidationReport& report) {
     static const std::vector<std::string> kRequiredFields = {"X", "Y", "Z", "A", "B", "C",
                                                                "E1", "E2", "E3", "E4", "E5", "E6"};
     for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
@@ -97,17 +114,19 @@ void validateStructure(const std::vector<std::string>& lines, ValidationReport& 
                 "Incomplete LIN target at line " + std::to_string(i + 1) + ": missing " + joined + ".");
         }
     }
+}
 
-    // Travel markers are STATE markers, not balanced blocks -- a real
-    // Eidos file may legally begin already inside a travel section (the
-    // first marker in the file being ";travel end" rather than ";travel
-    // start"), and may legally END while still in travel state (the
-    // final shutdown sequence). Establishing the INITIAL state via a
-    // pre-scan (same technique SrcParser.cpp uses to parse the file
-    // itself) makes that opening ";travel end" consistent with the state
-    // it establishes, rather than needing separate "have we used our one
-    // free pass yet" bookkeeping -- a REPEATED, genuinely unmatched
-    // ";travel end" after that is what's actually worth flagging.
+// Travel markers are STATE markers, not balanced blocks -- a real Eidos
+// file may legally begin already inside a travel section (the first
+// marker in the file being ";travel end" rather than ";travel start"),
+// and may legally END while still in travel state (the final shutdown
+// sequence). Establishing the INITIAL state via a pre-scan (same
+// technique SrcParser.cpp uses to parse the file itself) makes that
+// opening ";travel end" consistent with the state it establishes, rather
+// than needing separate "have we used our one free pass yet" bookkeeping
+// -- a REPEATED, genuinely unmatched ";travel end" after that is what's
+// actually worth flagging.
+void checkTravelMarkerBalance(const SceneObject&, const std::vector<std::string>& lines, double, ValidationReport& report) {
     bool travelState = false;
     for (const auto& line : lines) {
         const std::string lower = toLower(line);
@@ -127,8 +146,8 @@ void validateStructure(const std::vector<std::string>& lines, ValidationReport& 
     }
 }
 
-void verifyCompiledSpeeds(const SceneObject& object, const std::vector<std::string>& compiledLines,
-                           ValidationReport& report) {
+void checkSpeedMatch(const SceneObject& object, const std::vector<std::string>& compiledLines,
+                      double speedToleranceMps, ValidationReport& report) {
     SceneObject reparsed = parseSrc("__export_verify__", compiledLines);
 
     if (reparsed.paths.size() != object.paths.size()) {
@@ -147,7 +166,7 @@ void verifyCompiledSpeeds(const SceneObject& object, const std::vector<std::stri
         const Path& compiled = reparsed.paths[i];
         double expected = intended.effectiveSpeed();
         double actual = compiled.speed.value_or(0.0);
-        if (std::abs(expected - actual) <= 1e-9) continue;
+        if (std::abs(expected - actual) <= speedToleranceMps) continue;
 
         ++mismatches;
         if (mismatches > 12) continue; // same cap the web editor's verifier uses
@@ -161,9 +180,38 @@ void verifyCompiledSpeeds(const SceneObject& object, const std::vector<std::stri
     }
 }
 
+} // namespace
+
+void validateStructure(const std::vector<std::string>& lines, ValidationReport& report) {
+    SceneObject unused; // the 6 structural checks all ignore `object`
+    checkSingleAccess(unused, lines, 0.0, report);
+    checkSingleDef(unused, lines, 0.0, report);
+    checkSingleEnd(unused, lines, 0.0, report);
+    checkNoMotionAfterEnd(unused, lines, 0.0, report);
+    checkLinAxisCompleteness(unused, lines, 0.0, report);
+    checkTravelMarkerBalance(unused, lines, 0.0, report);
+}
+
+void verifyCompiledSpeeds(const SceneObject& object, const std::vector<std::string>& compiledLines,
+                           ValidationReport& report, double toleranceMps) {
+    checkSpeedMatch(object, compiledLines, toleranceMps, report);
+}
+
 ValidationReport validateForExport(const SceneObject& object, const std::vector<std::string>& compiledLines) {
     ValidationReport report;
     validateStructure(compiledLines, report);
     verifyCompiledSpeeds(object, compiledLines, report);
     return report;
+}
+
+std::vector<NamedValidationCheck> exportValidationChecks() {
+    return {
+        {"Exactly one &ACCESS", checkSingleAccess},
+        {"Exactly one DEF", checkSingleDef},
+        {"Exactly one END", checkSingleEnd},
+        {"No motion after END", checkNoMotionAfterEnd},
+        {"Every LIN has full X/Y/Z/A/B/C/E1-E6", checkLinAxisCompleteness},
+        {"Travel markers balanced", checkTravelMarkerBalance},
+        {"Exported speeds match intended", checkSpeedMatch},
+    };
 }

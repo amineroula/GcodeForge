@@ -10,9 +10,9 @@
 
 namespace {
 
-std::string formatSpeedLine(double speed) {
+std::string formatSpeedLine(double speed, bool round4Decimals) {
     char buffer[64];
-    std::snprintf(buffer, sizeof(buffer), "$VEL.CP = %.6f", speed);
+    std::snprintf(buffer, sizeof(buffer), round4Decimals ? "$VEL.CP = %.4f" : "$VEL.CP = %.6f", speed);
     return buffer;
 }
 
@@ -27,7 +27,8 @@ int exportTargetLine(const Path& path) {
 
 } // namespace
 
-std::vector<std::string> buildExportedLines(const SceneObject& object, ExportResult& result) {
+std::vector<std::string> buildExportedLines(const SceneObject& object, ExportResult& result,
+                                             const ExportOptions& options) {
     std::vector<std::string> output = object.sourceLines;
     result.patchedCoordinateLines = 0;
     result.insertedSpeedLines = 0;
@@ -129,8 +130,14 @@ std::vector<std::string> buildExportedLines(const SceneObject& object, ExportRes
 
             if (targetLine >= 0) {
                 double effective = path.effectiveSpeed();
+                // Round BEFORE comparing against outputSpeed, not after --
+                // otherwise two paths that only differ beyond the 4th
+                // decimal (e.g. 0.06001 and 0.05999) would each think they
+                // need their own redundant $VEL.CP line even though
+                // they'd round to the identical 0.0600 actually written.
+                if (options.roundSpeedsTo4Decimals) effective = std::round(effective * 10000.0) / 10000.0;
                 if (!outputSpeed.has_value() || std::abs(effective - *outputSpeed) > 1e-9) {
-                    insertionsByLine[targetLine].push_back(formatSpeedLine(effective));
+                    insertionsByLine[targetLine].push_back(formatSpeedLine(effective, options.roundSpeedsTo4Decimals));
                     ++result.insertedSpeedLines;
                     outputSpeed = effective;
                 }
@@ -157,9 +164,9 @@ std::vector<std::string> buildExportedLines(const SceneObject& object, ExportRes
     return output;
 }
 
-ExportResult exportSrcToFile(const SceneObject& object, const std::string& path) {
+ExportResult exportSrcToFile(const SceneObject& object, const std::string& path, const ExportOptions& options) {
     ExportResult result;
-    std::vector<std::string> lines = buildExportedLines(object, result);
+    std::vector<std::string> lines = buildExportedLines(object, result, options);
     if (!result.success) return result;
 
     std::ofstream file(path, std::ios::binary);

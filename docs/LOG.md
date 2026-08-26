@@ -2367,3 +2367,86 @@ around doesn't also destroy the built simulation.
 added -- this is UI/main-loop wiring with no ImGui/GL context in the test
 binary, same as the pre-existing Stop button, which also has no unit
 test; verified by reading the draw-dispatch code path directly).
+
+## Export SRC dialog: individually-runnable checks + speed rounding
+
+Real request: a menu for exporting with (1) an option to round exported
+speeds to 4 decimals, (2) each pre-export check runnable one at a time to
+see its own result, (3) a "run all" that produces the combined report,
+then (4) save.
+
+**Checks made individually runnable**: `validateStructure()`'s 6
+structural checks (one `&ACCESS`, one `DEF`, one `END`, no motion after
+`END`, complete LIN axis fields, balanced travel markers) and
+`verifyCompiledSpeeds()`'s speed-match check were bundled into one pass
+each. Split into 7 self-contained functions (`checkSingleAccess`,
+`checkSingleDef`, ..., `checkSpeedMatch`), each under a uniform signature
+`(object, compiledLines, speedToleranceMps, report)` so a UI can list and
+run them individually -- `exportValidationChecks()` returns the named
+list. `validateStructure()`/`verifyCompiledSpeeds()`/`validateForExport()`
+are kept as thin wrappers calling the same functions in the same order,
+so every existing caller and test is unaffected.
+
+**Speed rounding**: new `SrcExporter::ExportOptions{ roundSpeedsTo4Decimals }`,
+threaded through `buildExportedLines()`/`exportSrcToFile()`. Rounds
+BEFORE the two-timeline redundant-insert comparison, not after -- two
+paths differing only past the 4th decimal (0.06001 vs 0.05999) must be
+recognized as the SAME written value (0.0600), or each would wrongly
+think it needs its own redundant `$VEL.CP` line. `verifyCompiledSpeeds()`
+gained a real `toleranceMps` parameter (default 1e-9, unchanged) because
+rounding introduces an EXPECTED gap of up to 0.00005 between intended and
+exported speed -- without widening the tolerance to match, every rounded
+speed would falsely report as a mismatch.
+
+**UI**: "Save SRC As..." now opens an "Export SRC" window instead of
+silently validating and only popping up on an issue -- Options (rounding
+checkbox), a Run button + live result per check, "Run all tests", a
+combined report, then "Save SRC..." (blocked only while a RUN check shows
+a critical issue; an unrun check doesn't block, but can't vouch for the
+file either -- shown separately). The file write itself stays in
+`main.cpp` (needs the native save dialog + `GLFWwindow*`, neither of
+which `EditorUI` has); the dialog only decides whether and with what
+options to save. Replaces the old reactive-only `ExportDecision`/
+`showExportReport()` modal entirely -- no other code depended on it.
+
+**Verified**: 9 new tests (rounding on/off precision, the two-timeline
+redundant-insert interaction, tolerance actually catching a strict
+mismatch and correctly tolerating a rounded one, and 3 of the 7
+individual checks each independently reproducing the exact bug their
+bundled counterpart already catches). 433 tests total, Debug and Release
+clean.
+
+## Layer isolation ("solo")
+
+Real request, with the exact design already specified: an "Iso" button
+next to each layer that shows only that layer (hiding the rest); click
+another layer's Iso to add it to what's visible; click an isolated
+layer's Iso again to remove it from isolation; a "Show all layers"
+button (or un-isolating the last one) exits isolation and restores
+everything. Standard "solo" pattern from Blender's Local View and
+similar DCC tools -- no design changes needed, just implementation.
+
+**Built entirely on the existing hide primitives** (`editor/Visibility.h`,
+from the earlier hide-layers/paths/groups work) -- isolation isn't a
+separate concept with its own visibility state, it's just an
+`EditorUI`-private `std::set<int> isolatedLayers_` (which layer numbers
+are currently isolated) that decides how to call `setLayerHidden()`/
+`showAllPaths()`: entering isolation hides every OTHER layer and shows
+the clicked one; adding another isolated layer just un-hides it, leaving
+the rest as they are; removing the last isolated layer calls
+`showAllPaths()` to fully exit. Scoped per-object (`isolatedLayersObjectId_`)
+so a stale isolation set from a previously active object can't misapply
+to a different object's layer numbers after switching.
+
+**Consistency with the existing per-layer Visible checkbox**: toggling
+Visible directly (bypassing Iso) while isolation is active keeps
+`isolatedLayers_` in sync too, so the Iso button's highlight and "Show
+all layers"' enabled state never drift from what's actually shown,
+regardless of which control the user used.
+
+**Verified**: builds clean, Debug and Release, 433 tests (no new unit
+test -- `isolatedLayers_` and its orchestration are `EditorUI`-private
+UI-only state with no ImGui context in the test binary, same rationale
+as the earlier animation-exit fix; the underlying `setLayerHidden()`/
+`showAllPaths()`/`isLayerHidden()` primitives it composes are already
+covered by the Visibility test suite).
