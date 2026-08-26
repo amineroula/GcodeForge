@@ -235,6 +235,16 @@ private:
     // after switching, which is an acceptable edge case for a UI cursor.
     int layerSelectionAnchor_ = -1;
 
+    // Layer Z Offset input state -- see editor/LayerZOffset.h's
+    // ZOffsetOptions (mirrored here since ImGui widgets need plain
+    // persistent fields, not a struct rebuilt fresh every frame).
+    // zOffsetModeIndex_ order MUST match ZOffsetMode's enum order --
+    // static_cast directly from the combo index.
+    int zOffsetStartLayer_ = 1;
+    double zOffsetDeltaMm_ = 0.0;
+    int zOffsetModeIndex_ = 0;
+    int zOffsetLayerCount_ = 1;
+
     // Layer isolation ("solo"): clicking a layer's isolate button adds it
     // to this set and hides every OTHER layer; clicking an already-
     // isolated layer removes it (un-hiding everything again once the set

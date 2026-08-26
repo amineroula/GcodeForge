@@ -2,6 +2,7 @@
 #include "editor/BedConform.h"
 #include "editor/CellTemplate.h"
 #include "editor/InterleavePrint.h"
+#include "editor/LayerZOffset.h"
 #include "editor/MirrorObject.h"
 #include "editor/ObjectLinking.h"
 #include "editor/PathSplit.h"
@@ -1309,6 +1310,43 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
     } else {
         ImGui::TextDisabled("Not isolating.");
     }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    sectionLabel("Z Offset");
+    ImGui::TextWrapped("Correct a layer's actual measured Z (e.g. it printed at 0.205mm, not the intended 0.200mm).");
+
+    int maxLayer = object.layers.empty() ? 1 : object.layers.back().layer;
+    ImGui::InputInt("Starting layer##zoffset", &zOffsetStartLayer_);
+    zOffsetStartLayer_ = std::clamp(zOffsetStartLayer_, 1, maxLayer);
+    ImGui::InputDouble("Delta Z (mm)##zoffset", &zOffsetDeltaMm_, 0.001, 0.01, "%.4f");
+
+    const char* kZOffsetModeLabels[] = {
+        "Just this layer",
+        "This and every layer above it",
+        "This and the next N layers above",
+        "This and the next N layers above, tapering to 0",
+    };
+    ImGui::Combo("Applies to##zoffset", &zOffsetModeIndex_, kZOffsetModeLabels, 4);
+
+    bool needsCount = (zOffsetModeIndex_ == 2 || zOffsetModeIndex_ == 3);
+    ImGui::BeginDisabled(!needsCount);
+    ImGui::InputInt("N (layers above)##zoffset", &zOffsetLayerCount_);
+    zOffsetLayerCount_ = std::max(zOffsetLayerCount_, 1);
+    ImGui::EndDisabled();
+
+    ImGui::BeginDisabled(std::abs(zOffsetDeltaMm_) < 1e-9);
+    if (ImGui::Button("Apply Z offset")) {
+        undoStack.snapshotBeforeChange(scene);
+        ZOffsetOptions options;
+        options.startLayer = zOffsetStartLayer_;
+        options.deltaZMm = zOffsetDeltaMm_;
+        options.layerCount = zOffsetLayerCount_;
+        options.mode = static_cast<ZOffsetMode>(zOffsetModeIndex_);
+        applyLayerZOffset(object, options);
+        dirty = true;
+    }
+    ImGui::EndDisabled();
 
     ImGui::Spacing();
     sectionLabel("Selection & splitting");

@@ -2573,3 +2573,30 @@ vertex-buffer-building code, no GL context in the test binary -- same
 category as `GeometryRenderer`'s own untested-by-unit-test skip logic;
 verified by reading each renderer's draw-build code directly and
 confirming the default-mode gap was real).
+
+## Layer Z Offset: correct a layer's measured height, with propagation choice
+
+Real request: "I want this layer to have .205 in Z not .2, this will
+affect the next layers" -- a flat, layer-based Z correction, distinct
+from `editor/BedConform.h` (which samples elevation spatially, by XY
+position). Clarified into four explicit modes rather than one fixed
+behavior: just the one layer, that layer and everything above it
+(uncapped), that layer and the next N above it (flat, full delta), or
+that layer and the next N above it tapering linearly to zero.
+
+**New module** (`editor/LayerZOffset.h`): `ZOffsetOptions{ startLayer,
+deltaZMm, mode, layerCount }` and `applyLayerZOffset()`. Layers below
+`startLayer` are never touched in any mode. Travel paths are left alone
+(no `layer` number of their own), matching `BedConform`'s established
+precedent for the same reason.
+
+**UI** (`drawLayerTablePanel`'s new "Z Offset" section): starting layer,
+delta Z, a 4-item mode combo, and an N field that only enables for the
+two modes that use it -- kept deliberately simple/flat (no nested
+options) per the explicit ask that "the UI needs to be easy to
+understand and operate."
+
+**Verified**: 16 new tests, one per mode's exact weight math (including
+the taper's fractional weights at each layer and the flat cutoff's
+"one layer past N is untouched, no partial effect" edge). 472 tests
+total, Debug and Release clean.

@@ -14,6 +14,7 @@
 #include "editor/Gizmo.h"
 #include "editor/SrcExporter.h"
 #include "editor/BedConform.h"
+#include "editor/LayerZOffset.h"
 #include "render/PathColorizer.h"
 #include "editor/ConnectedDrag.h"
 #include "editor/Framing.h"
@@ -1174,6 +1175,81 @@ void testBedConformBakeAndReapply() {
               "BedConformBake: the new record's pre-conform baseline is the BAKED state, not the original pre-bake state");
     checkNear(f.object.paths[0].to.z, bakedZ + 5.0,
               "BedConformBake: re-applying after a bake shifts AGAIN on top of the now-permanent baked Z");
+}
+
+// 5 layers, one print path each, Z = layer number (so "did layer N's Z
+// shift by exactly `weight * delta`" is trivial to check by eye).
+SceneObject fiveLayerObject() {
+    SceneObject object;
+    object.name = "FiveLayers";
+    for (int layer = 1; layer <= 5; ++layer) {
+        Path p;
+        p.number = layer;
+        p.type = PathType::Print;
+        p.layer = layer;
+        p.from = glm::dvec3(0.0, 0.0, static_cast<double>(layer));
+        p.to = glm::dvec3(10.0, 0.0, static_cast<double>(layer));
+        object.paths.push_back(p);
+    }
+    return object;
+}
+
+void testLayerZOffsetSingleLayer() {
+    SceneObject object = fiveLayerObject();
+    ZOffsetOptions options;
+    options.startLayer = 3;
+    options.deltaZMm = 0.5;
+    options.mode = ZOffsetMode::SingleLayer;
+    applyLayerZOffset(object, options);
+
+    checkNear(object.paths[1].to.z, 2.0, "ZOffset SingleLayer: layer below startLayer is untouched");
+    checkNear(object.paths[2].to.z, 3.5, "ZOffset SingleLayer: exactly startLayer gets the full delta");
+    checkNear(object.paths[3].to.z, 4.0, "ZOffset SingleLayer: layer ABOVE startLayer is untouched (no cascade)");
+}
+
+void testLayerZOffsetCascadeAll() {
+    SceneObject object = fiveLayerObject();
+    ZOffsetOptions options;
+    options.startLayer = 3;
+    options.deltaZMm = 0.5;
+    options.mode = ZOffsetMode::CascadeAll;
+    applyLayerZOffset(object, options);
+
+    checkNear(object.paths[1].to.z, 2.0, "ZOffset CascadeAll: layer below startLayer is untouched");
+    checkNear(object.paths[2].to.z, 3.5, "ZOffset CascadeAll: startLayer gets the full delta");
+    checkNear(object.paths[3].to.z, 4.5, "ZOffset CascadeAll: layer above startLayer ALSO gets the full delta");
+    checkNear(object.paths[4].to.z, 5.5, "ZOffset CascadeAll: the LAST layer, all the way up, gets the full delta too");
+}
+
+void testLayerZOffsetCascadeCount() {
+    SceneObject object = fiveLayerObject();
+    ZOffsetOptions options;
+    options.startLayer = 2;
+    options.deltaZMm = 1.0;
+    options.mode = ZOffsetMode::CascadeCount;
+    options.layerCount = 2; // startLayer (2) + the next 1 layer (3) -- layer 4 is out of range
+    applyLayerZOffset(object, options);
+
+    checkNear(object.paths[0].to.z, 1.0, "ZOffset CascadeCount: layer below startLayer is untouched");
+    checkNear(object.paths[1].to.z, 3.0, "ZOffset CascadeCount: startLayer gets the full delta");
+    checkNear(object.paths[2].to.z, 4.0, "ZOffset CascadeCount: the (count-1)th layer above ALSO gets the full delta");
+    checkNear(object.paths[3].to.z, 4.0, "ZOffset CascadeCount: the layer just past the count is untouched (flat cutoff, no taper)");
+}
+
+void testLayerZOffsetCascadeTaper() {
+    SceneObject object = fiveLayerObject();
+    ZOffsetOptions options;
+    options.startLayer = 1;
+    options.deltaZMm = 1.0;
+    options.mode = ZOffsetMode::CascadeTaper;
+    options.layerCount = 4; // full at layer 1, tapering to 0 by layer 5
+    applyLayerZOffset(object, options);
+
+    checkNear(object.paths[0].to.z, 2.0, "ZOffset CascadeTaper: startLayer gets the FULL delta (weight 1.0)");
+    checkNear(object.paths[1].to.z, 2.75, "ZOffset CascadeTaper: one layer up, weight has tapered to 0.75");
+    checkNear(object.paths[2].to.z, 3.5, "ZOffset CascadeTaper: halfway up the taper, weight 0.5");
+    checkNear(object.paths[3].to.z, 4.25, "ZOffset CascadeTaper: near the top, weight 0.25");
+    checkNear(object.paths[4].to.z, 5.0, "ZOffset CascadeTaper: exactly at startLayer+layerCount, weight has reached 0");
 }
 
 void testMirrorObject() {
@@ -2789,6 +2865,10 @@ int main() {
     testBedConformApply();
     testBedConformScaleDeleteBake();
     testBedConformBakeAndReapply();
+    testLayerZOffsetSingleLayer();
+    testLayerZOffsetCascadeAll();
+    testLayerZOffsetCascadeCount();
+    testLayerZOffsetCascadeTaper();
     testMirrorObject();
     testInterleavePrint();
     testInterleaveUnevenLayers();
