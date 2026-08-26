@@ -723,6 +723,27 @@ void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHei
         bedDirty = true;
     }
 
+    // Click-a-vertex paint tool -- an alternative to typing into the grid
+    // table below: while active, a left click on a rendered heightmap
+    // vertex in the 3D view nudges JUST that vertex by +/-Power (see
+    // main.cpp's click handler and editor/Picking.h's
+    // pickNearestHeightmapVertex). No radius/falloff -- exactly the
+    // nearest vertex to the click, nothing more.
+    ImGui::Spacing();
+    ImGui::Checkbox("Paint mode (click a vertex in the 3D view)", &heightmapPaintMode_);
+    if (heightmapPaintMode_) {
+        ImGui::TextDisabled("While active, a click in the viewport selects paths as normal --");
+        ImGui::TextDisabled("this intercepts it instead and nudges the nearest heightmap vertex.");
+        if (ImGui::RadioButton("Add", heightmapPaintTool_ == HeightmapPaintTool::Add)) {
+            heightmapPaintTool_ = HeightmapPaintTool::Add;
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Remove", heightmapPaintTool_ == HeightmapPaintTool::Remove)) {
+            heightmapPaintTool_ = HeightmapPaintTool::Remove;
+        }
+        ImGui::DragFloat("Power (mm per click)", &heightmapPaintPowerMm_, 0.01f, 0.01f, 20.0f, "%.2f");
+    }
+
     // Save/Load Bed already exist up in the "Bed size" section above, but
     // this panel is tall enough now (lighting + a 100+ field grid) that
     // scrolling back up just to save entered measurements is annoying --

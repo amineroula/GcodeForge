@@ -260,6 +260,71 @@ void testPicking() {
           "Picking: rectangle select finds only the path whose midpoint falls inside it");
 }
 
+// Real request: click a heightmap vertex directly in the 3D viewport to
+// nudge its Z (the "paint" tool). The pick must land on the vertex AS
+// ACTUALLY RENDERED -- including its own current elevation, not a flat
+// zero-elevation approximation -- since BedHeightmapRenderer draws the
+// bumped surface, and clicking where you SEE a raised vertex must find
+// that vertex, not silently pick a neighboring one that happens to sit
+// flat at the same X/Y.
+void testPickNearestHeightmapVertex() {
+    // A view where world Z actually moves the screen position (a purely
+    // top-down camera wouldn't -- elevation would be invisible to 2D
+    // picking, which is exactly the bug this test guards against): looking
+    // along +Y with +Z as screen-up, so X moves screen X and Z moves
+    // screen Y, independent of each other.
+    glm::mat4 view = glm::lookAt(glm::vec3(0.0f, -500.0f, 0.0f), glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    glm::mat4 projection = glm::ortho(-100.0f, 100.0f, -100.0f, 100.0f, -1000.0f, 1000.0f);
+    ScreenProjector projector{projection * view, 200.0f, 200.0f};
+
+    BedHeightmap heightmap;
+    heightmap.resize(2, 2);
+    heightmap.at(0, 0) = 0.0f;
+    heightmap.at(1, 0) = 0.0f;   // same X as (1,1), but flat
+    heightmap.at(0, 1) = 0.0f;
+    heightmap.at(1, 1) = 20.0f;  // same X as (1,0), but raised 20mm
+
+    BedSettings bed;
+    bed.widthMm = 100.0f;
+    bed.depthMm = 100.0f;
+    bed.originXMm = 0.0f;
+    bed.originYMm = 0.0f;
+    bed.originZMm = 0.0f;
+
+    // Click exactly where the RAISED vertex (1,1) actually projects to
+    // (world Z = 20, per BedHeightmapRenderer's own formula) -- not where
+    // a flat vertex at the same col would be.
+    float halfWidth = bed.widthMm * 0.5f;
+    float spacingX = bed.widthMm / static_cast<float>(heightmap.cols - 1);
+    glm::vec3 raisedWorld(bed.originXMm - halfWidth + 1 * spacingX, bed.originYMm, bed.originZMm + 20.0f);
+    auto raisedScreen = projector.project(raisedWorld);
+    check(raisedScreen.has_value(), "HeightmapPicking: precondition -- the raised vertex projects on-screen");
+    if (!raisedScreen) return;
+
+    auto hit = pickNearestHeightmapVertex(heightmap, bed, projector, glm::vec2(*raisedScreen), 8.0f);
+    check(hit.has_value() && hit->col == 1 && hit->row == 1,
+          "HeightmapPicking: clicking where the RAISED vertex actually renders picks (1,1), not the flat (1,0) at the same X");
+
+    // Same X, but at the FLAT vertex's own actual screen position (Z=0) --
+    // must resolve to the other one.
+    glm::vec3 flatWorld(bed.originXMm - halfWidth + 1 * spacingX, bed.originYMm, bed.originZMm + 0.0f);
+    auto flatScreen = projector.project(flatWorld);
+    check(flatScreen.has_value(), "HeightmapPicking: precondition -- the flat vertex projects on-screen");
+    if (!flatScreen) return;
+    auto flatHit = pickNearestHeightmapVertex(heightmap, bed, projector, glm::vec2(*flatScreen), 8.0f);
+    check(flatHit.has_value() && flatHit->col == 1 && flatHit->row == 0,
+          "HeightmapPicking: clicking the flat vertex's own screen position picks (1,0), correctly distinguishing it from the raised one");
+
+    auto miss = pickNearestHeightmapVertex(heightmap, bed, projector, glm::vec2(0.0f, 0.0f), 3.0f);
+    check(!miss.has_value(), "HeightmapPicking: a click far from every vertex (beyond pick radius) finds nothing");
+
+    BedHeightmap tooSmall; // cols/rows < 2 -- no valid grid to pick against
+    tooSmall.cols = 0;
+    tooSmall.rows = 0;
+    check(!pickNearestHeightmapVertex(tooSmall, bed, projector, glm::vec2(*raisedScreen), 8.0f).has_value(),
+          "HeightmapPicking: an invalid (too-small) grid never returns a hit");
+}
+
 // A path whose MIDPOINT is outside the marquee rectangle, but one end
 // grazes a corner of it, must still be selected -- this was the reported
 // "drag selection only selects when inside the rectangle" complaint;
@@ -2703,6 +2768,7 @@ int main() {
     testEditorLogic();
     testUndoStack();
     testPicking();
+    testPickNearestHeightmapVertex();
     testMarqueeTouch();
     testPickingBackfacing();
     testBedIO();

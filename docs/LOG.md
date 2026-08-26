@@ -2519,3 +2519,32 @@ in the 3D viewport and a drag-brush for painting Z (add/remove modes,
 adjustable power) -- the heightmap's Columns/Rows grid and its 3D-mesh
 rendering already existed and needed no new work; the interactive
 picking/brush tool itself is separate, larger work not yet started.
+
+## Click-to-paint heightmap vertices in the 3D viewport
+
+Follow-up to the above -- the remaining open piece. Scoped down from the
+original ask (a continuous drag-brush with radius/falloff) to what the
+user actually wanted once asked directly: click once per vertex, exactly
+the nearest one, no falloff -- simpler and, per the user, correct.
+
+**Picking** (`editor/Picking.h`'s new `pickNearestHeightmapVertex()`):
+same brute-force screen-space-projection approach `pickNearestPath()`
+already uses, applied to every heightmap grid vertex. Critically, each
+vertex's WORLD position mirrors `BedHeightmapRenderer`'s own vertex-build
+formula EXACTLY (bed origin/size + that vertex's OWN current elevation)
+-- a click has to land on the vertex as it's actually rendered, bumps and
+all, not a flat zero-elevation approximation, or clicking a visibly
+raised vertex could silently pick a different, flat one that happens to
+share the same X/Y.
+
+**UI** (`drawBedPanel`'s heightmap section): a "Paint mode" checkbox,
+Add/Remove radio buttons, and a Power (mm per click) drag float. While
+active, a viewport click is intercepted BEFORE normal path selection
+(`main.cpp`'s click-release handler) and nudges only the picked vertex by
++/-Power -- no radius, no falloff, exactly what was asked for.
+
+**Verified**: 6 new tests, using a viewing angle specifically chosen so
+elevation actually moves the projected screen position (a top-down
+camera wouldn't exercise this at all) -- confirms clicking where a
+raised vertex actually renders picks THAT vertex, not a flat neighbor at
+the same X, and vice versa. 456 tests total, Debug and Release clean.

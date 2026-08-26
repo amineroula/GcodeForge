@@ -118,3 +118,39 @@ std::vector<PathRef> pickPathsInRect(const Scene& scene, const ScreenProjector& 
     }
     return results;
 }
+
+std::optional<HeightmapVertexRef> pickNearestHeightmapVertex(const BedHeightmap& heightmap, const BedSettings& bed,
+                                                               const ScreenProjector& projector,
+                                                               glm::vec2 screenPoint, float pickRadiusPixels) {
+    if (heightmap.cols < 2 || heightmap.rows < 2) return std::nullopt;
+
+    float halfWidth = bed.widthMm * 0.5f;
+    float halfDepth = bed.depthMm * 0.5f;
+    float spacingX = bed.widthMm / static_cast<float>(heightmap.cols - 1);
+    float spacingY = bed.depthMm / static_cast<float>(heightmap.rows - 1);
+
+    std::optional<HeightmapVertexRef> best;
+    float bestDistance = std::numeric_limits<float>::max();
+
+    for (int row = 0; row < heightmap.rows; ++row) {
+        for (int col = 0; col < heightmap.cols; ++col) {
+            // Same formula as BedHeightmapRenderer's own vertex build --
+            // must match exactly, or a click would land on where the
+            // vertex WOULD be at zero elevation, not where it's actually
+            // drawn once bumped.
+            glm::vec3 world(bed.originXMm - halfWidth + col * spacingX,
+                             bed.originYMm - halfDepth + row * spacingY,
+                             bed.originZMm + heightmap.at(col, row));
+            auto screen = projector.project(world);
+            if (!screen) continue;
+
+            float distance = glm::length(screenPoint - glm::vec2(*screen));
+            if (distance > pickRadiusPixels) continue;
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = HeightmapVertexRef{col, row};
+            }
+        }
+    }
+    return best;
+}

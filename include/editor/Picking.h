@@ -1,6 +1,8 @@
 #pragma once
 
+#include "model/BedHeightmap.h"
 #include "model/Scene.h"
+#include "render/BedSettings.h"
 
 #include <glm/glm.hpp>
 #include <optional>
@@ -56,3 +58,20 @@ std::optional<PathRef> pickNearestPath(const Scene& scene, const ScreenProjector
 // everything in the box regardless of what's in front of what.
 std::vector<PathRef> pickPathsInRect(const Scene& scene, const ScreenProjector& projector,
                                       glm::vec2 rectMin, glm::vec2 rectMax);
+
+struct HeightmapVertexRef {
+    int col = 0;
+    int row = 0;
+};
+
+// The single nearest heightmap grid vertex (by projected screen-space
+// distance, same brute-force approach as pickNearestPath) within
+// pickRadiusPixels of screenPoint -- used by the "click a vertex to
+// nudge its Z" bed-painting tool. World position per vertex mirrors
+// BedHeightmapRenderer's own vertex-position formula exactly (bed
+// origin/size + the vertex's OWN current elevation), so a click lands on
+// the vertex as it's actually rendered, bumps and all -- not a flat
+// plane approximation.
+std::optional<HeightmapVertexRef> pickNearestHeightmapVertex(const BedHeightmap& heightmap, const BedSettings& bed,
+                                                               const ScreenProjector& projector,
+                                                               glm::vec2 screenPoint, float pickRadiusPixels);

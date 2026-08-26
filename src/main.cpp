@@ -1204,6 +1204,19 @@ int main() {
                     gizmoDragPathSnapshots.clear();
                     gizmoRotateDragActive = false;
                     gizmoRotateDragPathSnapshots.clear();
+                } else if (editorUi.heightmapPaintModeActive() && !isDraggingMarquee) {
+                    // Paint mode intercepts a plain click BEFORE normal
+                    // path selection -- exactly the nearest heightmap
+                    // vertex to the click, no radius/falloff, nudged by
+                    // +/-Power depending on Add/Remove (see
+                    // EditorUI::drawBedPanel's heightmap paint controls).
+                    ScreenProjector projector{viewProj, static_cast<float>(width), static_cast<float>(height)};
+                    if (auto vertex = pickNearestHeightmapVertex(bedHeightmap, bedSettings, projector, current,
+                                                                  kClickPickRadiusPixels)) {
+                        float sign = (editorUi.heightmapPaintTool() == EditorUI::HeightmapPaintTool::Add) ? 1.0f : -1.0f;
+                        bedHeightmap.at(vertex->col, vertex->row) += sign * editorUi.heightmapPaintPowerMm();
+                        bedDirty = true;
+                    }
                 } else {
                     ScreenProjector projector{viewProj, static_cast<float>(width), static_cast<float>(height)};
                     SelectionCompose compose = currentSelectionCompose();

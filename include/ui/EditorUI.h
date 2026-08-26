@@ -261,6 +261,19 @@ private:
     bool bedConformAdjustSpeed_ = true;
     float bedConformSpeedGainPerMm_ = 0.05f;
 
+    // Heightmap click-to-paint tool state -- read by main.cpp's click
+    // handler (via the getters below) to decide whether a viewport click
+    // should nudge a heightmap vertex instead of picking a path.
+public:
+    enum class HeightmapPaintTool { Add, Remove };
+    bool heightmapPaintModeActive() const { return heightmapPaintMode_; }
+    HeightmapPaintTool heightmapPaintTool() const { return heightmapPaintTool_; }
+    float heightmapPaintPowerMm() const { return heightmapPaintPowerMm_; }
+private:
+    bool heightmapPaintMode_ = false;
+    HeightmapPaintTool heightmapPaintTool_ = HeightmapPaintTool::Add;
+    float heightmapPaintPowerMm_ = 0.5f;
+
     // Multi-part / interleaved-cooling input state -- see
     // editor/MirrorObject.h and editor/InterleavePrint.h.
     int multiPartCopies_ = 2;
