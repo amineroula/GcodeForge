@@ -1,5 +1,6 @@
 #pragma once
 
+#include "model/BedConformRecord.h"
 #include "model/BedHeightmap.h"
 #include "model/SceneObject.h"
 #include "render/BedSettings.h"
@@ -29,15 +30,37 @@ struct BedConformOptions {
 };
 
 // Applies bed conform to every PRINT path in `object` (travel paths are
-// skipped -- their Z/speed aren't meaningful the same way). Both
-// endpoints of each affected path are re-sampled and shifted
+// skipped -- their Z/speed aren't meaningful the same way) and returns a
+// re-scalable, revertible BedConformRecord (model/BedConformRecord.h) --
+// the caller stores it as `object.bedConform`. If a conform record is
+// ALREADY active on `object`, it must be removed first (removeBedConform)
+// so the fresh apply computes from the object's true pre-conform state,
+// not from whatever the previous (possibly rescaled) conform left it at.
+//
+// Both endpoints of each affected path are re-sampled and shifted
 // independently from their OWN world position, rather than shifting only
 // one point and letting a shared vertex with the next path drift out of
 // sync -- two paths that share a vertex (position-connected, as
 // GeometryRenderer's run-detection defines it) sample the SAME world XY
 // and so get the SAME Z shift, which is what keeps a run's visual
 // connectivity intact after conforming.
-// NOT idempotent by design -- calling this twice compounds on whatever
-// the first call already did, same as any other speed-override edit in
-// this app (there's no separate "base" value tracked once overridden).
-void applyBedConform(SceneObject& object, const BedHeightmap& heightmap, const BedSettings& bed, const BedConformOptions& options);
+BedConformRecord applyBedConformRecorded(SceneObject& object, const BedHeightmap& heightmap,
+                                          const BedSettings& bed, const BedConformOptions& options);
+
+// Re-scales an ACTIVE conform's effect strength (1.0 = as originally
+// applied, 2.0 = double the Z shift/speed factor, 0.0 = fully reverted
+// without removing the record). Recomputes every affected path from its
+// stored pre-conform baseline + newScale * the stored per-path delta --
+// never compounds on the previous scale, so repeated adjustment never
+// drifts. No-op if `object.bedConform` isn't set.
+void setBedConformScale(SceneObject& object, double newScale);
+
+// Reverts every path this conform affected back to its exact pre-conform
+// Z/speed and clears `object.bedConform`. No-op if not set.
+void removeBedConform(SceneObject& object);
+
+// Keeps the CURRENTLY COMPUTED Z/speed values exactly as they are --
+// makes the conform permanent, indistinguishable from a manual edit --
+// and clears `object.bedConform` so it's no longer independently
+// adjustable/removable. No-op if not set.
+void bakeBedConform(SceneObject& object);

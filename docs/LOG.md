@@ -2450,3 +2450,72 @@ UI-only state with no ImGui context in the test binary, same rationale
 as the earlier animation-exit fix; the underlying `setLayerHidden()`/
 `showAllPaths()`/`isLayerHidden()` primitives it composes are already
 covered by the Visibility test suite).
+
+## Fixed Save/Open Project dialog filter (was "gfproj.bed")
+
+Real-use report: saving a project produced a file named with a compound
+`.gfproj.bed` extension instead of plain `.gfproj`.
+
+**Root cause**: `showSaveProjectDialog()` and `showOpenProjectDialog()`
+(`src/ui/FileDialog.cpp`) both had their `lpstrFilter` copy-pasted from
+`showSaveBedDialog()`/`showOpenBedDialog()` -- literally
+`L"Bed settings\0*.bed\0All files\0*.*\0"` on the PROJECT dialogs. With
+that filter selected (index 1, the default) and the initial filename
+already carrying a `.gfproj` extension that doesn't match any pattern in
+it, Windows' common file dialog appended the mismatched filter's
+extension on save.
+
+**Fix**: both filters corrected to `L"GcodeForge Project\0*.gfproj\0All files\0*.*\0"`.
+
+**Verified**: builds clean, Debug and Release, 433 tests (Windows-native
+dialog code, no unit test possible -- same category as every other
+`FileDialog.cpp` function).
+
+## Bed conform as a non-destructive, adjustable "layer"
+
+Real request: "when I apply bed conform to an object, I should get that
+saved in a layer... I can delete it or multiply it or decrease it. I can
+bake it to make it part of the object." Previously `applyBedConform()`
+was a pure one-time mutation of `path.from.z`/`to.z`/`speedOverride` with
+zero memory of having been applied -- explicitly documented as "NOT
+idempotent by design."
+
+**New model** (`include/model/BedConformRecord.h`): `BedConformRecord`
+stores, per affected path, the PRE-conform baseline (`from`/`to` Z,
+effective speed) plus the delta a scale of 1.0 produces (`zDeltaFromMm`,
+`zDeltaToMm`, `speedFactorDelta`), and the record's current `scale`.
+Storing the baseline (not just a delta) means re-scaling is always
+computed fresh from the same fixed point -- `preConformZ + scale * delta`
+-- never compounds on a previous scale, so repeated adjustment can't
+drift. `SceneObject::bedConform` holds at most one active record.
+
+**New operations** (`editor/BedConform.h`): `applyBedConformRecorded()`
+(replaces the old one-shot `applyBedConform`, captures the baseline and
+applies at scale 1.0), `setBedConformScale()` (recompute at any scale --
+this is "multiply" and "decrease," one continuous control rather than
+two separate actions), `removeBedConform()` (revert to baseline exactly,
+clear the record -- "delete"), `bakeBedConform()` (keep the current
+values, clear the record -- "bake," makes it permanent and no longer
+adjustable). Re-applying while a record is already active reverts first,
+so the fresh conform is computed from the object's TRUE pre-conform
+state, never stacked on top of a previous (possibly rescaled) one.
+
+**UI** (`drawBedConformPanel`): once a conform is active, shows an
+"Effect strength" drag float (0-3x) plus Delete/Bake buttons.
+
+**Persistence** (`io/ProjectIO.cpp`): new `bedConformBegin`/`bedConformPath`/
+`bedConformEnd` records save/load the full active record (flags, scale,
+every per-path baseline+delta) -- "also saved with the project."
+
+**Verified**: 16 new tests (record creation, scale up/down math against
+the plain apply's own numbers, repeated re-scaling proven driftless,
+delete reverting to the exact baseline, bake-then-reapply stacking
+correctly on the now-permanent state, and full project round-trip) plus
+every existing BedConform test unchanged. 449 tests total, Debug and
+Release clean.
+
+Still open from the same request: clicking a heightmap vertex directly
+in the 3D viewport and a drag-brush for painting Z (add/remove modes,
+adjustable power) -- the heightmap's Columns/Rows grid and its 3D-mesh
+rendering already existed and needed no new work; the interactive
+picking/brush tool itself is separate, larger work not yet started.

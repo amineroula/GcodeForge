@@ -119,7 +119,7 @@ std::optional<std::string> showSaveProjectDialog(GLFWwindow* window) {
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = glfwGetWin32Window(window);
-    ofn.lpstrFilter = L"Bed settings\0*.bed\0All files\0*.*\0";
+    ofn.lpstrFilter = L"GcodeForge Project\0*.gfproj\0All files\0*.*\0";
     ofn.lpstrFile = fileBuffer;
     ofn.nMaxFile = MAX_PATH;
     ofn.lpstrTitle = L"Save project";
@@ -141,7 +141,7 @@ std::optional<std::string> showOpenProjectDialog(GLFWwindow* window) {
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = glfwGetWin32Window(window);
-    ofn.lpstrFilter = L"Bed settings\0*.bed\0All files\0*.*\0";
+    ofn.lpstrFilter = L"GcodeForge Project\0*.gfproj\0All files\0*.*\0";
     ofn.lpstrFile = fileBuffer;
     ofn.nMaxFile = MAX_PATH;
     ofn.lpstrTitle = L"Open project";

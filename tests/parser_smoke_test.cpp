@@ -987,7 +987,7 @@ void testBedConformApply() {
     options.adjustZ = true;
     options.adjustSpeed = true;
     options.speedGainPerMm = 0.1;
-    applyBedConform(object, heightmap, bed, options);
+    applyBedConformRecorded(object, heightmap, bed, options);
 
     checkNear(object.paths[0].from.z, 0.0, "BedConform: layer-1 path's FROM Z shifted by its own local elevation (0, low edge)");
     checkNear(object.paths[0].to.z, 5.0, "BedConform: layer-1 path's TO Z shifted by its own local elevation (5, center)");
@@ -1003,6 +1003,112 @@ void testBedConformApply() {
 
     checkNear(object.paths[2].to.z, 0.0, "BedConform: a layer beyond affectedLayers gets zero Z shift (taper reached 0)");
     check(!object.paths[2].speedOverride.has_value(), "BedConform: a layer beyond affectedLayers gets no speed override");
+}
+
+// Fixture matching testBedConformApply's shape (a low-to-high elevation
+// gradient), reused for scale/delete/bake so each test doesn't have to
+// re-derive the expected numbers by hand.
+struct BedConformFixture {
+    BedHeightmap heightmap;
+    BedSettings bed;
+    SceneObject object;
+};
+BedConformFixture buildBedConformFixture() {
+    BedConformFixture f;
+    f.heightmap.resize(2, 2);
+    f.bed.widthMm = 1000.0f;
+    f.bed.depthMm = 1000.0f;
+    f.bed.originXMm = 0.0f;
+    f.bed.originYMm = 0.0f;
+    f.heightmap.at(0, 0) = 0.0f;
+    f.heightmap.at(1, 0) = 10.0f;
+    f.heightmap.at(0, 1) = 0.0f;
+    f.heightmap.at(1, 1) = 10.0f;
+
+    f.object.name = "Test";
+    Path p1;
+    p1.number = 1;
+    p1.type = PathType::Print;
+    p1.layer = 1;
+    p1.motion = "LIN";
+    p1.speed = 0.05;
+    p1.from = glm::dvec3(-500.0, 0.0, 2.0);
+    p1.to = glm::dvec3(0.0, 0.0, 2.0);
+    f.object.paths = {p1};
+    return f;
+}
+
+// Real request: bed conform must be a re-visitable, adjustable "layer" --
+// scale it up/down, delete it (revert), or bake it (make permanent) --
+// not a one-shot mutation with no memory of having been applied.
+void testBedConformScaleDeleteBake() {
+    BedConformFixture f = buildBedConformFixture();
+    double preConformZ = f.object.paths[0].to.z; // 2.0
+    double preConformSpeed = f.object.paths[0].effectiveSpeed(); // 0.05
+
+    BedConformOptions options;
+    options.affectedLayers = 1;
+    options.adjustZ = true;
+    options.adjustSpeed = true;
+    options.speedGainPerMm = 0.1;
+
+    BedConformRecord record = applyBedConformRecorded(f.object, f.heightmap, f.bed, options);
+    check(f.object.bedConform.has_value(), "BedConformRecord: applying stores an active record on the object");
+    check(record.perPath.size() == 1, "BedConformRecord: the record covers exactly the one affected path");
+
+    // At scale 1.0 (the elevation at world x=0 is 5.0, the bilinear center):
+    double expectedZDelta = 5.0;
+    checkNear(f.object.paths[0].to.z, preConformZ + expectedZDelta,
+              "BedConformRecord: scale 1.0 matches the plain (non-recorded) apply's math");
+
+    setBedConformScale(f.object, 2.0);
+    checkNear(f.object.paths[0].to.z, preConformZ + 2.0 * expectedZDelta,
+              "BedConformRecord: scale 2.0 doubles the Z shift, recomputed from the STORED baseline (not compounded)");
+    checkNear(f.object.bedConform->scale, 2.0, "BedConformRecord: the record's own scale field updates too");
+
+    setBedConformScale(f.object, 0.5);
+    checkNear(f.object.paths[0].to.z, preConformZ + 0.5 * expectedZDelta,
+              "BedConformRecord: scaling DOWN after scaling up still recomputes from the original baseline, no drift");
+
+    // Repeated re-scaling must never drift -- go back to 1.0 several times
+    // and confirm it lands on EXACTLY the same value every time.
+    for (int i = 0; i < 3; ++i) setBedConformScale(f.object, 1.0);
+    checkNear(f.object.paths[0].to.z, preConformZ + expectedZDelta,
+              "BedConformRecord: repeated re-scaling back to 1.0 is exact, not cumulative drift");
+
+    removeBedConform(f.object);
+    check(!f.object.bedConform.has_value(), "BedConformRecord: Delete clears the active record");
+    checkNear(f.object.paths[0].to.z, preConformZ, "BedConformRecord: Delete reverts Z to the EXACT pre-conform baseline");
+    checkNear(f.object.paths[0].effectiveSpeed(), preConformSpeed, "BedConformRecord: Delete reverts speed to the pre-conform baseline");
+}
+
+void testBedConformBakeAndReapply() {
+    BedConformFixture f = buildBedConformFixture();
+    BedConformOptions options;
+    options.affectedLayers = 1;
+    options.adjustZ = true;
+    options.adjustSpeed = false;
+    options.speedGainPerMm = 0.0;
+
+    applyBedConformRecorded(f.object, f.heightmap, f.bed, options);
+    double bakedZ = f.object.paths[0].to.z;
+
+    bakeBedConform(f.object);
+    check(!f.object.bedConform.has_value(), "BedConformBake: baking clears the active record");
+    checkNear(f.object.paths[0].to.z, bakedZ, "BedConformBake: baking leaves the CURRENT computed Z exactly as it was");
+
+    // Re-applying after a bake must be a genuinely FRESH conform on top of
+    // the now-permanent baked state -- not an attempt to revert something
+    // that no longer has a record to revert. The path's TO endpoint has a
+    // nonzero elevation delta (5.0 in this fixture, see
+    // testBedConformScaleDeleteBake), so re-applying should shift it
+    // AGAIN, stacking on top of the baked value rather than replacing it.
+    applyBedConformRecorded(f.object, f.heightmap, f.bed, options);
+    check(f.object.bedConform.has_value(), "BedConformBake: re-applying after a bake starts a new active record");
+    checkNear(f.object.bedConform->perPath.front().preConformToZ, bakedZ,
+              "BedConformBake: the new record's pre-conform baseline is the BAKED state, not the original pre-bake state");
+    checkNear(f.object.paths[0].to.z, bakedZ + 5.0,
+              "BedConformBake: re-applying after a bake shifts AGAIN on top of the now-permanent baked Z");
 }
 
 void testMirrorObject() {
@@ -2311,6 +2417,21 @@ void testProjectRoundTrip() {
     action.krlText = "$OUT[5]=TRUE";
     part.layerActions.push_back(action);
 
+    BedConformRecord conform;
+    conform.adjustZ = true;
+    conform.adjustSpeed = false;
+    conform.scale = 1.5;
+    BedConformPathRecord conformPath;
+    conformPath.pathNumber = 2;
+    conformPath.preConformFromZ = 82.0;
+    conformPath.preConformToZ = 82.0;
+    conformPath.preConformSpeed = 0.040;
+    conformPath.zDeltaFromMm = 0.5;
+    conformPath.zDeltaToMm = 0.75;
+    conformPath.speedFactorDelta = 0.02;
+    conform.perPath.push_back(conformPath);
+    part.bedConform = conform;
+
     int idA = original.scene.addObject(std::move(part)).id;
     SceneObject second = parseSrc("Second", sampleSrcLinesForExport());
     int idB = original.scene.addObject(std::move(second)).id;
@@ -2354,6 +2475,19 @@ void testProjectRoundTrip() {
           "Project: SELECTION round-trips (a .src has nowhere to store this)");
     check(a.hiddenPaths.count(3) && a.hiddenPaths.count(5) && a.hiddenPaths.size() == 2,
           "Project: HIDDEN paths round-trip (a .src has nowhere to store this either)");
+    check(a.bedConform.has_value(), "Project: an active BED CONFORM record round-trips");
+    if (a.bedConform.has_value()) {
+        check(a.bedConform->adjustZ && !a.bedConform->adjustSpeed, "Project: bed conform's adjustZ/adjustSpeed flags round-trip");
+        checkNear(a.bedConform->scale, 1.5, "Project: bed conform's scale round-trips");
+        check(a.bedConform->perPath.size() == 1, "Project: bed conform's per-path record count round-trips");
+        if (!a.bedConform->perPath.empty()) {
+            const auto& p = a.bedConform->perPath.front();
+            check(p.pathNumber == 2, "Project: bed conform per-path pathNumber round-trips");
+            checkNear(p.preConformToZ, 82.0, "Project: bed conform per-path preConformToZ round-trips");
+            checkNear(p.zDeltaToMm, 0.75, "Project: bed conform per-path zDeltaToMm round-trips");
+            checkNear(p.speedFactorDelta, 0.02, "Project: bed conform per-path speedFactorDelta round-trips");
+        }
+    }
     check(a.selectionGroups.size() == 1, "Project: selection groups round-trip");
     if (!a.selectionGroups.empty()) {
         check(a.selectionGroups[0].name == "Perimeters", "Project: group name round-trips");
@@ -2587,6 +2721,8 @@ int main() {
     testObjectLinkBake();
     testBedConformSampling();
     testBedConformApply();
+    testBedConformScaleDeleteBake();
+    testBedConformBakeAndReapply();
     testMirrorObject();
     testInterleavePrint();
     testInterleaveUnevenLayers();

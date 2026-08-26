@@ -132,6 +132,18 @@ bool saveProject(const std::string& path, const ProjectData& project) {
             }
         }
 
+        if (object.bedConform.has_value()) {
+            const auto& bc = *object.bedConform;
+            file << "bedConformBegin " << (bc.adjustZ ? 1 : 0) << " " << (bc.adjustSpeed ? 1 : 0)
+                 << " " << bc.scale << "\n";
+            for (const auto& p : bc.perPath) {
+                file << "bedConformPath " << p.pathNumber
+                     << " " << p.preConformFromZ << " " << p.preConformToZ << " " << p.preConformSpeed
+                     << " " << p.zDeltaFromMm << " " << p.zDeltaToMm << " " << p.speedFactorDelta << "\n";
+            }
+            file << "bedConformEnd\n";
+        }
+
         file << "ENDOBJECT\n";
     }
 
@@ -170,6 +182,8 @@ bool loadProject(const std::string& path, ProjectData& project) {
     int pendingObjectId = 0;
     SelectionGroup pendingGroup;
     bool inGroup = false;
+    BedConformRecord pendingBedConform;
+    bool inBedConform = false;
     int highestObjectId = 0;
     // LightingSettings default-constructs with one light. The first saved
     // light must REPLACE that default rather than stack on top of it, or
@@ -252,6 +266,25 @@ bool loadProject(const std::string& path, ProjectData& project) {
             else if (key == "startPointPos") {
                 glm::dvec3 p;
                 if (s >> p.x >> p.y >> p.z) current.startPoint.position = p;
+            }
+            else if (key == "bedConformBegin") {
+                pendingBedConform = BedConformRecord{};
+                int adjustZ = 1, adjustSpeed = 1;
+                s >> adjustZ >> adjustSpeed >> pendingBedConform.scale;
+                pendingBedConform.adjustZ = (adjustZ != 0);
+                pendingBedConform.adjustSpeed = (adjustSpeed != 0);
+                inBedConform = true;
+            }
+            else if (key == "bedConformPath" && inBedConform) {
+                BedConformPathRecord p;
+                if (s >> p.pathNumber >> p.preConformFromZ >> p.preConformToZ >> p.preConformSpeed
+                      >> p.zDeltaFromMm >> p.zDeltaToMm >> p.speedFactorDelta) {
+                    pendingBedConform.perPath.push_back(p);
+                }
+            }
+            else if (key == "bedConformEnd" && inBedConform) {
+                current.bedConform = pendingBedConform;
+                inBedConform = false;
             }
             continue;
         }

@@ -44,29 +44,76 @@ double taperWeight(int layer, int affectedLayers) {
 }
 } // namespace
 
-void applyBedConform(SceneObject& object, const BedHeightmap& heightmap, const BedSettings& bed, const BedConformOptions& options) {
-    if (heightmap.cols < 2 || heightmap.rows < 2) return;
+BedConformRecord applyBedConformRecorded(SceneObject& object, const BedHeightmap& heightmap,
+                                          const BedSettings& bed, const BedConformOptions& options) {
+    BedConformRecord record;
+    record.adjustZ = options.adjustZ;
+    record.adjustSpeed = options.adjustSpeed;
+    record.scale = 1.0;
+    if (heightmap.cols < 2 || heightmap.rows < 2) return record;
 
     for (auto& path : object.paths) {
         if (path.type != PathType::Print) continue;
         double weight = taperWeight(path.layer, options.affectedLayers);
         if (weight <= 0.0) continue;
 
+        BedConformPathRecord pathRecord;
+        pathRecord.pathNumber = path.number;
+        pathRecord.preConformFromZ = path.from.z;
+        pathRecord.preConformToZ = path.to.z;
+        pathRecord.preConformSpeed = path.effectiveSpeed();
+
         if (options.adjustZ) {
             glm::dvec3 worldFrom = applyTransform(object.transform, path.from);
-            path.from.z += weight * sampleBedElevation(heightmap, bed, worldFrom.x, worldFrom.y);
-
+            pathRecord.zDeltaFromMm = weight * sampleBedElevation(heightmap, bed, worldFrom.x, worldFrom.y);
             glm::dvec3 worldTo = applyTransform(object.transform, path.to);
-            path.to.z += weight * sampleBedElevation(heightmap, bed, worldTo.x, worldTo.y);
+            pathRecord.zDeltaToMm = weight * sampleBedElevation(heightmap, bed, worldTo.x, worldTo.y);
         }
 
         if (options.adjustSpeed) {
             glm::dvec3 worldTo = applyTransform(object.transform, path.to);
             double elevation = sampleBedElevation(heightmap, bed, worldTo.x, worldTo.y);
-            double base = path.effectiveSpeed();
-            double factor = 1.0 + weight * options.speedGainPerMm * elevation;
+            pathRecord.speedFactorDelta = weight * options.speedGainPerMm * elevation;
+        }
+
+        record.perPath.push_back(pathRecord);
+    }
+
+    // Apply at scale 1.0 immediately -- setBedConformScale() shares the
+    // exact same recompute-from-baseline logic, so there's no separate
+    // "first application" code path to keep in sync with re-scaling.
+    object.bedConform = record;
+    setBedConformScale(object, 1.0);
+    return *object.bedConform;
+}
+
+void setBedConformScale(SceneObject& object, double newScale) {
+    if (!object.bedConform.has_value()) return;
+    BedConformRecord& record = *object.bedConform;
+    record.scale = newScale;
+
+    for (const auto& pathRecord : record.perPath) {
+        Path* path = object.findPath(pathRecord.pathNumber);
+        if (!path) continue; // path was deleted/split since the conform was applied -- nothing to recompute
+
+        if (record.adjustZ) {
+            path->from.z = pathRecord.preConformFromZ + newScale * pathRecord.zDeltaFromMm;
+            path->to.z = pathRecord.preConformToZ + newScale * pathRecord.zDeltaToMm;
+        }
+        if (record.adjustSpeed) {
+            double factor = 1.0 + newScale * pathRecord.speedFactorDelta;
             factor = std::max(factor, 0.1); // never let compensation crush speed to near-zero or negative
-            path.speedOverride = base * factor;
+            path->speedOverride = pathRecord.preConformSpeed * factor;
         }
     }
+}
+
+void removeBedConform(SceneObject& object) {
+    if (!object.bedConform.has_value()) return;
+    setBedConformScale(object, 0.0); // recompute back to exactly the stored pre-conform baseline
+    object.bedConform.reset();
+}
+
+void bakeBedConform(SceneObject& object) {
+    object.bedConform.reset(); // current path values stay exactly as they are -- just stop tracking them as adjustable
 }

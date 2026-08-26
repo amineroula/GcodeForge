@@ -1573,17 +1573,55 @@ void EditorUI::drawBedConformPanel(Scene& scene, SceneObject& object, const BedH
     ImGui::EndDisabled();
 
     ImGui::BeginDisabled(!bedConformAdjustZ_ && !bedConformAdjustSpeed_);
-    if (ImGui::Button("Apply bed conform")) {
+    if (ImGui::Button(object.bedConform.has_value() ? "Re-apply bed conform" : "Apply bed conform")) {
         undoStack.snapshotBeforeChange(scene);
+        // Re-applying while a conform is already active must start from
+        // the object's TRUE pre-conform state, not from wherever the
+        // active (possibly rescaled) conform currently left it -- revert
+        // first, exactly like the user clicking Delete, then apply fresh.
+        if (object.bedConform.has_value()) removeBedConform(object);
         BedConformOptions options;
         options.affectedLayers = bedConformAffectedLayers_;
         options.adjustZ = bedConformAdjustZ_;
         options.adjustSpeed = bedConformAdjustSpeed_;
         options.speedGainPerMm = bedConformSpeedGainPerMm_;
-        applyBedConform(object, heightmap, bed, options);
+        applyBedConformRecorded(object, heightmap, bed, options);
         dirty = true;
     }
     ImGui::EndDisabled();
+
+    // The active conform stays a re-visitable, adjustable "layer" until
+    // explicitly baked or deleted -- requested from real use: "I can
+    // delete it or multiply it or decrease it. I can bake it to make it
+    // part of the object."
+    if (object.bedConform.has_value()) {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.45f, 0.75f, 0.95f, 1.0f), "Bed conform layer active (%zu path(s))",
+                            object.bedConform->perPath.size());
+
+        float scale = static_cast<float>(object.bedConform->scale);
+        if (ImGui::DragFloat("Effect strength", &scale, 0.01f, 0.0f, 3.0f, "%.2fx")) {
+            undoStack.snapshotBeforeChange(scene);
+            setBedConformScale(object, static_cast<double>(scale));
+            dirty = true;
+        }
+        ImGui::TextDisabled("1.00x = as applied. 0 removes the effect without deleting the layer; "
+                             "above 1 multiplies it, below 1 weakens it.");
+
+        if (ImGui::Button("Delete")) {
+            undoStack.snapshotBeforeChange(scene);
+            removeBedConform(object);
+            dirty = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Bake into object")) {
+            undoStack.snapshotBeforeChange(scene);
+            bakeBedConform(object);
+            dirty = true;
+        }
+        ImGui::TextDisabled("Bake keeps the current effect permanently and stops tracking it as adjustable.");
+    }
 }
 
 void EditorUI::drawColorModePanel(ColorMode& colorMode, bool& dirty) {

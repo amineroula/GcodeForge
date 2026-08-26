@@ -1,5 +1,6 @@
 #pragma once
 
+#include "model/BedConformRecord.h"
 #include "model/Layer.h"
 #include "model/LayerAction.h"
 #include "model/Path.h"
@@ -8,6 +9,7 @@
 #include "model/Transform.h"
 
 #include <glm/glm.hpp>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -51,6 +53,12 @@ struct SceneObject {
     // coordinates of its own, so it can't participate in path selection,
     // speed editing, or run/mesh building the way real motion paths do.
     StartPoint startPoint;
+
+    // The currently-active, adjustable bed conform "layer" (if any) --
+    // see model/BedConformRecord.h. std::nullopt means no conform is
+    // active (either never applied, removed, or already baked into the
+    // paths permanently).
+    std::optional<BedConformRecord> bedConform;
 
     Path* findPath(int number) {
         for (auto& p : paths) {
