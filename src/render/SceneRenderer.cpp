@@ -34,6 +34,7 @@ void SceneRenderer::rebuild(const Scene& scene, ColorMode colorMode, bool showPr
     for (const auto& object : scene.objects) {
         if (!object.visible) continue;
         for (const auto& path : object.paths) {
+            if (object.hiddenPaths.count(path.number)) continue;
             if (path.type == PathType::Print && !showPrintPaths) continue;
             if (path.type == PathType::Travel && !showTravels) continue;
             glm::dvec3 fromWorld = applyTransform(object.transform, path.from);

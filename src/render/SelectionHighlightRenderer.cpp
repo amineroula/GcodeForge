@@ -32,6 +32,7 @@ void SelectionHighlightRenderer::rebuild(const Scene& scene, RenderMode mode) {
         if (!object.visible || object.selectedPaths.empty()) continue;
         for (const auto& path : object.paths) {
             if (!object.selectedPaths.count(path.number)) continue;
+            if (object.hiddenPaths.count(path.number)) continue;
             // Print paths in Geometry mode are handled by GeometryRenderer's
             // own inverted-hull outline mesh instead -- see this class's
             // header comment for why a centerline highlight doesn't work

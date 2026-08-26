@@ -38,6 +38,7 @@ void VertexRenderer::rebuild(const Scene& scene, bool includePrintPaths, bool in
         for (const auto& path : object.paths) {
             if (path.type == PathType::Print && !includePrintPaths) continue;
             if (path.type == PathType::Travel && !includeTravels) continue;
+            if (object.hiddenPaths.count(path.number)) continue;
 
             bool selected = object.selectedPaths.count(path.number) > 0;
             glm::vec3 color = selected ? selectionHighlightColor() : kVertexColor;
@@ -53,6 +54,7 @@ void VertexRenderer::rebuild(const Scene& scene, bool includePrintPaths, bool in
             const Path& first = object.paths.front();
             bool selected = object.selectedPaths.count(first.number) > 0;
             bool include = (first.type == PathType::Print) ? includePrintPaths : includeTravels;
+            if (object.hiddenPaths.count(first.number)) include = false;
             if (include) {
                 vertices.push_back({glm::vec3(applyTransform(object.transform, first.from)),
                                      selected ? selectionHighlightColor() : kVertexColor});

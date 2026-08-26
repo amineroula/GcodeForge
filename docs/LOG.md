@@ -2548,3 +2548,28 @@ elevation actually moves the projected screen position (a top-down
 camera wouldn't exercise this at all) -- confirms clicking where a
 raised vertex actually renders picks THAT vertex, not a flat neighbor at
 the same X, and vice versa. 456 tests total, Debug and Release clean.
+
+## Hide/isolate had no effect in the default (Lines) render mode
+
+Real-use report: "the isolation button don't work."
+
+**Root cause**: `RenderSettings::mode` defaults to `RenderMode::Lines`
+(`include/render/RenderSettings.h:45`) -- but when `object.hiddenPaths`
+was added (the hide-layers/paths/groups feature, and layer isolation
+built on top of it), the render-side skip check only ever went into
+`GeometryRenderer.cpp`, the OTHER mode. `SceneRenderer.cpp` (Lines mode),
+`SelectionHighlightRenderer.cpp`, and `VertexRenderer.cpp` all kept
+checking `object.visible` but never `object.hiddenPaths` at all. Anyone
+using the default view -- which is everyone, until they explicitly
+switch to Geometry mode -- would hide or isolate a layer and see
+literally no change, since the hidden paths were still being drawn every
+frame regardless.
+
+**Fix**: added the same `object.hiddenPaths.count(path.number)` skip to
+all three renderers, matching `GeometryRenderer`'s existing check.
+
+**Verified**: builds clean, Debug and Release, 456 tests (GL-coupled
+vertex-buffer-building code, no GL context in the test binary -- same
+category as `GeometryRenderer`'s own untested-by-unit-test skip logic;
+verified by reading each renderer's draw-build code directly and
+confirming the default-mode gap was real).
