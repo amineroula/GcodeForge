@@ -101,6 +101,7 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
         if (ImGui::BeginTabItem(objectTabLabel.c_str())) {
             if (active) {
                 drawCellTemplatePanel(scene, *active, bedSettings, undoStack, sceneDirty);
+                drawCommentPanel(*active);
                 drawTransformPanel(scene, *active, undoStack, sceneDirty);
                 drawLayerTablePanel(scene, *active, undoStack, sceneDirty, selectionDirty);
                 drawSelectionGroupPanel(scene, *active, undoStack, sceneDirty, selectionDirty);
@@ -1008,6 +1009,44 @@ void EditorUI::drawCellTemplatePanel(Scene& scene, SceneObject& object, const Be
     ImGui::EndChild();
     ImGui::PopStyleColor();
     ImGui::Spacing();
+}
+
+// Real request: "a comment section that can be read by GcodeForge...
+// and deleted if I want to." The actual write-into-the-.src logic lives
+// in editor/SrcExporter.h/parser/SrcParser.cpp; this is just the text
+// box. No undo snapshot on every keystroke (matches the existing
+// layer-action text field's precedent -- undo-per-character would be
+// noisy, not useful), and no `dirty` trigger either: a comment never
+// affects rendering or export validation, only what gets written the
+// next time the file is saved.
+void EditorUI::drawCommentPanel(SceneObject& object) {
+    if (boldFont_) ImGui::PushFont(boldFont_);
+    bool open = ImGui::CollapsingHeader("Comment");
+    if (boldFont_) ImGui::PopFont();
+    if (!open) return;
+
+    // Buffer only resyncs from object.comment when the ACTIVE OBJECT
+    // changes -- otherwise every frame would stomp in-progress typing
+    // with whatever object.comment already says (which IS what the
+    // buffer itself just wrote, but re-copying every frame is still
+    // wasted work and a trap if that ever stops being true).
+    if (commentBufferObjectId_ != object.id) {
+        std::snprintf(commentBuffer_, sizeof(commentBuffer_), "%s", object.comment.c_str());
+        commentBufferObjectId_ = object.id;
+    }
+
+    ImGui::TextWrapped("Saved INSIDE the exported .src as a comment block -- travels with the file, "
+                        "not just this project.");
+    if (ImGui::InputTextMultiline("##objectComment", commentBuffer_, sizeof(commentBuffer_), ImVec2(-1, 70))) {
+        object.comment = commentBuffer_;
+    }
+
+    ImGui::BeginDisabled(object.comment.empty());
+    if (ImGui::Button("Delete comment")) {
+        object.comment.clear();
+        commentBuffer_[0] = '\0';
+    }
+    ImGui::EndDisabled();
 }
 
 void EditorUI::drawTransformPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty) {

@@ -156,6 +156,7 @@ private:
                        SceneObject* activeObject, bool& bedDirty);
     void drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dirty);
     void drawMultiPartPanel(Scene& scene, UndoStack& undoStack, bool& dirty);
+    void drawCommentPanel(SceneObject& object);
     void drawTransformPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty);
     void drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty, bool& selectionDirty);
     void drawSelectionGroupPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty, bool& selectionDirty);
@@ -240,6 +241,11 @@ private:
     // persistent fields, not a struct rebuilt fresh every frame).
     // zOffsetModeIndex_ order MUST match ZOffsetMode's enum order --
     // static_cast directly from the combo index.
+    // Comment text box state -- see drawCommentPanel(). Only resyncs from
+    // object.comment when the active object id changes.
+    char commentBuffer_[2048] = "";
+    int commentBufferObjectId_ = -1;
+
     int zOffsetStartLayer_ = 1;
     double zOffsetDeltaMm_ = 0.0;
     int zOffsetModeIndex_ = 0;

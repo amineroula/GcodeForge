@@ -71,6 +71,17 @@ bool saveProject(const std::string& path, const ProjectData& project) {
     for (const auto& object : project.scene.objects) {
         file << "OBJECT " << object.id << "\n";
         file << "name " << object.name << "\n";
+        // One "commentLine" record per line (same pattern as "srcline"
+        // just below) -- object.comment is newline-separated free text,
+        // which a single-token restOfLine() read can't round-trip if
+        // written as one record.
+        {
+            std::istringstream commentStream(object.comment);
+            std::string commentLine;
+            while (std::getline(commentStream, commentLine)) {
+                file << "commentLine " << commentLine << "\n";
+            }
+        }
         file << "visible " << (object.visible ? 1 : 0) << "\n";
         file << "color " << object.color.r << " " << object.color.g << " " << object.color.b << "\n";
         file << "transform " << object.transform.x << " " << object.transform.y << " " << object.transform.z
@@ -212,6 +223,10 @@ bool loadProject(const std::string& path, ProjectData& project) {
 
         if (inObject) {
             if (key == "name") current.name = restOfLine(s);
+            else if (key == "commentLine") {
+                if (!current.comment.empty()) current.comment += "\n";
+                current.comment += restOfLine(s);
+            }
             else if (key == "visible") { int v = 1; s >> v; current.visible = (v != 0); }
             else if (key == "color") s >> current.color.r >> current.color.g >> current.color.b;
             else if (key == "transform") {

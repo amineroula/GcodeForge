@@ -60,6 +60,14 @@ struct SceneObject {
     // paths permanently).
     std::optional<BedConformRecord> bedConform;
 
+    // Operator-entered notes, written into the exported .src as a tagged
+    // comment block (editor/SrcExporter.h) and read back out of it on
+    // re-import (parser/SrcParser.cpp) -- round-trips through the file
+    // itself, not just .gfproj project files. Multi-line, newline-
+    // separated; empty means no comment. Real request: "a comment section
+    // that can be read by GcodeForge... and deleted if I want to."
+    std::string comment;
+
     Path* findPath(int number) {
         for (auto& p : paths) {
             if (p.number == number) return &p;

@@ -2685,3 +2685,46 @@ each selection-producing function excludes hidden paths;
 `pathNumbersForLayer` deliberately stays unfiltered; both picking
 functions skip a hidden path even scored dead-center). 481 tests total,
 Debug and Release clean.
+
+## Object comments, stored inside the .src file itself
+
+Real request: "add a comment in the file src when exporting, this will
+be stored inside the src... read by GcodeForge... deleted if I want to."
+`SceneObject::comment` is a new free-text field, editable in a small text
+box (Object tab, "Comment" section, with a Delete button) -- but the real
+work is making it survive round-trip through the ACTUAL .src file, not
+just `.gfproj` project saves.
+
+**Export** (`SrcExporter.cpp`): when `object.comment` is non-empty, a
+tagged block --
+```
+; GCODEFORGE COMMENT START
+; <line 1>
+; <line 2>
+; GCODEFORGE COMMENT END
+```
+-- is inserted right after the `DEF` line (found via the same `DEF`
+pattern `ExportValidation.cpp` uses), through the exact same
+`insertionsByLine` mechanism every other insertion (speed lines, layer
+actions) already uses -- so coordinate-patch indices, computed before any
+insertions happen, stay correct. Regenerated fresh from `object.comment`
+on every export, never stored permanently in `object.sourceLines` --
+editing or deleting the comment can never leave stale text behind.
+
+**Import** (`SrcParser.cpp`): the tagged block is stripped out and its
+text recovered into `object.comment` BEFORE any line-index assignment
+happens -- `Path::srcLine`/`StartPoint::srcLine` are indices into
+`object.sourceLines`, so the comment block has to already be gone from
+that list before indices are computed, not removed afterward (which
+would leave every recorded index off by however many comment lines
+preceded it).
+
+**Persistence** (`ProjectIO.cpp`): also saved in `.gfproj` (one
+`commentLine` record per line, matching the existing multi-line `srcline`
+pattern), so it survives a project save even before ever being exported.
+
+**Verified**: 12 new tests -- full export/re-parse/re-export round-trip
+(exact text recovered, marker lines don't leak into `sourceLines`,
+re-exporting a re-parsed object writes the block exactly once, not
+doubled), deletion actually removing the block, and project-file
+round-trip. 494 tests total, Debug and Release clean.

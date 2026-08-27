@@ -838,6 +838,63 @@ void testExportValidationChecksIndividually() {
     }
 }
 
+// Real request: a comment section stored INSIDE the .src file itself
+// (not just the .gfproj project), readable back by GcodeForge on
+// re-import, and deletable.
+void testSrcExporterCommentRoundTrip() {
+    std::vector<std::string> lines = sampleSrcLinesForExport();
+    SceneObject object = parseSrc("Chair_01", lines);
+    check(object.comment.empty(), "SrcExporter: precondition -- a freshly parsed real file has no comment yet");
+
+    object.comment = "Printed for job #4821\nCheck bed leveling before this one";
+
+    ExportResult result;
+    std::vector<std::string> exported = buildExportedLines(object, result);
+    check(result.success, "SrcExporter: exporting with a comment succeeds");
+
+    std::string joined;
+    for (const auto& line : exported) joined += line + "\n";
+    check(joined.find("; GCODEFORGE COMMENT START") != std::string::npos, "SrcExporter: comment start marker is present");
+    check(joined.find("; Printed for job #4821") != std::string::npos, "SrcExporter: first comment line is present, prefixed as a KRL comment");
+    check(joined.find("; Check bed leveling before this one") != std::string::npos, "SrcExporter: second comment line is present");
+    check(joined.find("; GCODEFORGE COMMENT END") != std::string::npos, "SrcExporter: comment end marker is present");
+
+    // Round-trip: re-parsing the exported text must recover the exact
+    // comment text, AND must not leave the tagged marker lines sitting in
+    // sourceLines as dead text (that would double up on the next export).
+    SceneObject reparsed = parseSrc("Chair_01_reparsed", exported);
+    check(reparsed.comment == object.comment, "SrcExporter: re-parsing the exported file recovers the exact comment text");
+    check(reparsed.paths.size() == object.paths.size(), "SrcExporter: the comment block doesn't disturb path count on re-parse");
+    bool markerLeaked = false;
+    for (const auto& line : reparsed.sourceLines) {
+        if (line.find("GCODEFORGE COMMENT") != std::string::npos) markerLeaked = true;
+    }
+    check(!markerLeaked, "SrcExporter: the comment marker lines are stripped from sourceLines on re-parse, not left as dead text");
+
+    // Re-exporting the REPARSED object must produce the comment exactly
+    // once, not twice -- proves the block is regenerated fresh from
+    // object.comment each time, never accumulated from leftover text.
+    ExportResult reExportResult;
+    std::vector<std::string> reExported = buildExportedLines(reparsed, reExportResult);
+    std::string reJoined;
+    for (const auto& line : reExported) reJoined += line + "\n";
+    size_t firstPos = reJoined.find("GCODEFORGE COMMENT START");
+    size_t secondPos = (firstPos == std::string::npos) ? std::string::npos
+                                                         : reJoined.find("GCODEFORGE COMMENT START", firstPos + 1);
+    check(firstPos != std::string::npos && secondPos == std::string::npos,
+          "SrcExporter: re-exporting a re-parsed object writes the comment block exactly once, not doubled");
+
+    // Deletable: clearing the comment and re-exporting removes the block
+    // entirely.
+    reparsed.comment.clear();
+    ExportResult clearedResult;
+    std::vector<std::string> clearedExported = buildExportedLines(reparsed, clearedResult);
+    std::string clearedJoined;
+    for (const auto& line : clearedExported) clearedJoined += line + "\n";
+    check(clearedJoined.find("GCODEFORGE COMMENT") == std::string::npos,
+          "SrcExporter: clearing the comment and re-exporting removes the block entirely");
+}
+
 void testSrcExporterLayerAction() {
     std::vector<std::string> lines = sampleSrcLinesForExport();
     SceneObject object = parseSrc("Chair_01", lines);
@@ -2612,6 +2669,7 @@ void testProjectRoundTrip() {
     part.selectedPaths.insert(4);
     part.hiddenPaths.insert(3);
     part.hiddenPaths.insert(5);
+    part.comment = "Printed for job #4821\nCheck bed leveling before this one";
     part.paths[3].speedOverride = 0.0125;
 
     SelectionGroup group;
@@ -2685,6 +2743,8 @@ void testProjectRoundTrip() {
           "Project: SELECTION round-trips (a .src has nowhere to store this)");
     check(a.hiddenPaths.count(3) && a.hiddenPaths.count(5) && a.hiddenPaths.size() == 2,
           "Project: HIDDEN paths round-trip (a .src has nowhere to store this either)");
+    check(a.comment == "Printed for job #4821\nCheck bed leveling before this one",
+          "Project: multi-line object COMMENT round-trips exactly");
     check(a.bedConform.has_value(), "Project: an active BED CONFORM record round-trips");
     if (a.bedConform.has_value()) {
         check(a.bedConform->adjustZ && !a.bedConform->adjustSpeed, "Project: bed conform's adjustZ/adjustSpeed flags round-trip");
@@ -2926,6 +2986,7 @@ int main() {
     testSrcExporterSpeedOverride();
     testSrcExporterSpeedRounding();
     testExportValidationChecksIndividually();
+    testSrcExporterCommentRoundTrip();
     testSrcExporterLayerAction();
     testPathSplitModel();
     testPathSplitExport();

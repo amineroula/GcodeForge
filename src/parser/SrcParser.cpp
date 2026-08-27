@@ -59,18 +59,53 @@ std::optional<double> matchNumber(const std::string& text, const std::regex& re)
     return std::nullopt;
 }
 
+std::string trimCopy(const std::string& s) {
+    size_t start = s.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return "";
+    size_t end = s.find_last_not_of(" \t\r\n");
+    return s.substr(start, end - start + 1);
+}
+
+const char* kCommentStartMarker = "; GCODEFORGE COMMENT START";
+const char* kCommentEndMarker = "; GCODEFORGE COMMENT END";
+
 } // namespace
 
 SceneObject parseSrc(const std::string& objectName, const std::vector<std::string>& lines) {
     SceneObject object;
     object.name = objectName;
-    object.sourceLines = lines;
+
+    // Extract GcodeForge's own tagged comment block (editor/SrcExporter.h
+    // writes it fresh on every export, see object.comment) BEFORE
+    // anything else assigns a line index -- Path::srcLine/StartPoint::srcLine
+    // below are indices into object.sourceLines, so the comment block has
+    // to already be gone from that list, not stripped out after the fact
+    // (which would leave every recorded index off by however many
+    // comment lines came before it).
+    std::vector<std::string> realLines;
+    realLines.reserve(lines.size());
+    bool inComment = false;
+    for (const auto& rawLine : lines) {
+        std::string trimmed = trimCopy(rawLine);
+        if (trimmed == kCommentStartMarker) { inComment = true; continue; }
+        if (trimmed == kCommentEndMarker) { inComment = false; continue; }
+        if (inComment) {
+            std::string text = trimmed;
+            if (text.rfind("; ", 0) == 0) text = text.substr(2);
+            else if (!text.empty() && text[0] == ';') text = text.substr(1);
+            if (!object.comment.empty()) object.comment += "\n";
+            object.comment += text;
+            continue;
+        }
+        realLines.push_back(rawLine);
+    }
+    object.sourceLines = realLines;
 
     // The original detects an "implicit travel section" at file start: if
     // the FIRST travel marker encountered is a ";travel end" (not a
     // ";travel start"), the file must have begun inside travel already.
     bool inTravel = false;
-    for (const auto& line : lines) {
+    for (const auto& line : realLines) {
         const std::string lower = toLower(line);
         if (contains(lower, ";travel start")) { inTravel = false; break; }
         if (contains(lower, ";travel end")) { inTravel = true; break; }
@@ -83,8 +118,8 @@ SceneObject parseSrc(const std::string& objectName, const std::vector<std::strin
     std::optional<double> lastPrintZ;
     Layer* currentLayer = nullptr;
 
-    for (int lineIndex = 0; lineIndex < static_cast<int>(lines.size()); ++lineIndex) {
-        const std::string& line = lines[lineIndex];
+    for (int lineIndex = 0; lineIndex < static_cast<int>(realLines.size()); ++lineIndex) {
+        const std::string& line = realLines[lineIndex];
         const std::string lower = toLower(line);
 
         if (contains(lower, ";travel start")) inTravel = true;

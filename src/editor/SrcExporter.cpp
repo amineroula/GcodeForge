@@ -7,6 +7,8 @@
 #include <fstream>
 #include <map>
 #include <optional>
+#include <regex>
+#include <sstream>
 
 namespace {
 
@@ -80,6 +82,32 @@ std::vector<std::string> buildExportedLines(const SceneObject& object, ExportRes
     //        never shift the position of a later one we haven't applied
     //        yet. ---
     std::map<int, std::vector<std::string>> insertionsByLine;
+
+    // Operator-entered notes (object.comment), written as a tagged
+    // comment block right after DEF -- editor/parser/SrcParser.cpp
+    // strips this exact block back out on re-import, so it round-trips
+    // through the .src file itself, not just .gfproj project files.
+    // Re-derived fresh from object.comment on every export rather than
+    // ever living permanently in object.sourceLines, so editing or
+    // clearing the comment can never leave a stale copy behind.
+    if (!object.comment.empty()) {
+        static const std::regex defRe(R"(^\s*DEF\b)", std::regex::icase);
+        int defLine = -1;
+        for (int i = 0; i < static_cast<int>(output.size()); ++i) {
+            if (std::regex_search(output[static_cast<size_t>(i)], defRe)) { defLine = i; break; }
+        }
+        int commentTargetLine = defLine >= 0 ? defLine + 1 : 0;
+
+        std::vector<std::string> commentBlock;
+        commentBlock.push_back("; GCODEFORGE COMMENT START");
+        std::istringstream stream(object.comment);
+        std::string commentLine;
+        while (std::getline(stream, commentLine)) commentBlock.push_back("; " + commentLine);
+        commentBlock.push_back("; GCODEFORGE COMMENT END");
+
+        auto& existing = insertionsByLine[commentTargetLine];
+        existing.insert(existing.begin(), commentBlock.begin(), commentBlock.end());
+    }
 
     // Layer actions: one KRL block inserted before the first motion line
     // of the target layer. Uses exportTargetLine() (not raw srcLine) so a
