@@ -64,6 +64,7 @@ std::optional<PathRef> pickNearestPath(const Scene& scene, const ScreenProjector
     for (const auto& object : scene.objects) {
         if (!object.visible) continue;
         for (const auto& path : object.paths) {
+            if (object.hiddenPaths.count(path.number)) continue;
             glm::vec3 fromWorld(applyTransform(object.transform, path.from));
             glm::vec3 toWorld(applyTransform(object.transform, path.to));
             auto fromScreen = projector.project(fromWorld);
@@ -100,6 +101,7 @@ std::vector<PathRef> pickPathsInRect(const Scene& scene, const ScreenProjector& 
     for (const auto& object : scene.objects) {
         if (!object.visible) continue;
         for (const auto& path : object.paths) {
+            if (object.hiddenPaths.count(path.number)) continue;
             glm::vec3 fromWorld(applyTransform(object.transform, path.from));
             glm::vec3 toWorld(applyTransform(object.transform, path.to));
             auto fromScreen = projector.project(fromWorld);

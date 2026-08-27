@@ -2,7 +2,16 @@
 #include "editor/Selection.h"
 
 void hidePaths(SceneObject& object, const std::vector<int>& pathNumbers) {
-    for (int number : pathNumbers) object.hiddenPaths.insert(number);
+    for (int number : pathNumbers) {
+        object.hiddenPaths.insert(number);
+        // A path that was selected BEFORE being hidden must drop out of
+        // the selection too -- otherwise it stays fully editable/
+        // transformable/speed-editable through the existing selection
+        // even though every selection-producing function now refuses to
+        // select it again. "Hidden" has to mean out of reach either way
+        // it happened, not just for future selection actions.
+        object.selectedPaths.erase(number);
+    }
 }
 
 void showPaths(SceneObject& object, const std::vector<int>& pathNumbers) {

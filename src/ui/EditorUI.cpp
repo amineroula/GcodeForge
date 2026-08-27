@@ -1231,9 +1231,17 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
                         std::vector<int> layerPaths = pathNumbersForLayer(object, rangeLayer.layer);
                         targets.insert(targets.end(), layerPaths.begin(), layerPaths.end());
                     }
+                    // A hidden path is out of reach for selection entirely --
+                    // otherwise a range-select through a hidden layer would
+                    // still grab (and let you transform/speed-edit) paths
+                    // you can't even see. Reported from real use.
+                    targets.erase(std::remove_if(targets.begin(), targets.end(),
+                                   [&](int n) { return object.hiddenPaths.count(n) > 0; }), targets.end());
                     applySelectionCompose(object.selectedPaths, targets, SelectionCompose::Add);
                 } else {
                     std::vector<int> targets = pathNumbersForLayer(object, layer.layer);
+                    targets.erase(std::remove_if(targets.begin(), targets.end(),
+                                   [&](int n) { return object.hiddenPaths.count(n) > 0; }), targets.end());
                     applySelectionCompose(object.selectedPaths, targets, compose);
                     layerSelectionAnchor_ = layer.layer; // plain/ctrl clicks move the anchor; shift-click ranges from the last one
                 }
@@ -1299,7 +1307,27 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
         ImGui::EndTable();
     }
 
-    ImGui::BeginDisabled(isolatedLayers_.empty());
+    // Bulk hide/show -- ONE undo snapshot and ONE geometry rebuild for
+    // every layer at once, instead of clicking each layer's Visible
+    // checkbox individually. Reported from real use: hiding many layers
+    // one checkbox at a time was very slow -- each click does a full
+    // Scene snapshot (UndoStack.h copies the whole scene) and a full
+    // geometry rebuild, so doing that N times in a row costs N times as
+    // much as doing it once.
+    ImGui::BeginDisabled(object.layers.empty());
+    if (ImGui::SmallButton("Hide all layers")) {
+        undoStack.snapshotBeforeChange(scene);
+        std::vector<int> all;
+        for (const auto& l : object.layers) {
+            std::vector<int> layerPaths = pathNumbersForLayer(object, l.layer);
+            all.insert(all.end(), layerPaths.begin(), layerPaths.end());
+        }
+        hidePaths(object, all);
+        dirty = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(object.hiddenPaths.empty() && isolatedLayers_.empty());
     if (ImGui::SmallButton("Show all layers")) {
         undoStack.snapshotBeforeChange(scene);
         isolatedLayers_.clear();
@@ -1310,8 +1338,10 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
     ImGui::SameLine();
     if (!isolatedLayers_.empty()) {
         ImGui::TextDisabled("Isolating %zu layer(s).", isolatedLayers_.size());
+    } else if (!object.hiddenPaths.empty()) {
+        ImGui::TextDisabled("%zu path(s) hidden.", object.hiddenPaths.size());
     } else {
-        ImGui::TextDisabled("Not isolating.");
+        ImGui::TextDisabled("Nothing hidden.");
     }
 
     ImGui::Spacing();

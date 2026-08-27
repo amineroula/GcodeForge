@@ -2641,3 +2641,47 @@ there's nothing to see or aim at at all.
 interaction code, no GL context in the test binary -- same category as
 the picking/render-skip work already covered by `pickNearestHeightmapVertex`'s
 own dedicated tests).
+
+## Hidden paths were still selectable, and hiding many layers was slow
+
+Real-use report: "when I hide the layer I can still select them and
+affect them" -- and separately, hiding many layers one at a time was
+noticeably slow.
+
+**Selectable-when-hidden, root cause**: hiding only ever affected
+rendering. Nothing in the selection path checked `hiddenPaths` at all --
+`pickNearestPath()`/`pickPathsInRect()` (viewport click/marquee),
+`allPathNumbers()`/`travelPathNumbers()`/`printPathNumbers()` (the bulk
+select buttons), and the layer table's row click all happily selected a
+hidden path, letting it be transformed/speed-edited/rotated same as any
+visible one. And a path already selected BEFORE being hidden simply
+stayed in `selectedPaths` -- hiding never touched the existing selection.
+
+**Fix**: added `hiddenPaths` checks to both picking functions and to
+`allPathNumbers`/`travelPathNumbers`/`printPathNumbers`, plus a filter at
+the layer-table's actual selection call site (in `EditorUI.cpp`, not in
+`pathNumbersForLayer()` itself -- that function is ALSO used internally
+by `setLayerHidden()`/`isLayerHidden()` for hide/show bookkeeping, which
+needs to see every path in a layer regardless of hidden state to
+correctly un-hide it; filtering it there would have broken un-hiding).
+`hidePaths()` now also erases from `object.selectedPaths` whatever it
+hides, so an already-selected path can't stay selected through a hide.
+
+**Slow bulk-hide, root cause**: each layer's Visible checkbox does a full
+`undoStack.snapshotBeforeChange(scene)` (a whole-Scene deep copy,
+`UndoStack.h`'s documented design) plus a full geometry rebuild.
+Hiding N layers one checkbox at a time costs N snapshots and N rebuilds
+of the ENTIRE scene, not just N cheap flag flips -- on a real file with
+tens of thousands of paths, clicking through dozens of layers compounds
+into real, felt lag.
+
+**Fix**: new "Hide all layers" button next to the existing "Show all
+layers" (which is now also usable outside isolation mode, not just to
+exit it) -- one click, one snapshot, one rebuild, regardless of layer
+count.
+
+**Verified**: 6 new tests (hiding an already-selected path removes it;
+each selection-producing function excludes hidden paths;
+`pathNumbersForLayer` deliberately stays unfiltered; both picking
+functions skip a hidden path even scored dead-center). 481 tests total,
+Debug and Release clean.

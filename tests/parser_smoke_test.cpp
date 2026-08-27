@@ -261,6 +261,30 @@ void testPicking() {
           "Picking: rectangle select finds only the path whose midpoint falls inside it");
 }
 
+// Real request: "when I hide the layer I can still select them and
+// affect them" -- a hidden path must be unreachable through viewport
+// picking too, not just excluded from the bulk selection-producing
+// functions (see testSelectionProducingFunctionsExcludeHidden).
+void testPickingSkipsHiddenPaths() {
+    glm::mat4 projection = glm::ortho(-100.0f, 100.0f, -100.0f, 100.0f, -100.0f, 100.0f);
+    ScreenProjector projector{projection, 200.0f, 200.0f};
+
+    Scene scene;
+    SceneObject object;
+    object.name = "hideTest";
+    Path horizontal; horizontal.number = 1; horizontal.type = PathType::Print;
+    horizontal.from = glm::dvec3(-50, 0, 0); horizontal.to = glm::dvec3(50, 0, 0);
+    object.paths = {horizontal};
+    object.hiddenPaths.insert(1);
+    scene.addObject(object);
+
+    auto hit = pickNearestPath(scene, projector, glm::vec2(100.0f, 100.0f), 10.0f);
+    check(!hit.has_value(), "Picking: pickNearestPath never finds a hidden path, even dead center on it");
+
+    auto rectHits = pickPathsInRect(scene, projector, glm::vec2(0.0f, 90.0f), glm::vec2(200.0f, 110.0f));
+    check(rectHits.empty(), "Picking: pickPathsInRect never includes a hidden path, even fully inside the marquee");
+}
+
 // Real request: click a heightmap vertex directly in the 3D viewport to
 // nudge its Z (the "paint" tool). The pick must land on the vertex AS
 // ACTUALLY RENDERED -- including its own current elevation, not a flat
@@ -2102,6 +2126,51 @@ void testVisibilityHidePathsAndSelection() {
     check(object.hiddenPaths.empty(), "Visibility: showAllPaths clears every hidden path");
 }
 
+// Real request: "when I hide the layer I can still select them and
+// affect them" -- two distinct gaps. (1) A path selected BEFORE being
+// hidden stayed selected (and therefore transformable/speed-editable)
+// even after hiding it. (2) Every selection-PRODUCING function (layer
+// table click, Select all visible, Select travels/prints) could still
+// select an already-hidden path, since none of them checked hiddenPaths
+// at all.
+void testHidingRemovesFromExistingSelection() {
+    SceneObject object = twoLayerObjectWithGroup();
+    object.selectedPaths = {1, 2, 3};
+
+    hidePaths(object, {2});
+    check(!object.selectedPaths.count(2),
+          "Visibility: hiding a path that was ALREADY selected removes it from the selection too");
+    check(object.selectedPaths.count(1) && object.selectedPaths.count(3),
+          "Visibility: hiding path 2 leaves the other selected paths alone");
+}
+
+void testSelectionProducingFunctionsExcludeHidden() {
+    SceneObject object = twoLayerObjectWithGroup();
+    hidePaths(object, {2, 5}); // path 2 (a print in layer 1), path 5 (the travel)
+
+    std::vector<int> all = allPathNumbers(object);
+    check(std::find(all.begin(), all.end(), 2) == all.end(),
+          "Selection: allPathNumbers excludes a hidden path");
+    check(std::find(all.begin(), all.end(), 1) != all.end(),
+          "Selection: allPathNumbers still includes a visible one");
+
+    std::vector<int> travels = travelPathNumbers(object);
+    check(travels.empty(), "Selection: travelPathNumbers excludes the hidden travel (path 5 was the only one)");
+
+    std::vector<int> prints = printPathNumbers(object);
+    check(std::find(prints.begin(), prints.end(), 2) == prints.end(),
+          "Selection: printPathNumbers excludes a hidden print path");
+    check(std::find(prints.begin(), prints.end(), 1) != prints.end(),
+          "Selection: printPathNumbers still includes a visible one");
+
+    // pathNumbersForLayer is DELIBERATELY unfiltered -- Visibility.h's
+    // setLayerHidden()/isLayerHidden() depend on seeing every path in
+    // the layer regardless of hidden state to un-hide correctly.
+    std::vector<int> layer1 = pathNumbersForLayer(object, 1);
+    check(std::find(layer1.begin(), layer1.end(), 2) != layer1.end(),
+          "Selection: pathNumbersForLayer stays UNFILTERED (hide/show bookkeeping depends on this)");
+}
+
 void testVisibilityLayerHide() {
     SceneObject object = twoLayerObjectWithGroup();
 
@@ -2844,6 +2913,7 @@ int main() {
     testEditorLogic();
     testUndoStack();
     testPicking();
+    testPickingSkipsHiddenPaths();
     testPickNearestHeightmapVertex();
     testMarqueeTouch();
     testPickingBackfacing();
@@ -2888,6 +2958,8 @@ int main() {
     testInterleavePreservesHeaderAndFooter();
     testDxfParserSplineLayers();
     testVisibilityHidePathsAndSelection();
+    testHidingRemovesFromExistingSelection();
+    testSelectionProducingFunctionsExcludeHidden();
     testVisibilityLayerHide();
     testVisibilityGroupHide();
     testVisibilityDoesNotAffectExport();
