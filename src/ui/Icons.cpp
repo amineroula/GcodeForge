@@ -110,6 +110,78 @@ void drawSpeed(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
     dl->AddCircleFilled(c, 1.8f, col);
 }
 
+void drawGizmoObject(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    // Filled square: the gizmo moves the whole object as one block.
+    float half = s * 0.28f;
+    dl->AddRectFilled(ImVec2(c.x - half, c.y - half), ImVec2(c.x + half, c.y + half), col, 1.5f);
+}
+
+void drawGizmoEndpoint(ImDrawList* dl, ImVec2 c, float s, ImU32 col, bool atStart) {
+    // A short path segment with the moved endpoint marked by a filled dot.
+    float half = s * 0.3f;
+    ImVec2 a(c.x - half, c.y), b(c.x + half, c.y);
+    dl->AddLine(a, b, col, 1.6f);
+    ImVec2 dot = atStart ? a : b;
+    ImVec2 open = atStart ? b : a;
+    dl->AddCircleFilled(dot, s * 0.11f, col);
+    dl->AddCircle(open, s * 0.08f, col, 0, 1.3f);
+}
+
+void drawGizmoWhole(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    // A thick full segment, both ends solid: the whole path moves rigidly.
+    float half = s * 0.3f;
+    dl->AddLine(ImVec2(c.x - half, c.y), ImVec2(c.x + half, c.y), col, 2.6f);
+    dl->AddCircleFilled(ImVec2(c.x - half, c.y), s * 0.1f, col);
+    dl->AddCircleFilled(ImVec2(c.x + half, c.y), s * 0.1f, col);
+}
+
+void drawColorObject(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    dl->AddCircleFilled(c, s * 0.3f, col);
+}
+
+void drawColorType(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    // Half-solid, half-outline circle: print (solid) vs travel (outline).
+    float r = s * 0.3f;
+    dl->PathArcTo(c, r, -1.5708f, 1.5708f, 16);
+    dl->PathLineTo(c);
+    dl->PathFillConvex(col);
+    dl->AddCircle(c, r, col, 0, 1.3f);
+}
+
+void drawColorLayer(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    // Three stacked horizontal bars, like sliced layers.
+    float half = s * 0.3f;
+    float step = half * 0.75f;
+    for (int i = -1; i <= 1; ++i) {
+        float y = c.y + i * step;
+        dl->AddLine(ImVec2(c.x - half, y), ImVec2(c.x + half, y), col, 1.8f);
+    }
+}
+
+void drawColorGroup(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    // A cluster of three small dots, like grouped items.
+    float r = s * 0.09f;
+    float d = s * 0.18f;
+    dl->AddCircleFilled(ImVec2(c.x, c.y - d), r, col);
+    dl->AddCircleFilled(ImVec2(c.x - d * 0.87f, c.y + d * 0.5f), r, col);
+    dl->AddCircleFilled(ImVec2(c.x + d * 0.87f, c.y + d * 0.5f), r, col);
+}
+
+void drawColorSequence(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    // Arrow along a track of dots fading in tint, start to end.
+    (void)col;
+    float half = s * 0.3f;
+    for (int i = 0; i < 4; ++i) {
+        float t = i / 3.0f;
+        ImVec2 p(c.x - half + t * 2.0f * half, c.y);
+        ImU32 dotCol = IM_COL32(
+            static_cast<int>(76 + t * (214 - 76)), static_cast<int>(134 + t * (90 - 134)),
+            static_cast<int>(214 + t * (76 - 214)), 255);
+        dl->AddCircleFilled(p, s * 0.07f, dotCol);
+    }
+    dl->AddLine(ImVec2(c.x - half, c.y), ImVec2(c.x + half, c.y), IM_COL32(150, 150, 150, 160), 1.2f);
+}
+
 } // namespace
 
 bool IconButton(Id icon, float size, bool active, bool enabled, const char* tooltip) {
@@ -148,6 +220,16 @@ bool IconButton(Id icon, float size, bool active, bool enabled, const char* tool
         case Id::Grid: drawGrid(dl, center, size, iconCol); break;
         case Id::Geometry: drawGeometry(dl, center, size, iconCol); break;
         case Id::Speed: drawSpeed(dl, center, size, iconCol); break;
+        case Id::GizmoObject: drawGizmoObject(dl, center, size, iconCol); break;
+        case Id::GizmoStart: drawGizmoEndpoint(dl, center, size, iconCol, true); break;
+        case Id::GizmoEnd: drawGizmoEndpoint(dl, center, size, iconCol, false); break;
+        case Id::GizmoWhole: drawGizmoWhole(dl, center, size, iconCol); break;
+        case Id::ColorObject: drawColorObject(dl, center, size, iconCol); break;
+        case Id::ColorType: drawColorType(dl, center, size, iconCol); break;
+        case Id::ColorLayer: drawColorLayer(dl, center, size, iconCol); break;
+        case Id::ColorGroup: drawColorGroup(dl, center, size, iconCol); break;
+        case Id::ColorSpeed: drawSpeed(dl, center, size, iconCol); break;
+        case Id::ColorSequence: drawColorSequence(dl, center, size, iconCol); break;
     }
 
     if (tooltip && hovered) {

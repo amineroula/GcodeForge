@@ -17,6 +17,16 @@ enum class Id {
     Grid,
     Geometry, // toggles Lines <-> Geometry render mode
     Speed,
+    GizmoObject,   // move gizmo target: whole object
+    GizmoStart,    // move gizmo target: selected paths' start point
+    GizmoEnd,      // move gizmo target: selected paths' end point
+    GizmoWhole,    // move gizmo target: selected paths, rigidly
+    ColorObject,   // color mode: solid per-object color
+    ColorType,     // color mode: print vs travel
+    ColorLayer,    // color mode: by layer
+    ColorGroup,    // color mode: by selection group
+    ColorSpeed,    // color mode: speed heatmap
+    ColorSequence, // color mode: print order gradient
 };
 
 // Draws a square icon button of `size` px and returns true if clicked

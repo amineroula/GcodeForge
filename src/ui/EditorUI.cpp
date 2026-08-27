@@ -641,13 +641,17 @@ void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, boo
     ImGui::Spacing();
     sectionLabel("Move gizmo");
     GizmoTargetMode& gm = renderSettings.gizmoMode;
-    if (ImGui::RadioButton("Object", gm == GizmoTargetMode::Object)) gm = GizmoTargetMode::Object;
+    if (Icons::IconButton(Icons::Id::GizmoObject, 28.0f, gm == GizmoTargetMode::Object, true, "Object: move the whole object"))
+        gm = GizmoTargetMode::Object;
     ImGui::SameLine();
-    if (ImGui::RadioButton("Start", gm == GizmoTargetMode::Start)) gm = GizmoTargetMode::Start;
+    if (Icons::IconButton(Icons::Id::GizmoStart, 28.0f, gm == GizmoTargetMode::Start, true, "Start: move the selected paths' start point"))
+        gm = GizmoTargetMode::Start;
     ImGui::SameLine();
-    if (ImGui::RadioButton("End", gm == GizmoTargetMode::End)) gm = GizmoTargetMode::End;
+    if (Icons::IconButton(Icons::Id::GizmoEnd, 28.0f, gm == GizmoTargetMode::End, true, "End: move the selected paths' end point"))
+        gm = GizmoTargetMode::End;
     ImGui::SameLine();
-    if (ImGui::RadioButton("Whole", gm == GizmoTargetMode::Whole)) gm = GizmoTargetMode::Whole;
+    if (Icons::IconButton(Icons::Id::GizmoWhole, 28.0f, gm == GizmoTargetMode::Whole, true, "Whole: move the selected paths rigidly"))
+        gm = GizmoTargetMode::Whole;
     ImGui::TextDisabled("Object moves the whole object. Start/End/Whole edit the CURRENT PATH SELECTION directly");
     ImGui::TextDisabled("(with no selection, these fall back to Object mode). Start/End can break connectivity with");
     ImGui::TextDisabled("an unselected neighbor; Whole translates each selected path rigidly, so it never does.");
@@ -1840,15 +1844,20 @@ void EditorUI::drawColorModePanel(ColorMode& colorMode, bool& dirty) {
     sectionLabel("Color mode");
     const ColorMode modes[] = {ColorMode::Object, ColorMode::Type, ColorMode::Layer,
                                 ColorMode::Group, ColorMode::Speed, ColorMode::Sequence};
-    for (ColorMode mode : modes) {
+    const Icons::Id icons[] = {Icons::Id::ColorObject, Icons::Id::ColorType, Icons::Id::ColorLayer,
+                                Icons::Id::ColorGroup, Icons::Id::ColorSpeed, Icons::Id::ColorSequence};
+    for (int i = 0; i < 6; ++i) {
+        ColorMode mode = modes[i];
         bool selected = (colorMode == mode);
-        if (ImGui::RadioButton(colorModeLabel(mode), selected)) {
+        if (i > 0) ImGui::SameLine();
+        if (Icons::IconButton(icons[i], 28.0f, selected, true, colorModeLabel(mode))) {
             if (!selected) {
                 colorMode = mode;
                 dirty = true;
             }
         }
     }
+    ImGui::TextDisabled("%s", colorModeLabel(colorMode));
 }
 
 void EditorUI::drawStatsPanel(const Scene& scene, RenderMode mode, size_t renderedPrimitiveCount) {

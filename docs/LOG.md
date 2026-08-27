@@ -2886,3 +2886,33 @@ confirms "Object & Layers" now shows its title bar and a working
 scrollbar even with Bed Conform added on top, and the launcher-row
 ampersand labels ("Mirror & Link", "Lights & Preview") render as single
 `&` correctly.
+
+## Move gizmo and color mode rows converted to icon buttons
+
+Follow-up to a photo of the "Geometry" window: the "Move gizmo"
+(Object/Start/End/Whole) and "Color mode" (Object/Type/Layer/Group/
+Speed/Print order) radio-button rows read as a wall of text next to the
+new icon toolbar's visual style, so both became icon rows using the same
+`Icons::IconButton()` mechanism as the top toolbar.
+
+Ten new glyphs added to `ui/Icons.h/.cpp`: `GizmoObject` (filled square),
+`GizmoStart`/`GizmoEnd` (a short segment with a filled dot at the moving
+endpoint, open circle at the other), `GizmoWhole` (both ends solid, one
+rigid segment); `ColorObject` (filled circle), `ColorType` (half-filled
+circle), `ColorLayer` (three stacked bars), `ColorGroup` (a three-dot
+cluster), `ColorSpeed` (reuses the existing speedometer glyph),
+`ColorSequence` (a small dot track tinted blue-to-red, mirroring the
+actual print-order color ramp). `drawColorModePanel()` keeps a
+`TextDisabled` line under the row spelling out the current mode's full
+label, since an icon alone doesn't distinguish "Speed" from "Print
+order" as unambiguously as words did.
+
+**Verified**: Debug build succeeds; self-captured screenshots (with
+`windowGeometryOpen_` temporarily forced to `true`, and the Color Mode
+call temporarily reordered above View, purely for this one verification
+pass, both reverted immediately after) confirm all four gizmo icons and
+all six color-mode icons render distinctly with no overlap, and the
+active mode highights in the theme's accent color exactly like the top
+toolbar's Move/Rotate/Geometry buttons. Full clean Release rebuild and
+`parser_smoke_test` (Debug + Release) pass after reverting the temporary
+verification-only changes.
