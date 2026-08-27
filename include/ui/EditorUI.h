@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor/ExportValidation.h"
+#include "editor/Gizmo.h"
 #include "editor/UndoStack.h"
 #include "model/BedHeightmap.h"
 #include <set>
@@ -38,12 +39,31 @@ public:
     // Camera-only changes (view presets, projection toggle) need none of
     // these -- they just affect matrices main.cpp already recomputes every
     // frame.
+    // gizmoMode: read-only, so the toolbar's Move/Rotate icons can show
+    // which one is CURRENTLY active -- main.cpp owns the actual state
+    // (it's read every frame by the gizmo-drag hit-testing code, not
+    // something EditorUI has any reason to own itself); toggling it goes
+    // through moveToolRequested()/rotateToolRequested() below instead.
     void draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSettings& renderSettings,
               BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& bedHeightmap,
-              UndoStack& undoStack, size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty);
+              UndoStack& undoStack, size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty,
+              GizmoInteractionMode gizmoMode);
 
     bool openFileRequested() const { return openFileRequested_; }
     void clearOpenFileRequest() { openFileRequested_ = false; }
+
+    // Toolbar actions that need to reach OUTSIDE EditorUI's own state
+    // (gizmo interaction mode and camera framing both live in main.cpp's
+    // render loop) -- same request-flag pattern as every other
+    // cross-boundary action (openFileRequested_ etc.).
+    bool moveToolRequested() const { return moveToolRequested_; }
+    void clearMoveToolRequest() { moveToolRequested_ = false; }
+    bool rotateToolRequested() const { return rotateToolRequested_; }
+    void clearRotateToolRequest() { rotateToolRequested_ = false; }
+    bool frameAllRequested() const { return frameAllRequested_; }
+    void clearFrameAllRequest() { frameAllRequested_ = false; }
+    bool toggleGridRequested() const { return toggleGridRequested_; }
+    void clearToggleGridRequest() { toggleGridRequested_ = false; }
 
     // "Save SRC As..." opens this dialog instead of saving straight away
     // (editor/ExportValidation.h's individually-runnable checks) --
@@ -154,6 +174,7 @@ private:
     void drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty);
     void drawBedPanel(BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& heightmap,
                        SceneObject* activeObject, bool& bedDirty);
+    void drawLightingPanel(LightingSettings& lightingSettings);
     void drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dirty);
     void drawMultiPartPanel(Scene& scene, UndoStack& undoStack, bool& dirty);
     void drawCommentPanel(SceneObject& object);
@@ -250,6 +271,29 @@ private:
     double zOffsetDeltaMm_ = 0.0;
     int zOffsetModeIndex_ = 0;
     int zOffsetLayerCount_ = 1;
+
+    // Dockable "big button" launcher windows -- see drawToolbar() and
+    // draw()'s window dispatch. Each bool is this window's current
+    // visibility; the launcher row toggles them, and each window's own
+    // titlebar close button also clears its bool (via the `&bool` p_open
+    // parameter every ImGui::Begin already supports).
+    bool windowObjectLayersOpen_ = true;
+    bool windowBedOpen_ = false;
+    bool windowAdvancedSpeedOpen_ = false;
+    bool windowMirrorLinkOpen_ = false;
+    bool windowGeometryOpen_ = false;
+    bool windowLightsPreviewOpen_ = false;
+    bool windowAnimationOpen_ = true;
+    bool firstRunLayoutDone_ = false;
+
+    bool moveToolRequested_ = false;
+    bool rotateToolRequested_ = false;
+    bool frameAllRequested_ = false;
+    bool toggleGridRequested_ = false;
+
+    void drawToolbar(Scene& scene, Camera& camera, RenderSettings& renderSettings, UndoStack& undoStack, bool& sceneDirty,
+                      GizmoInteractionMode gizmoMode);
+    void buildDefaultDockLayout(unsigned int dockspaceId);
 
     // Layer isolation ("solo"): clicking a layer's isolate button adds it
     // to this set and hides every OTHER layer; clicking an already-

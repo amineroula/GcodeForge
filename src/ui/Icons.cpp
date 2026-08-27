@@ -1,0 +1,153 @@
+#include "ui/Icons.h"
+
+#include <imgui.h>
+#include <imgui_internal.h>
+#include <cmath>
+
+namespace Icons {
+
+namespace {
+
+void drawOpen(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    // Folder: a body rect with a small tab on top-left.
+    float w = s * 0.7f, h = s * 0.5f;
+    ImVec2 p0(c.x - w * 0.5f, c.y - h * 0.15f);
+    ImVec2 p1(c.x + w * 0.5f, c.y + h * 0.85f);
+    dl->AddRect(p0, p1, col, 2.0f, 0, 1.6f);
+    ImVec2 t0(p0.x, p0.y - h * 0.35f);
+    ImVec2 t1(p0.x + w * 0.4f, p0.y);
+    dl->AddRect(t0, t1, col, 2.0f, 0, 1.6f);
+}
+
+void drawSave(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    // Floppy disk outline with a notch top-right and a slot near the bottom.
+    float half = s * 0.32f;
+    ImVec2 p0(c.x - half, c.y - half);
+    ImVec2 p1(c.x + half, c.y + half);
+    dl->AddRect(p0, p1, col, 2.0f, 0, 1.6f);
+    dl->AddLine(ImVec2(p1.x - half * 0.7f, p0.y), ImVec2(p1.x, p0.y + half * 0.7f), col, 1.6f);
+    dl->AddRect(ImVec2(c.x - half * 0.5f, p1.y - half * 0.6f), ImVec2(c.x + half * 0.5f, p1.y - half * 0.1f), col, 0.0f, 0, 1.4f);
+}
+
+void drawCurvedArrow(ImDrawList* dl, ImVec2 c, float s, ImU32 col, bool mirrored) {
+    float r = s * 0.32f;
+    float dir = mirrored ? -1.0f : 1.0f;
+    float startAngle = mirrored ? 3.66f : -0.52f;
+    float endAngle = mirrored ? 6.5f : 3.66f;
+    dl->PathArcTo(c, r, startAngle, endAngle, 20);
+    dl->PathStroke(col, 0, 1.8f);
+    ImVec2 tip(c.x + dir * r * 0.95f, c.y - r * 0.25f);
+    ImVec2 a(tip.x - dir * s * 0.16f, tip.y - s * 0.12f);
+    ImVec2 b(tip.x - dir * s * 0.02f, tip.y + s * 0.14f);
+    dl->AddTriangleFilled(tip, a, b, col);
+}
+
+void drawMove(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    // 4-way cross with arrowheads, like a real move-gizmo glyph.
+    float r = s * 0.36f;
+    float head = s * 0.1f;
+    const ImVec2 dirs[4] = {ImVec2(1, 0), ImVec2(-1, 0), ImVec2(0, 1), ImVec2(0, -1)};
+    for (const auto& d : dirs) {
+        ImVec2 tip(c.x + d.x * r, c.y + d.y * r);
+        dl->AddLine(c, tip, col, 1.6f);
+        ImVec2 perp(-d.y, d.x);
+        ImVec2 a(tip.x - d.x * head + perp.x * head * 0.6f, tip.y - d.y * head + perp.y * head * 0.6f);
+        ImVec2 b(tip.x - d.x * head - perp.x * head * 0.6f, tip.y - d.y * head - perp.y * head * 0.6f);
+        dl->AddTriangleFilled(tip, a, b, col);
+    }
+}
+
+void drawRotate(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    float r = s * 0.32f;
+    dl->PathArcTo(c, r, -2.5f, 2.0f, 24);
+    dl->PathStroke(col, 0, 1.8f);
+    ImVec2 tip(c.x + r * std::cos(2.0f), c.y + r * std::sin(2.0f));
+    ImVec2 tangent(-std::sin(2.0f), std::cos(2.0f));
+    ImVec2 a(tip.x + tangent.x * s * 0.14f - std::cos(2.0f) * s * 0.05f, tip.y + tangent.y * s * 0.14f - std::sin(2.0f) * s * 0.05f);
+    ImVec2 b(tip.x - tangent.x * s * 0.14f - std::cos(2.0f) * s * 0.05f, tip.y - tangent.y * s * 0.14f - std::sin(2.0f) * s * 0.05f);
+    dl->AddTriangleFilled(tip, a, b, col);
+}
+
+void drawFrameAll(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    // Four corner brackets, like a camera-frame/crop icon.
+    float half = s * 0.32f;
+    float len = s * 0.16f;
+    ImVec2 corners[4] = {ImVec2(-half, -half), ImVec2(half, -half), ImVec2(-half, half), ImVec2(half, half)};
+    for (int i = 0; i < 4; ++i) {
+        ImVec2 corner(c.x + corners[i].x, c.y + corners[i].y);
+        float sx = (corners[i].x < 0) ? 1.0f : -1.0f;
+        float sy = (corners[i].y < 0) ? 1.0f : -1.0f;
+        dl->AddLine(corner, ImVec2(corner.x + sx * len, corner.y), col, 1.8f);
+        dl->AddLine(corner, ImVec2(corner.x, corner.y + sy * len), col, 1.8f);
+    }
+}
+
+void drawGrid(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    float half = s * 0.3f;
+    ImVec2 p0(c.x - half, c.y - half);
+    ImVec2 p1(c.x + half, c.y + half);
+    dl->AddRect(p0, p1, col, 0.0f, 0, 1.4f);
+    dl->AddLine(ImVec2(c.x, p0.y), ImVec2(c.x, p1.y), col, 1.2f);
+    dl->AddLine(ImVec2(p0.x, c.y), ImVec2(p1.x, c.y), col, 1.2f);
+}
+
+void drawGeometry(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    // Filled triangle -- "solid geometry" vs the Lines glyph's outline.
+    float r = s * 0.34f;
+    ImVec2 p0(c.x, c.y - r);
+    ImVec2 p1(c.x - r * 0.87f, c.y + r * 0.5f);
+    ImVec2 p2(c.x + r * 0.87f, c.y + r * 0.5f);
+    dl->AddTriangleFilled(p0, p1, p2, col);
+}
+
+void drawSpeed(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
+    // Speedometer: an arc with a needle.
+    float r = s * 0.32f;
+    dl->PathArcTo(c, r, 3.4f, 6.0f, 20);
+    dl->PathStroke(col, 0, 1.8f);
+    ImVec2 needleTip(c.x + r * 0.8f * std::cos(4.9f), c.y + r * 0.8f * std::sin(4.9f));
+    dl->AddLine(c, needleTip, col, 1.8f);
+    dl->AddCircleFilled(c, 1.8f, col);
+}
+
+} // namespace
+
+bool IconButton(Id icon, float size, bool active, bool enabled, const char* tooltip) {
+    ImGui::BeginDisabled(!enabled);
+    ImVec2 cursor = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::InvisibleButton("##icon", ImVec2(size, size));
+    bool hovered = ImGui::IsItemHovered();
+    ImGui::EndDisabled();
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImGuiStyle& style = ImGui::GetStyle();
+    ImU32 bgCol = active ? ImGui::GetColorU32(ImGuiCol_ButtonActive)
+                          : hovered ? ImGui::GetColorU32(ImGuiCol_ButtonHovered) : ImGui::GetColorU32(ImGuiCol_Button);
+    dl->AddRectFilled(cursor, ImVec2(cursor.x + size, cursor.y + size), bgCol, style.FrameRounding);
+
+    ImVec4 iconColorVec = enabled ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+    ImU32 iconCol = ImGui::GetColorU32(iconColorVec);
+    ImVec2 center(cursor.x + size * 0.5f, cursor.y + size * 0.5f);
+
+    switch (icon) {
+        case Id::Open: drawOpen(dl, center, size, iconCol); break;
+        case Id::Save: drawSave(dl, center, size, iconCol); break;
+        case Id::Undo: drawCurvedArrow(dl, center, size, iconCol, false); break;
+        case Id::Redo: drawCurvedArrow(dl, center, size, iconCol, true); break;
+        case Id::Move: drawMove(dl, center, size, iconCol); break;
+        case Id::Rotate: drawRotate(dl, center, size, iconCol); break;
+        case Id::FrameAll: drawFrameAll(dl, center, size, iconCol); break;
+        case Id::Grid: drawGrid(dl, center, size, iconCol); break;
+        case Id::Geometry: drawGeometry(dl, center, size, iconCol); break;
+        case Id::Speed: drawSpeed(dl, center, size, iconCol); break;
+    }
+
+    if (tooltip && hovered) {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(tooltip);
+        ImGui::EndTooltip();
+    }
+    return clicked && enabled;
+}
+
+} // namespace Icons

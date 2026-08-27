@@ -35,11 +35,17 @@ set(glew-cmake_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(ONLY_LIBS ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(glew)
 
-# Dear ImGui — editor UI
+# Dear ImGui — editor UI. Pinned to the `docking` branch (not a tagged
+# release off master, which has no docking support at all) so panels can
+# be dragged/docked/rearranged. Pinned to a resolved commit SHA rather
+# than the branch name itself for reproducible builds -- `docking` is
+# continuously rebased from master by ocornut, so pinning the branch name
+# would silently pick up a different commit on every clean _deps wipe.
+# Resolved 2026-08-27 via `git ls-remote https://github.com/ocornut/imgui.git docking`.
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG v1.91.1
+    GIT_TAG fd13a1e8923a0a7077b404fc36fd063b25a0c0b5
 )
 FetchContent_MakeAvailable(imgui)
 add_library(imgui STATIC

@@ -66,6 +66,8 @@
 #include "render/SceneRenderer.h"
 #include "render/SelectionHighlightRenderer.h"
 #include "ui/EditorUI.h"
+#include "ui/ScreenCapture.h"
+#include "ui/Theme.h"
 #include "ui/FileDialog.h"
 
 namespace {
@@ -244,7 +246,11 @@ int main() {
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGui::StyleColorsDark();
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+    applyGcodeForgeTheme();
 
     // The default ImGui font (a small bitmap font baked for debug tools)
     // is a big part of why a plain ImGui app "looks weak" -- swap in a
@@ -252,23 +258,9 @@ int main() {
     // this is safe to hardcode for a Windows-only app; AddFontFromFileTTF
     // returns nullptr (not a crash) if the path is ever wrong, so the
     // fallback to ImGui's built-in font still works if something's off.
-    ImGuiIO& io = ImGui::GetIO();
     ImFont* regularFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17.0f);
     ImFont* boldFont = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeuib.ttf", 18.0f);
     if (!regularFont) io.Fonts->AddFontDefault();
-
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 6.0f;
-    style.ChildRounding = 6.0f;
-    style.FrameRounding = 4.0f;
-    style.GrabRounding = 4.0f;
-    style.PopupRounding = 4.0f;
-    style.ScrollbarRounding = 6.0f;
-    style.WindowPadding = ImVec2(10.0f, 10.0f);
-    style.FramePadding = ImVec2(6.0f, 4.0f);
-    style.ItemSpacing = ImVec2(8.0f, 6.0f);
-    style.ScrollbarSize = 14.0f;
-    style.WindowTitleAlign = ImVec2(0.02f, 0.5f);
 
     ImGui_ImplGlfw_InitForOpenGL(window, false); // false: we install and forward callbacks ourselves, see the note above onScroll
     ImGui_ImplOpenGL3_Init("#version 330");
@@ -794,6 +786,13 @@ int main() {
     Transform gizmoRotateDragStartTransform; // Object mode only
     std::vector<PathDragSnapshot> gizmoRotateDragPathSnapshots; // Start/End/Whole only
 
+    // Headless self-verification hook: when set, dumps a screenshot after
+    // a few frames (letting ImGui/docking layout settle) and exits --
+    // lets a UI change be checked without a human launching the app and
+    // taking a screenshot by hand. See ui/ScreenCapture.h.
+    const char* screenshotPath = std::getenv("GCODEFORGE_SCREENSHOT_FILE");
+    int screenshotFrameCounter = 0;
+
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
@@ -809,7 +808,26 @@ int main() {
         bool selectionDirty = false;
         bool bedDirty = false;
         editorUi.draw(scene, colorMode, camera, renderSettings, bedSettings, lightingSettings, bedHeightmap, undoStack,
-                      renderedPrimitiveCount, sceneDirty, selectionDirty, bedDirty);
+                      renderedPrimitiveCount, sceneDirty, selectionDirty, bedDirty, gizmoInteractionMode);
+
+        if (editorUi.moveToolRequested()) {
+            editorUi.clearMoveToolRequest();
+            gizmoInteractionMode = GizmoInteractionMode::Move;
+        }
+        if (editorUi.rotateToolRequested()) {
+            editorUi.clearRotateToolRequest();
+            gizmoInteractionMode = GizmoInteractionMode::Rotate;
+        }
+        if (editorUi.toggleGridRequested()) {
+            editorUi.clearToggleGridRequest();
+            g_showGrid = !g_showGrid;
+        }
+        if (editorUi.frameAllRequested()) {
+            editorUi.clearFrameAllRequest();
+            if (auto bounds = computeFrameBounds(scene, /*preferSelection=*/true)) {
+                camera.frameBounds(bounds->center, bounds->radius);
+            }
+        }
 
         if (editorUi.openFileRequested()) {
             editorUi.clearOpenFileRequest();
@@ -1436,6 +1454,17 @@ int main() {
 
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        if (screenshotPath) {
+            ++screenshotFrameCounter;
+            if (screenshotFrameCounter == 5) {
+                int shotWidth = 0, shotHeight = 0;
+                glfwGetFramebufferSize(window, &shotWidth, &shotHeight);
+                bool ok = writeScreenshotBmp(screenshotPath, shotWidth, shotHeight);
+                std::printf("GCODEFORGE_SCREENSHOT_FILE: %s -> %s\n", screenshotPath, ok ? "written" : "FAILED");
+                glfwSetWindowShouldClose(window, true);
+            }
+        }
 
         glfwSwapBuffers(window);
     }

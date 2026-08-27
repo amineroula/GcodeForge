@@ -2728,3 +2728,82 @@ pattern), so it survives a project save even before ever being exported.
 re-exporting a re-parsed object writes the block exactly once, not
 doubled), deletion actually removing the block, and project-file
 round-trip. 494 tests total, Debug and Release clean.
+
+## UI overhaul: real docking, icon toolbar, 7 dockable windows, new theme
+
+Real request, in one message: "the speed tools should be on the top as a
+floating tool palette with icons... the other tool should be big buttons
+that can be pressed and the window will appear, object layers, bed
+options, advanced speed option. Mirroring, linking. Geometry options,
+lights and preview options. Animation also should get its own window,
+everything is dokable... make a different ui style." Resumes and
+completes the UI overhaul planned (and paused for an urgent bug) earlier
+this session.
+
+**ImGui docking migration** (`CMakeLists.txt`): the vendored ImGui was a
+tagged release off `master` (`v1.91.1`), which has no docking support at
+all -- bumped `GIT_TAG` to a SHA-pinned commit off ImGui's separate
+`docking` branch (resolved via `git ls-remote`, pinned to the exact
+commit rather than the branch name for reproducible builds, since
+`docking` is continuously rebased). One real API break surfaced:
+`ImGuiChildFlags_Border` was renamed to `ImGuiChildFlags_Borders`
+(plural) on this branch -- fixed at both call sites.
+`io.ConfigFlags |= ImGuiConfigFlags_DockingEnable` turns it on.
+
+**New theme** (`ui/Theme.h/.cpp`): a neutral charcoal palette with one
+muted-blue accent used consistently for anything on/active/draggable
+(buttons, checkmarks, active tabs, docking preview), replacing
+`ImGui::StyleColorsDark()` -- in the spirit of Blender/Fusion 360 rather
+than ImGui's generic dark default. Deliberately leaves the semantic
+severity colors (Export dialog's critical/warning red/amber,
+`PathColorizer`'s speed heatmap) untouched -- those are data, not chrome.
+
+**Icon toolbar** (`ui/Icons.h/.cpp`): 10 self-contained vector icons
+(Open, Save, Undo, Redo, Move, Rotate, Frame All, Grid toggle,
+Lines/Geometry render-mode toggle, a shortcut into Advanced Speed) drawn
+with plain `ImDrawList` primitives -- no icon font, no image asset, no
+new dependency. `IconButton()` shows an "active" state (accent-colored
+background) for the current gizmo mode and render mode, so the toolbar
+doubles as a status readout, not just triggers. Cross-boundary actions
+(gizmo mode lives in `main.cpp`'s render loop, not `EditorUI`) go through
+the same request-flag pattern as every other toolbar action
+(`moveToolRequested()`, `frameAllRequested()`, etc.).
+
+**Seven dockable windows**, replacing the old two-window/four-tab
+catch-all layout (Editor: View/Scene/Object/Animate tabs, plus a
+separate Bed window): "Object & Layers" (object list, cell template,
+comment, transform, layer table, selection groups), "Bed", "Advanced
+Speed", "Mirror & Link", "Geometry" (view/display settings, color mode,
+bed conform, stats), "Lights & Preview" (lighting, newly extracted out of
+`drawBedPanel` into its own `drawLightingPanel()` -- self-contained,
+touched only `lighting`), and "Animation". A second toolbar row of big
+launcher buttons toggles each one; `buildDefaultDockLayout()` (ImGui's
+`DockBuilder*` API) pre-assigns all seven to sensible regions (left:
+Object & Layers; right, tabbed together: the five less-constantly-needed
+ones; bottom: Animation) on first run only, so opening a window later via
+its launcher button lands it in a sensible spot instead of floating
+wherever ImGui defaults to. Every existing panel-drawing function's BODY
+is unchanged -- this is pure re-plumbing of which window each is called
+from.
+
+**Self-verification** (`ui/ScreenCapture.h/.cpp`): a hand-rolled 24bpp
+BMP writer (`glReadPixels` + a raw BITMAPFILEHEADER/BITMAPINFOHEADER, no
+PNG/stb_image_write dependency) wired to a new `GCODEFORGE_SCREENSHOT_FILE`
+env var (`main.cpp`, parallel to the existing `GCODEFORGE_TEST_FILE`
+diagnostic) -- dumps a screenshot after 5 frames (letting the dock layout
+settle) and exits, so a UI change like this one can be visually checked
+without a human launching the app by hand. Used to verify this exact
+change: docking works, the theme is consistent (accent color on active
+tab/title bar/checkboxes/move-tool), icons render distinctly, and the
+launcher row's labels are legible.
+
+**Verified**: full clean rebuild (Debug and Release, `--clean-first`, to
+catch the same glob-cache staleness that bit `ScreenCapture.cpp`
+mid-session) succeeds and links; 494 tests pass unchanged (pure
+presentation-layer change, touches nothing tested by the logic suite);
+self-captured screenshots confirm the toolbar, launcher row, docked
+"Object & Layers" window, and theme all render correctly. NOT verified
+by this session: actually dragging a window to a new dock location, or
+clicking each of the other 6 launcher buttons interactively -- that needs
+the user's own hands-on click-through, which a screenshot-after-5-frames
+diagnostic can't substitute for.

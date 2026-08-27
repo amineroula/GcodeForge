@@ -11,8 +11,10 @@
 #include "editor/SpeedEditing.h"
 #include "editor/SrcExporter.h"
 #include "editor/Visibility.h"
+#include "ui/Icons.h"
 
 #include <imgui.h>
+#include <imgui_internal.h> // DockBuilder* -- only used by buildDefaultDockLayout()
 #include <algorithm>
 #include <cstdio>
 
@@ -51,83 +53,198 @@ void EditorUI::sectionLabel(const char* text) {
 
 void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSettings& renderSettings,
                      BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& bedHeightmap,
-                     UndoStack& undoStack, size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty) {
+                     UndoStack& undoStack, size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty,
+                     GizmoInteractionMode gizmoMode) {
     drawMenuBar(scene, undoStack, sceneDirty);
+    drawToolbar(scene, camera, renderSettings, undoStack, sceneDirty, gizmoMode);
     drawStatusBar();
     drawExportDialog(scene); // must run even if panels are hidden -- it's a decision the user has to make
 
-    // Panels collapsed: skip both floating windows entirely, leaving an
-    // unobstructed view of the viewport. The menu bar and status bar stay
-    // visible either way -- the toggle button lives in the menu bar, so
-    // it's always reachable to bring the panels back, and the hover
-    // readout is most useful precisely when the panels are out of the way.
+    // Panels collapsed: skip the dockspace and every window entirely,
+    // leaving an unobstructed view of the viewport. The menu bar, toolbar,
+    // and status bar stay visible either way -- the toggle button lives
+    // in the menu bar, so it's always reachable to bring the panels back.
     if (!panelsVisible_) return;
 
-    ImGui::SetNextWindowPos(ImVec2(12, 32), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(380, 680), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Editor");
-
-    // Three tabs instead of one long scroll. The panel had grown to ten
-    // stacked sections -- View, Objects, Mirror, Transform, Layers, Layer
-    // actions, Groups, Speed, Bed Conform, Colour, Stats -- which is how
-    // a whole feature ("Mirror the object") ended up invisible: it was
-    // just another collapsed bar somewhere in the middle. Grouping by
-    // WHAT YOU'RE ACTING ON (the view / the whole scene / the selected
-    // object) means each tab is short enough to take in at a glance.
     SceneObject* active = scene.activeObject();
-    if (ImGui::BeginTabBar("editorTabs")) {
 
-        if (ImGui::BeginTabItem("View")) {
-            drawViewPanel(camera, renderSettings, sceneDirty);
-            ImGui::Separator();
-            drawColorModePanel(colorMode, sceneDirty);
-            ImGui::Separator();
-            drawStatsPanel(scene, renderSettings.mode, renderedPrimitiveCount);
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Scene")) {
-            drawObjectListPanel(scene, undoStack, sceneDirty);
-            drawMultiPartPanel(scene, undoStack, sceneDirty);
-            ImGui::EndTabItem();
-        }
-
-        // Labelled with the active object's name rather than a generic
-        // "Object", so it's obvious WHICH object these controls edit --
-        // with several mirrored copies in the list that stops being
-        // guessable.
-        std::string objectTabLabel = active ? ("Object: " + active->name + "###objtab")
-                                            : std::string("Object###objtab");
-        if (ImGui::BeginTabItem(objectTabLabel.c_str())) {
-            if (active) {
-                drawCellTemplatePanel(scene, *active, bedSettings, undoStack, sceneDirty);
-                drawCommentPanel(*active);
-                drawTransformPanel(scene, *active, undoStack, sceneDirty);
-                drawLayerTablePanel(scene, *active, undoStack, sceneDirty, selectionDirty);
-                drawSelectionGroupPanel(scene, *active, undoStack, sceneDirty, selectionDirty);
-                drawSpeedPanel(scene, *active, undoStack, sceneDirty);
-                drawBedConformPanel(scene, *active, bedHeightmap, bedSettings, undoStack, sceneDirty);
-            } else {
-                ImGui::TextDisabled("No object loaded. File > Open to load a .src file.");
-            }
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Animate")) {
-            drawAnimationPanel();
-            ImGui::EndTabItem();
-        }
-
-        ImGui::EndTabBar();
+    // A full-viewport passthrough dockspace: draws no chrome of its own,
+    // just the invisible root every real window below docks into. The
+    // 3D scene renders through the middle untouched (PassthruCentralNode)
+    // wherever no window currently covers it.
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::DockSpaceOverViewport(dockspaceId, viewport, ImGuiDockNodeFlags_PassthruCentralNode);
+    if (!firstRunLayoutDone_) {
+        buildDefaultDockLayout(dockspaceId);
+        firstRunLayoutDone_ = true;
     }
 
-    ImGui::End();
+    // Seven dockable "big button" windows (see drawToolbar()'s launcher
+    // row) instead of the old two tabbed catch-all windows -- each one
+    // reachable, movable, and closable independently, per real request
+    // ("the other tool should be big buttons that can be pressed and the
+    // window will appear... everything is dockable").
+    if (windowObjectLayersOpen_ && ImGui::Begin("Object & Layers", &windowObjectLayersOpen_)) {
+        drawObjectListPanel(scene, undoStack, sceneDirty);
+        if (active) {
+            drawCellTemplatePanel(scene, *active, bedSettings, undoStack, sceneDirty);
+            drawCommentPanel(*active);
+            drawTransformPanel(scene, *active, undoStack, sceneDirty);
+            drawLayerTablePanel(scene, *active, undoStack, sceneDirty, selectionDirty);
+            drawSelectionGroupPanel(scene, *active, undoStack, sceneDirty, selectionDirty);
+        } else {
+            ImGui::TextDisabled("No object loaded. File > Open to load a .src file.");
+        }
+    }
+    if (windowObjectLayersOpen_) ImGui::End();
 
-    float displayWidth = ImGui::GetIO().DisplaySize.x;
-    ImGui::SetNextWindowPos(ImVec2(displayWidth - 332, 32), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(320, 320), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Bed");
-    drawBedPanel(bedSettings, lightingSettings, bedHeightmap, active, bedDirty);
+    if (windowBedOpen_ && ImGui::Begin("Bed", &windowBedOpen_)) {
+        drawBedPanel(bedSettings, lightingSettings, bedHeightmap, active, bedDirty);
+    }
+    if (windowBedOpen_) ImGui::End();
+
+    if (windowAdvancedSpeedOpen_ && ImGui::Begin("Advanced Speed", &windowAdvancedSpeedOpen_)) {
+        if (active) drawSpeedPanel(scene, *active, undoStack, sceneDirty);
+        else ImGui::TextDisabled("No object loaded.");
+    }
+    if (windowAdvancedSpeedOpen_) ImGui::End();
+
+    if (windowMirrorLinkOpen_ && ImGui::Begin("Mirror & Link", &windowMirrorLinkOpen_)) {
+        drawMultiPartPanel(scene, undoStack, sceneDirty);
+    }
+    if (windowMirrorLinkOpen_) ImGui::End();
+
+    if (windowGeometryOpen_ && ImGui::Begin("Geometry", &windowGeometryOpen_)) {
+        drawViewPanel(camera, renderSettings, sceneDirty);
+        ImGui::Separator();
+        drawColorModePanel(colorMode, sceneDirty);
+        if (active) {
+            ImGui::Separator();
+            drawBedConformPanel(scene, *active, bedHeightmap, bedSettings, undoStack, sceneDirty);
+        }
+        ImGui::Separator();
+        drawStatsPanel(scene, renderSettings.mode, renderedPrimitiveCount);
+    }
+    if (windowGeometryOpen_) ImGui::End();
+
+    if (windowLightsPreviewOpen_ && ImGui::Begin("Lights & Preview", &windowLightsPreviewOpen_)) {
+        drawLightingPanel(lightingSettings);
+    }
+    if (windowLightsPreviewOpen_) ImGui::End();
+
+    if (windowAnimationOpen_ && ImGui::Begin("Animation", &windowAnimationOpen_)) {
+        drawAnimationPanel();
+    }
+    if (windowAnimationOpen_) ImGui::End();
+}
+
+void EditorUI::buildDefaultDockLayout(unsigned int dockspaceIdRaw) {
+    ImGuiID dockspaceId = static_cast<ImGuiID>(dockspaceIdRaw);
+    ImGui::DockBuilderRemoveNode(dockspaceId);
+    ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_PassthruCentralNode);
+    ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->Size);
+
+    ImGuiID centerId = dockspaceId;
+    ImGuiID leftId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Left, 0.22f, nullptr, &centerId);
+    ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.28f, nullptr, &centerId);
+    ImGuiID bottomId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.28f, nullptr, &centerId);
+
+    ImGui::DockBuilderDockWindow("Object & Layers", leftId);
+    // Five windows land as TABS in the same right-side node rather than
+    // each getting their own slice -- they're rarely all needed
+    // simultaneously (Bed setup vs. speed tuning vs. mirroring are
+    // different phases of the same job), and tabbing keeps the initial
+    // layout from being sliced into unusably thin columns.
+    ImGui::DockBuilderDockWindow("Bed", rightId);
+    ImGui::DockBuilderDockWindow("Advanced Speed", rightId);
+    ImGui::DockBuilderDockWindow("Mirror & Link", rightId);
+    ImGui::DockBuilderDockWindow("Geometry", rightId);
+    ImGui::DockBuilderDockWindow("Lights & Preview", rightId);
+    ImGui::DockBuilderDockWindow("Animation", bottomId);
+    ImGui::DockBuilderFinish(dockspaceId);
+}
+
+// Icon row (Open/Save/Undo/Redo/Move/Rotate/FrameAll/Grid/Geometry/Speed)
+// plus a second row of big launcher buttons that toggle each dockable
+// window from drawToolbar()'s call site above. A thin, fixed,
+// non-dockable strip pinned under the menu bar -- same positioning
+// technique drawStatusBar() already uses at the bottom of the screen.
+void EditorUI::drawToolbar(Scene& scene, Camera& camera, RenderSettings& renderSettings, UndoStack& undoStack,
+                            bool& sceneDirty, GizmoInteractionMode gizmoMode) {
+    (void)camera;
+    ImGuiIO& io = ImGui::GetIO();
+    float menuBarHeight = ImGui::GetFrameHeight();
+    const float kToolbarHeight = 78.0f;
+    ImGui::SetNextWindowPos(ImVec2(0.0f, menuBarHeight));
+    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, kToolbarHeight));
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                              ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoNav;
+    ImGui::Begin("##toolbar", nullptr, flags);
+
+    const float kIconSize = 30.0f;
+    bool hasActive = scene.activeObject() != nullptr;
+
+    if (Icons::IconButton(Icons::Id::Open, kIconSize, false, true, "Open SRC / G-code...")) openFileRequested_ = true;
+    ImGui::SameLine();
+    if (Icons::IconButton(Icons::Id::Save, kIconSize, false, hasActive, "Save SRC As...")) {
+        exportDialogOpen_ = true;
+        exportCheckOutcomes_.clear();
+    }
+    ImGui::SameLine();
+    ImGui::Dummy(ImVec2(12.0f, 0.0f));
+    ImGui::SameLine();
+    if (Icons::IconButton(Icons::Id::Undo, kIconSize, false, undoStack.canUndo(), "Undo (Ctrl+Z)")) {
+        undoStack.undo(scene);
+        sceneDirty = true;
+    }
+    ImGui::SameLine();
+    if (Icons::IconButton(Icons::Id::Redo, kIconSize, false, undoStack.canRedo(), "Redo (Ctrl+Y)")) {
+        undoStack.redo(scene);
+        sceneDirty = true;
+    }
+    ImGui::SameLine();
+    ImGui::Dummy(ImVec2(12.0f, 0.0f));
+    ImGui::SameLine();
+    if (Icons::IconButton(Icons::Id::Move, kIconSize, gizmoMode == GizmoInteractionMode::Move, true, "Move tool"))
+        moveToolRequested_ = true;
+    ImGui::SameLine();
+    if (Icons::IconButton(Icons::Id::Rotate, kIconSize, gizmoMode == GizmoInteractionMode::Rotate, true, "Rotate tool (R)"))
+        rotateToolRequested_ = true;
+    ImGui::SameLine();
+    ImGui::Dummy(ImVec2(12.0f, 0.0f));
+    ImGui::SameLine();
+    if (Icons::IconButton(Icons::Id::FrameAll, kIconSize, false, true, "Frame all (F)")) frameAllRequested_ = true;
+    ImGui::SameLine();
+    if (Icons::IconButton(Icons::Id::Grid, kIconSize, false, true, "Toggle grid (G)")) toggleGridRequested_ = true;
+    ImGui::SameLine();
+    bool geometryModeOn = renderSettings.mode == RenderMode::Geometry;
+    if (Icons::IconButton(Icons::Id::Geometry, kIconSize, geometryModeOn, true, "Toggle Lines / Geometry render mode")) {
+        renderSettings.mode = geometryModeOn ? RenderMode::Lines : RenderMode::Geometry;
+        sceneDirty = true;
+    }
+    ImGui::SameLine();
+    ImGui::Dummy(ImVec2(12.0f, 0.0f));
+    ImGui::SameLine();
+    if (Icons::IconButton(Icons::Id::Speed, kIconSize, windowAdvancedSpeedOpen_, true, "Advanced speed options"))
+        windowAdvancedSpeedOpen_ = !windowAdvancedSpeedOpen_;
+
+    // Second row: big launcher buttons, one per dockable window.
+    auto launcher = [&](const char* label, bool* openFlag) {
+        if (ImGui::Button(label, ImVec2(0.0f, 30.0f))) *openFlag = !*openFlag;
+        ImGui::SameLine();
+    };
+    launcher("Object & Layers", &windowObjectLayersOpen_);
+    launcher("Bed", &windowBedOpen_);
+    launcher("Advanced Speed", &windowAdvancedSpeedOpen_);
+    launcher("Mirror & Link", &windowMirrorLinkOpen_);
+    launcher("Geometry", &windowGeometryOpen_);
+    launcher("Lights & Preview", &windowLightsPreviewOpen_);
+    if (ImGui::Button("Animation", ImVec2(0.0f, 30.0f))) windowAnimationOpen_ = !windowAnimationOpen_;
+
     ImGui::End();
 }
 
@@ -320,7 +437,7 @@ void EditorUI::drawExportDialog(Scene& scene) {
     }
     if (!allRun) ImGui::TextDisabled("Not every check has been run yet.");
 
-    ImGui::BeginChild("##exportReportList", ImVec2(0, 180), ImGuiChildFlags_Border);
+    ImGui::BeginChild("##exportReportList", ImVec2(0, 180), ImGuiChildFlags_Borders);
     for (size_t i = 0; i < checks.size(); ++i) {
         if (!exportCheckOutcomes_[i].run) continue;
         for (const auto& issue : exportCheckOutcomes_[i].issues) {
@@ -533,8 +650,68 @@ void EditorUI::drawViewPanel(Camera& camera, RenderSettings& renderSettings, boo
     ImGui::TextDisabled("rotation always spins around the same Object/Start/End/Whole target set above.");
 }
 
+// Extracted out of drawBedPanel (see its own "Lights & Preview" dockable
+// window) -- self-contained, touches only `lighting`. Affects only
+// Geometry-mode shading (a per-frame shader uniform, not baked into any
+// mesh) -- no dirty flag needed, the next frame's draw call just picks
+// up the new values directly.
+void EditorUI::drawLightingPanel(LightingSettings& lighting) {
+    sectionLabel("Environment / Lighting");
+    ImGui::TextDisabled("Affects Geometry view mode shading only.");
+
+    if (ImGui::Button("Three-point lighting preset")) {
+        // Classic film/photography three-point setup: a bright key light
+        // from one upper-front side, a dimmer fill from the other side to
+        // soften the key's shadows without erasing them, and a subtle rim
+        // light from behind to separate the geometry from the background.
+        lighting.lights = {
+            Light{glm::vec3(0.5f, -0.6f, 0.8f), glm::vec3(1.0f, 1.0f, 1.0f), true},   // key
+            Light{glm::vec3(-0.6f, -0.3f, 0.4f), glm::vec3(0.5f, 0.55f, 0.6f), true}, // fill
+            Light{glm::vec3(0.0f, 0.9f, 0.3f), glm::vec3(0.4f, 0.35f, 0.3f), true},   // rim/back
+        };
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(key + fill + rim)");
+
+    int lightToRemove = -1;
+    for (size_t i = 0; i < lighting.lights.size(); ++i) {
+        Light& light = lighting.lights[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::Separator();
+        ImGui::Checkbox("Enabled", &light.enabled);
+        ImGui::SameLine();
+        ImGui::Text("Light %d", static_cast<int>(i + 1));
+        ImGui::SameLine(ImGui::GetWindowWidth() - 60.0f);
+        bool canRemove = lighting.lights.size() > 1;
+        ImGui::BeginDisabled(!canRemove);
+        if (ImGui::SmallButton("Remove")) lightToRemove = static_cast<int>(i);
+        ImGui::EndDisabled();
+
+        float dir[3] = {light.direction.x, light.direction.y, light.direction.z};
+        if (ImGui::SliderFloat3("Direction", dir, -1.0f, 1.0f)) {
+            light.direction = glm::vec3(dir[0], dir[1], dir[2]);
+        }
+        float color[3] = {light.color.r, light.color.g, light.color.b};
+        if (ImGui::ColorEdit3("Color", color)) {
+            light.color = glm::vec3(color[0], color[1], color[2]);
+        }
+        ImGui::PopID();
+    }
+    if (lightToRemove >= 0) {
+        lighting.lights.erase(lighting.lights.begin() + lightToRemove);
+    }
+
+    ImGui::Spacing();
+    ImGui::BeginDisabled(static_cast<int>(lighting.lights.size()) >= LightingSettings::kMaxLights);
+    if (ImGui::Button("Add Light")) {
+        lighting.lights.push_back(Light{});
+    }
+    ImGui::EndDisabled();
+}
+
 void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHeightmap& heightmap,
                              SceneObject* activeObject, bool& bedDirty) {
+    (void)lighting; // lighting controls now live in their own "Lights & Preview" window (drawLightingPanel)
     sectionLabel("Bed size");
     if (ImGui::InputFloat("Width (mm)", &bed.widthMm, 10.0f, 100.0f, "%.0f")) { bed.widthMm = std::max(bed.widthMm, 10.0f); bedDirty = true; }
     if (ImGui::InputFloat("Depth (mm)", &bed.depthMm, 10.0f, 100.0f, "%.0f")) { bed.depthMm = std::max(bed.depthMm, 10.0f); bedDirty = true; }
@@ -634,63 +811,6 @@ void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHei
     ImGui::SameLine();
     if (ImGui::Button("Load Bed...")) loadBedRequested_ = true;
     ImGui::TextDisabled("Bed file stores size, origin, grid, heightmap, the safe point, and the cell template.");
-
-    // Lighting affects only Geometry-mode shading (a per-frame shader
-    // uniform, not baked into any mesh) -- no bedDirty/sceneDirty needed,
-    // the next frame's draw call just picks up the new values directly.
-    ImGui::Spacing();
-    ImGui::Spacing();
-    sectionLabel("Environment / Lighting");
-    ImGui::TextDisabled("Affects Geometry view mode shading only.");
-
-    if (ImGui::Button("Three-point lighting preset")) {
-        // Classic film/photography three-point setup: a bright key light
-        // from one upper-front side, a dimmer fill from the other side to
-        // soften the key's shadows without erasing them, and a subtle rim
-        // light from behind to separate the geometry from the background.
-        lighting.lights = {
-            Light{glm::vec3(0.5f, -0.6f, 0.8f), glm::vec3(1.0f, 1.0f, 1.0f), true},   // key
-            Light{glm::vec3(-0.6f, -0.3f, 0.4f), glm::vec3(0.5f, 0.55f, 0.6f), true}, // fill
-            Light{glm::vec3(0.0f, 0.9f, 0.3f), glm::vec3(0.4f, 0.35f, 0.3f), true},   // rim/back
-        };
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("(key + fill + rim)");
-
-    int lightToRemove = -1;
-    for (size_t i = 0; i < lighting.lights.size(); ++i) {
-        Light& light = lighting.lights[i];
-        ImGui::PushID(static_cast<int>(i));
-        ImGui::Separator();
-        ImGui::Checkbox("Enabled", &light.enabled);
-        ImGui::SameLine();
-        ImGui::Text("Light %d", static_cast<int>(i + 1));
-        ImGui::SameLine(ImGui::GetWindowWidth() - 60.0f);
-        bool canRemove = lighting.lights.size() > 1;
-        ImGui::BeginDisabled(!canRemove);
-        if (ImGui::SmallButton("Remove")) lightToRemove = static_cast<int>(i);
-        ImGui::EndDisabled();
-
-        float dir[3] = {light.direction.x, light.direction.y, light.direction.z};
-        if (ImGui::SliderFloat3("Direction", dir, -1.0f, 1.0f)) {
-            light.direction = glm::vec3(dir[0], dir[1], dir[2]);
-        }
-        float color[3] = {light.color.r, light.color.g, light.color.b};
-        if (ImGui::ColorEdit3("Color", color)) {
-            light.color = glm::vec3(color[0], color[1], color[2]);
-        }
-        ImGui::PopID();
-    }
-    if (lightToRemove >= 0) {
-        lighting.lights.erase(lighting.lights.begin() + lightToRemove);
-    }
-
-    ImGui::Spacing();
-    ImGui::BeginDisabled(static_cast<int>(lighting.lights.size()) >= LightingSettings::kMaxLights);
-    if (ImGui::Button("Add Light")) {
-        lighting.lights.push_back(Light{});
-    }
-    ImGui::EndDisabled();
 
     // Bed heightmap: operator-entered elevation measurements across the
     // bed, visualized as a colored heatmap surface so warp is visible
@@ -990,7 +1110,7 @@ void EditorUI::drawCellTemplatePanel(Scene& scene, SceneObject& object, const Be
     if (objectHasBoilerplate(object)) return; // nothing to warn about -- stay out of the way
 
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.85f, 0.55f, 0.15f, 1.0f));
-    ImGui::BeginChild("##missingBoilerplate", ImVec2(0, 0), ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
+    ImGui::BeginChild("##missingBoilerplate", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
     ImGui::TextColored(ImVec4(1.0f, 0.70f, 0.30f, 1.0f), "Missing header/footer");
     ImGui::TextWrapped("This object has no &ACCESS, safety interrupts, or shutdown block of its own -- "
                         "a plain sliced import, or a merge whose sources all lacked one. Exporting it as-is "
