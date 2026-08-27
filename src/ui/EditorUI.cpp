@@ -14,7 +14,6 @@
 #include "ui/Icons.h"
 
 #include <imgui.h>
-#include <imgui_internal.h> // DockBuilder* -- only used by buildDefaultDockLayout()
 #include <algorithm>
 #include <cstdio>
 
@@ -74,13 +73,22 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
     // wherever no window currently covers it.
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
+    // DockSpaceOverViewport sizes/positions its own invisible host window
+    // internally -- an explicit SetNextWindowPos/Size call here was
+    // redundant at best, and a real suspect for the viewport vanishing
+    // entirely (reported from real use) if it fought with that internal
+    // sizing rather than just being overridden by it.
+    // No pre-built default dock layout: an earlier DockBuilder-based
+    // attempt at one reliably ate the entire passthrough center (the 3D
+    // viewport disappeared completely -- reported from real use, and
+    // reproduced/confirmed by disabling it). Root cause not fully
+    // isolated within DockBuilder's split/dock-window API; rather than
+    // ship a fragile fix for internals this session can't interactively
+    // verify, windows just open as normal floating windows on first run
+    // -- fully dockable by dragging them onto the viewport edges/each
+    // other by hand, which is the ACTUAL supported way to arrange a
+    // Dear ImGui docking layout regardless.
     ImGui::DockSpaceOverViewport(dockspaceId, viewport, ImGuiDockNodeFlags_PassthruCentralNode);
-    if (!firstRunLayoutDone_) {
-        buildDefaultDockLayout(dockspaceId);
-        firstRunLayoutDone_ = true;
-    }
 
     // Seven dockable "big button" windows (see drawToolbar()'s launcher
     // row) instead of the old two tabbed catch-all windows -- each one
@@ -141,31 +149,6 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
     if (windowAnimationOpen_) ImGui::End();
 }
 
-void EditorUI::buildDefaultDockLayout(unsigned int dockspaceIdRaw) {
-    ImGuiID dockspaceId = static_cast<ImGuiID>(dockspaceIdRaw);
-    ImGui::DockBuilderRemoveNode(dockspaceId);
-    ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_PassthruCentralNode);
-    ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->Size);
-
-    ImGuiID centerId = dockspaceId;
-    ImGuiID leftId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Left, 0.22f, nullptr, &centerId);
-    ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.28f, nullptr, &centerId);
-    ImGuiID bottomId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.28f, nullptr, &centerId);
-
-    ImGui::DockBuilderDockWindow("Object & Layers", leftId);
-    // Five windows land as TABS in the same right-side node rather than
-    // each getting their own slice -- they're rarely all needed
-    // simultaneously (Bed setup vs. speed tuning vs. mirroring are
-    // different phases of the same job), and tabbing keeps the initial
-    // layout from being sliced into unusably thin columns.
-    ImGui::DockBuilderDockWindow("Bed", rightId);
-    ImGui::DockBuilderDockWindow("Advanced Speed", rightId);
-    ImGui::DockBuilderDockWindow("Mirror & Link", rightId);
-    ImGui::DockBuilderDockWindow("Geometry", rightId);
-    ImGui::DockBuilderDockWindow("Lights & Preview", rightId);
-    ImGui::DockBuilderDockWindow("Animation", bottomId);
-    ImGui::DockBuilderFinish(dockspaceId);
-}
 
 // Icon row (Open/Save/Undo/Redo/Move/Rotate/FrameAll/Grid/Geometry/Speed)
 // plus a second row of big launcher buttons that toggle each dockable

@@ -284,7 +284,6 @@ private:
     bool windowGeometryOpen_ = false;
     bool windowLightsPreviewOpen_ = false;
     bool windowAnimationOpen_ = true;
-    bool firstRunLayoutDone_ = false;
 
     bool moveToolRequested_ = false;
     bool rotateToolRequested_ = false;
@@ -293,7 +292,6 @@ private:
 
     void drawToolbar(Scene& scene, Camera& camera, RenderSettings& renderSettings, UndoStack& undoStack, bool& sceneDirty,
                       GizmoInteractionMode gizmoMode);
-    void buildDefaultDockLayout(unsigned int dockspaceId);
 
     // Layer isolation ("solo"): clicking a layer's isolate button adds it
     // to this set and hides every OTHER layer; clicking an already-

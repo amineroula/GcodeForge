@@ -113,11 +113,19 @@ void drawSpeed(ImDrawList* dl, ImVec2 c, float s, ImU32 col) {
 } // namespace
 
 bool IconButton(Id icon, float size, bool active, bool enabled, const char* tooltip) {
+    // Every call previously shared the literal ID "##icon" -- fine for
+    // ONE button, but with 10 of them in the same window ImGui saw 10
+    // widgets fighting over one identity (visible as red conflict boxes
+    // + a "Programmer error: N visible items with conflicting ID!"
+    // popup, reported from real use). Keying by the icon enum gives each
+    // button in the toolbar its own real identity.
+    ImGui::PushID(static_cast<int>(icon));
     ImGui::BeginDisabled(!enabled);
     ImVec2 cursor = ImGui::GetCursorScreenPos();
     bool clicked = ImGui::InvisibleButton("##icon", ImVec2(size, size));
     bool hovered = ImGui::IsItemHovered();
     ImGui::EndDisabled();
+    ImGui::PopID();
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImGuiStyle& style = ImGui::GetStyle();

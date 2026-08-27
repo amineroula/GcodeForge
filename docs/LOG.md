@@ -2807,3 +2807,39 @@ by this session: actually dragging a window to a new dock location, or
 clicking each of the other 6 launcher buttons interactively -- that needs
 the user's own hands-on click-through, which a screenshot-after-5-frames
 diagnostic can't substitute for.
+
+## Two real bugs from the first hands-on try: ID conflicts, viewport gone
+
+Real-use report (with a photo): a red "MESSAGE FROM DEAR IMGUI:
+Programmer error: 10 visible items with conflicting ID!" popup covering
+the toolbar, every icon boxed in red (ImGui's own visual ID-conflict
+indicator), and no 3D viewport visible anywhere.
+
+**ID conflict, root cause**: `Icons::IconButton()`'s `InvisibleButton`
+call used the literal string `"##icon"` for every single call -- with 10
+icons in the same toolbar window, all 10 shared one identity. Fixed with
+`ImGui::PushID(static_cast<int>(icon))` around the button, keying each
+by its own `Icons::Id` enum value.
+
+**Missing viewport, root cause**: the just-added `buildDefaultDockLayout()`
+(DockBuilder-based pre-assignment of "Object & Layers" to a left node and
+"Animation" to a bottom node, meant to leave the rest of the screen as a
+passthrough 3D view) reliably ate the ENTIRE passthrough center -- confirmed
+by disabling it and watching the grid reappear in the exact same run.
+The specific internal cause inside DockBuilder's split/dock-window
+sequence wasn't isolated (this session has no way to interactively drag
+windows or inspect ImGui's live dock-node tree, only screenshot a static
+frame) -- rather than ship a fragile guess at a fix for something
+unverifiable here, `buildDefaultDockLayout()` was removed entirely.
+Windows now open as normal floating windows on first run, fully
+dockable by dragging them onto the viewport edges or each other by
+hand -- the actual supported way to arrange a Dear ImGui docking layout,
+and the one this session CAN confirm works (the passthrough center
+correctly shows the 3D grid once nothing claims that dock region).
+
+**Verified**: rebuilt both configs from clean, 494 tests unchanged,
+self-captured screenshots confirm both fixes -- no ID-conflict popup, no
+red boxes on any icon, and the 3D grid genuinely visible through the
+passthrough area with Animation floating as its own window. Still not
+verified interactively: whether dragging a window onto a viewport edge
+docks it as expected -- needs the user's own click-through.
