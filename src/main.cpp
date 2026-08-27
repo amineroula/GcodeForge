@@ -718,6 +718,11 @@ int main() {
     bool isDraggingMarquee = false;
     constexpr float kDragThresholdPixels = 4.0f;
     constexpr float kClickPickRadiusPixels = 8.0f;
+    // Deliberately more forgiving than kClickPickRadiusPixels: heightmap
+    // grid vertices are typically far sparser on screen than toolpath
+    // geometry, and an operator aiming for "the raised bump I can see"
+    // needs real tolerance, not path-picking's tight precision.
+    constexpr float kHeightmapPaintPickRadiusPixels = 24.0f;
 
     bool ctrlZWasDown = false;
     bool ctrlYWasDown = false;
@@ -741,6 +746,13 @@ int main() {
     // Whatever path the cursor is currently over (not selected -- just
     // hovered), recomputed every frame for the status-bar readout.
     std::optional<PathRef> hoveredPath;
+
+    // Whatever heightmap vertex the cursor is currently nearest to, while
+    // paint mode is active -- recomputed every frame so the live white
+    // highlight (BedHeightmapRenderer's highlightCol/Row) tracks the
+    // mouse, giving a clear "this is what a click would affect right
+    // now" answer before the operator commits to it.
+    std::optional<HeightmapVertexRef> hoveredHeightmapVertex;
 
     // Move-gizmo drag state. axisOrigin/StartT are captured ONCE at drag
     // start and held fixed for the whole drag -- see the comment on
@@ -1002,6 +1014,27 @@ int main() {
                                            renderSettings.selectBackfacing);
         }
 
+        // Same idea, for the heightmap paint tool: only bother tracking
+        // (and paying for a per-frame mesh rebuild) while paint mode is
+        // actually on.
+        std::optional<HeightmapVertexRef> newHoveredVertex;
+        if (editorUi.heightmapPaintModeActive() && viewportInputActive && !altHeld && height > 0) {
+            ScreenProjector hoverProjector{viewProj, static_cast<float>(width), static_cast<float>(height)};
+            glm::vec2 cursor(static_cast<float>(cursorX), static_cast<float>(cursorY));
+            newHoveredVertex = pickNearestHeightmapVertex(bedHeightmap, bedSettings, hoverProjector, cursor,
+                                                           kHeightmapPaintPickRadiusPixels);
+        }
+        bool hoveredVertexChanged = (newHoveredVertex.has_value() != hoveredHeightmapVertex.has_value()) ||
+                                     (newHoveredVertex && hoveredHeightmapVertex &&
+                                      (newHoveredVertex->col != hoveredHeightmapVertex->col ||
+                                       newHoveredVertex->row != hoveredHeightmapVertex->row));
+        hoveredHeightmapVertex = newHoveredVertex;
+        if (hoveredVertexChanged) {
+            int hc = hoveredHeightmapVertex ? hoveredHeightmapVertex->col : -1;
+            int hr = hoveredHeightmapVertex ? hoveredHeightmapVertex->row : -1;
+            bedHeightmapRenderer.rebuild(bedSettings, bedHeightmap, hc, hr);
+        }
+
         // Resolve the hovered PathRef into displayable values here (where
         // the Scene is in hand) rather than handing EditorUI a raw ref and
         // making it do scene lookups. Set now, drawn next frame -- a
@@ -1208,12 +1241,18 @@ int main() {
                     // Paint mode intercepts a plain click BEFORE normal
                     // path selection -- exactly the nearest heightmap
                     // vertex to the click, no radius/falloff, nudged by
-                    // +/-Power depending on Add/Remove (see
-                    // EditorUI::drawBedPanel's heightmap paint controls).
+                    // +/-Power. Ctrl+click lowers instead of raising --
+                    // NOT Alt+click: Alt is already globally reserved for
+                    // camera orbit/pan/zoom (see the altHeld branch
+                    // above), so an Alt-held click never even reaches
+                    // this code at all. Ctrl matches this app's existing
+                    // "Ctrl = subtract" convention from path selection.
                     ScreenProjector projector{viewProj, static_cast<float>(width), static_cast<float>(height)};
                     if (auto vertex = pickNearestHeightmapVertex(bedHeightmap, bedSettings, projector, current,
-                                                                  kClickPickRadiusPixels)) {
-                        float sign = (editorUi.heightmapPaintTool() == EditorUI::HeightmapPaintTool::Add) ? 1.0f : -1.0f;
+                                                                  kHeightmapPaintPickRadiusPixels)) {
+                        bool lower = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                                     glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+                        float sign = lower ? -1.0f : 1.0f;
                         bedHeightmap.at(vertex->col, vertex->row) += sign * editorUi.heightmapPaintPowerMm();
                         bedDirty = true;
                     }
@@ -1324,7 +1363,13 @@ int main() {
             // values, visibility), not just bed size/position -- cols/rows
             // are independent of bed size now (the operator sets them
             // directly), so this is just a mesh rebuild, no resize needed.
-            bedHeightmapRenderer.rebuild(bedSettings, bedHeightmap);
+            // Carries the current hover highlight through -- otherwise a
+            // paint click's own bedDirty=true would immediately rebuild
+            // WITHOUT it right here, flashing the highlight off for a
+            // frame until the mouse moves again.
+            int hc = hoveredHeightmapVertex ? hoveredHeightmapVertex->col : -1;
+            int hr = hoveredHeightmapVertex ? hoveredHeightmapVertex->row : -1;
+            bedHeightmapRenderer.rebuild(bedSettings, bedHeightmap, hc, hr);
         }
 
         glClearColor(0.09f, 0.10f, 0.12f, 1.0f);

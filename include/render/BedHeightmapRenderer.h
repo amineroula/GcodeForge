@@ -26,7 +26,11 @@ public:
     BedHeightmapRenderer(const BedHeightmapRenderer&) = delete;
     BedHeightmapRenderer& operator=(const BedHeightmapRenderer&) = delete;
 
-    void rebuild(const BedSettings& bed, const BedHeightmap& heightmap);
+    // highlightCol/Row (-1 = none) override that ONE vertex's color to a
+    // bright marker instead of its heatmap color -- live "which vertex
+    // would a click affect right now" feedback for the paint tool (see
+    // main.cpp's per-frame hover tracking while paint mode is active).
+    void rebuild(const BedSettings& bed, const BedHeightmap& heightmap, int highlightCol = -1, int highlightRow = -1);
     void draw(const glm::mat4& viewProj, const LightingSettings& lighting) const;
 
     size_t triangleCount() const { return static_cast<size_t>(indexCount_) / 3; }

@@ -2600,3 +2600,44 @@ understand and operate."
 the taper's fractional weights at each layer and the flat cutoff's
 "one layer past N is untouched, no partial effect" edge). 472 tests
 total, Debug and Release clean.
+
+## Heightmap paint tool: "nothing happens" + live vertex highlight
+
+Real-use report: clicking with paint mode on had no visible effect, plus
+a redesign request -- one modifier key (not a separate Add/Remove mode
+toggle), and "any way to have a selectable vertex" for visual feedback.
+
+**Most likely cause of "nothing happens"**: two compounding usability
+gaps, not a broken pick. (1) The pick radius (`kClickPickRadiusPixels`,
+8px) was tuned for toolpath geometry, far denser on screen than a
+typically-sparse heightmap grid -- realistic misses would read as "does
+nothing," with zero feedback either way. (2) `heightmap.visible` (the
+"Show heatmap" checkbox) is independent of paint mode -- with it off,
+there's nothing to see or aim at at all.
+
+**Fixes**:
+- New `kHeightmapPaintPickRadiusPixels` (24px, vs. path-picking's 8px)
+  specifically for this tool.
+- Turning on Paint mode now force-enables "Show heatmap" if it was off.
+- `BedHeightmapRenderer::rebuild()` gained an optional
+  `highlightCol`/`highlightRow` -- that one vertex renders bright white
+  instead of its heatmap color. `main.cpp` tracks the nearest vertex to
+  the cursor every frame (only while paint mode is active, mirroring the
+  existing hover-path-for-status-bar pattern) and rebuilds with the
+  highlight whenever it changes -- a live "this is what a click would
+  affect" answer, directly the "selectable vertex" ask.
+- Dropped the Add/Remove radio-button mode entirely: plain click raises,
+  **Ctrl+click** lowers. NOT Alt+click as originally requested -- Alt is
+  already globally reserved for camera orbit/pan/zoom in this app, so an
+  Alt-held click never even reaches the paint-mode code at all (it's
+  intercepted by camera navigation first, a real structural conflict, not
+  a preference). Ctrl matches this app's existing "Ctrl = subtract"
+  convention from path selection.
+- The `bedDirty`-gated rebuild (fires on every paint click) now also
+  carries the current hover highlight through, so a click doesn't
+  visibly flash the white marker off for a frame until the mouse moves.
+
+**Verified**: builds clean, Debug and Release, 472 tests (GL-coupled
+interaction code, no GL context in the test binary -- same category as
+the picking/render-skip work already covered by `pickNearestHeightmapVertex`'s
+own dedicated tests).

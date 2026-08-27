@@ -725,23 +725,26 @@ void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHei
     }
 
     // Click-a-vertex paint tool -- an alternative to typing into the grid
-    // table below: while active, a left click on a rendered heightmap
-    // vertex in the 3D view nudges JUST that vertex by +/-Power (see
-    // main.cpp's click handler and editor/Picking.h's
-    // pickNearestHeightmapVertex). No radius/falloff -- exactly the
-    // nearest vertex to the click, nothing more.
+    // table below: while active, the nearest heightmap vertex to the
+    // cursor is highlighted live (white, see main.cpp's per-frame hover
+    // tracking + BedHeightmapRenderer's highlightCol/Row), a plain click
+    // raises it by Power, Alt+click lowers it. No separate Add/Remove
+    // mode to toggle -- one modifier key, matching every other "click vs
+    // alt-click" convention already in this app (camera orbit/pan/zoom).
+    // No radius/falloff -- exactly the nearest vertex, nothing more.
     ImGui::Spacing();
-    ImGui::Checkbox("Paint mode (click a vertex in the 3D view)", &heightmapPaintMode_);
+    if (ImGui::Checkbox("Paint mode (click a vertex in the 3D view)", &heightmapPaintMode_)) {
+        // Painting a surface you can't see isn't paintable -- force it
+        // visible the moment paint mode turns on, rather than leaving the
+        // operator clicking blind and concluding the tool does nothing.
+        if (heightmapPaintMode_ && !heightmap.visible) {
+            heightmap.visible = true;
+            bedDirty = true;
+        }
+    }
     if (heightmapPaintMode_) {
-        ImGui::TextDisabled("While active, a click in the viewport selects paths as normal --");
-        ImGui::TextDisabled("this intercepts it instead and nudges the nearest heightmap vertex.");
-        if (ImGui::RadioButton("Add", heightmapPaintTool_ == HeightmapPaintTool::Add)) {
-            heightmapPaintTool_ = HeightmapPaintTool::Add;
-        }
-        ImGui::SameLine();
-        if (ImGui::RadioButton("Remove", heightmapPaintTool_ == HeightmapPaintTool::Remove)) {
-            heightmapPaintTool_ = HeightmapPaintTool::Remove;
-        }
+        ImGui::TextDisabled("Click raises the nearest vertex (white highlight), Alt+click lowers it.");
+        ImGui::TextDisabled("A click in the viewport selects paths as normal -- this intercepts it instead.");
         ImGui::DragFloat("Power (mm per click)", &heightmapPaintPowerMm_, 0.01f, 0.01f, 20.0f, "%.2f");
     }
 

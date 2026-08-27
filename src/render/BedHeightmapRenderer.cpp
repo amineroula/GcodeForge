@@ -68,7 +68,7 @@ BedHeightmapRenderer::~BedHeightmapRenderer() {
     glDeleteProgram(edgeShaderProgram_);
 }
 
-void BedHeightmapRenderer::rebuild(const BedSettings& bed, const BedHeightmap& heightmap) {
+void BedHeightmapRenderer::rebuild(const BedSettings& bed, const BedHeightmap& heightmap, int highlightCol, int highlightRow) {
     std::vector<MeshVertex> vertices;
     std::vector<uint32_t> indices;
 
@@ -91,6 +91,7 @@ void BedHeightmapRenderer::rebuild(const BedSettings& bed, const BedHeightmap& h
                                     bed.originZMm + elevation);
                 float t = 0.5f + 0.5f * (elevation / maxAbs); // maps [-maxAbs, +maxAbs] -> [0, 1]
                 glm::vec3 color = heatColor(t);
+                if (col == highlightCol && row == highlightRow) color = glm::vec3(1.0f, 1.0f, 1.0f);
                 vertices.push_back({position, glm::vec3(0.0f, 0.0f, 1.0f), color, 0.0f});
             }
         }

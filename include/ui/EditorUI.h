@@ -275,13 +275,13 @@ private:
     // handler (via the getters below) to decide whether a viewport click
     // should nudge a heightmap vertex instead of picking a path.
 public:
-    enum class HeightmapPaintTool { Add, Remove };
+    // Interaction is a plain modifier key (click = raise, Alt+click =
+    // lower), not a separate mode to toggle -- matches this app's other
+    // click-vs-alt-click conventions (camera orbit/pan/zoom).
     bool heightmapPaintModeActive() const { return heightmapPaintMode_; }
-    HeightmapPaintTool heightmapPaintTool() const { return heightmapPaintTool_; }
     float heightmapPaintPowerMm() const { return heightmapPaintPowerMm_; }
 private:
     bool heightmapPaintMode_ = false;
-    HeightmapPaintTool heightmapPaintTool_ = HeightmapPaintTool::Add;
     float heightmapPaintPowerMm_ = 0.5f;
 
     // Multi-part / interleaved-cooling input state -- see
