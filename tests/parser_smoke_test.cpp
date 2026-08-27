@@ -2201,6 +2201,29 @@ void testHidingRemovesFromExistingSelection() {
           "Visibility: hiding path 2 leaves the other selected paths alone");
 }
 
+// Real request: replaces the earlier per-layer "Iso" button with one
+// general isolate-by-selection action -- hide everything EXCEPT whatever
+// is currently selected, regardless of how that selection was built
+// (layer click, marquee, group, travels/prints).
+void testHideUnselectedPaths() {
+    SceneObject object = twoLayerObjectWithGroup();
+    object.selectedPaths = {1, 2}; // layer 1's paths
+
+    hideUnselectedPaths(object);
+    check(object.hiddenPaths.count(3) && object.hiddenPaths.count(4) && object.hiddenPaths.count(5),
+          "Visibility: hideUnselectedPaths hides every path NOT in the selection");
+    check(!object.hiddenPaths.count(1) && !object.hiddenPaths.count(2),
+          "Visibility: hideUnselectedPaths leaves the selected paths themselves visible");
+    check(object.selectedPaths.count(1) && object.selectedPaths.count(2),
+          "Visibility: the selected paths stay selected after hiding everything else");
+
+    showAllPaths(object);
+    object.selectedPaths.clear();
+    hideUnselectedPaths(object);
+    check(object.hiddenPaths.size() == 5,
+          "Visibility: hideUnselectedPaths with an EMPTY selection hides every path in the object");
+}
+
 void testSelectionProducingFunctionsExcludeHidden() {
     SceneObject object = twoLayerObjectWithGroup();
     hidePaths(object, {2, 5}); // path 2 (a print in layer 1), path 5 (the travel)
@@ -3020,6 +3043,7 @@ int main() {
     testDxfParserSplineLayers();
     testVisibilityHidePathsAndSelection();
     testHidingRemovesFromExistingSelection();
+    testHideUnselectedPaths();
     testSelectionProducingFunctionsExcludeHidden();
     testVisibilityLayerHide();
     testVisibilityGroupHide();

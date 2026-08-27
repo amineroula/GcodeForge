@@ -26,6 +26,14 @@ void hideSelectedPaths(SceneObject& object) {
     hidePaths(object, std::vector<int>(object.selectedPaths.begin(), object.selectedPaths.end()));
 }
 
+void hideUnselectedPaths(SceneObject& object) {
+    std::vector<int> unselected;
+    for (const auto& path : object.paths) {
+        if (!object.selectedPaths.count(path.number)) unselected.push_back(path.number);
+    }
+    hidePaths(object, unselected);
+}
+
 bool isLayerHidden(const SceneObject& object, int layerNumber) {
     std::vector<int> numbers = pathNumbersForLayer(object, layerNumber);
     if (numbers.empty()) return false;

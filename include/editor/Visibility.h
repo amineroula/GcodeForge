@@ -19,6 +19,14 @@ void showAllPaths(SceneObject& object);
 // Hides/shows whatever is currently in object.selectedPaths.
 void hideSelectedPaths(SceneObject& object);
 
+// Hides every path NOT currently in object.selectedPaths -- the
+// isolate-by-selection equivalent of hideSelectedPaths(), replacing the
+// earlier per-layer "Iso" button with one general action that works off
+// whatever's selected (a layer-table click, a marquee, a selection
+// group, travels/prints, anything applySelectionCompose() can produce),
+// not just one layer at a time.
+void hideUnselectedPaths(SceneObject& object);
+
 // A layer's visibility is derived, not stored: hidden if every path in
 // pathNumbersForLayer() is currently in hiddenPaths (so a layer with a
 // mix of hidden/shown paths reads as "shown", matching the ImGui

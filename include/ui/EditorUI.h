@@ -293,15 +293,6 @@ private:
     void drawToolbar(Scene& scene, Camera& camera, RenderSettings& renderSettings, UndoStack& undoStack, bool& sceneDirty,
                       GizmoInteractionMode gizmoMode);
 
-    // Layer isolation ("solo"): clicking a layer's isolate button adds it
-    // to this set and hides every OTHER layer; clicking an already-
-    // isolated layer removes it (un-hiding everything again once the set
-    // empties). Scoped to whichever object it was built for -- switching
-    // the active object resets it, since a stale set of layer NUMBERS
-    // would otherwise apply to a completely different object's layers.
-    std::set<int> isolatedLayers_;
-    int isolatedLayersObjectId_ = -1;
-
     ImFont* boldFont_ = nullptr;
 
     // Toggled by the "Hide/Show panels" button in the menu bar -- when

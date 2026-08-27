@@ -2843,3 +2843,46 @@ red boxes on any icon, and the 3D grid genuinely visible through the
 passthrough area with Animation floating as its own window. Still not
 verified interactively: whether dragging a window onto a viewport edge
 docks it as expected -- needs the user's own click-through.
+
+## Third hands-on round: scrollbar, layer isolation removed, Bed Conform moved
+
+Three more real-use reports on the same docked layout.
+
+**"upper side hidden, need a scroll bar"**: with `buildDefaultDockLayout()`
+gone, windows opened with no size constraint at all, so ImGui auto-sized
+some of them (especially "Object & Layers," which now combines six
+previously-separate sections) taller than the display -- their title bar
+landed above `y=0`, invisible, with no bounded height to trigger ImGui's
+own automatic scrollbar. Fixed with a `placeWindow(x, w, h)` helper in
+`EditorUI::draw()` that calls `SetNextWindowPos`/`SetNextWindowSize` with
+`ImGuiCond_FirstUseEver` (so it only sets the *default* -- a user's own
+drag/resize or a saved `imgui.ini` layout always wins after that) and caps
+height at `DisplaySize.y - top - 40` so the status bar always stays clear.
+Bounded height means overflow content now gets ImGui's normal scrollbar
+for free.
+
+**Layer isolation ("Iso") removed, replaced with "Hide unselected"**: the
+per-layer solo/isolate button (`isolatedLayers_` in `EditorUI`, plus its
+table column and footer logic) is gone. In its place,
+`hideUnselectedPaths()` (`editor/Visibility.h/.cpp`) hides every path
+NOT currently in `object.selectedPaths` -- it works off whatever's
+selected through ANY mechanism (a layer-table click, a marquee, a
+selection group, bulk travel/print selection), not just one layer row at
+a time, matching how the rest of the selection system already works. New
+"Hide unselected" button sits next to the existing "Hide selected" one.
+
+**Bed Conform moved**: `drawBedConformPanel()` now lives under
+"Object & Layers" (right after the selection-group panel) instead of
+under "Geometry" -- it edits per-path Z data tied to the loaded object,
+so it belongs with the other object-editing panels rather than the
+display/render-settings window.
+
+**Verified**: `parser_smoke_test` (Debug and Release) passes, including
+four new checks for `hideUnselectedPaths()` -- hides everything outside
+the selection, leaves the selection itself visible, keeps paths selected
+after hiding the rest, and hides the whole object when the selection is
+empty. Full clean Release rebuild succeeds. Self-captured screenshot
+confirms "Object & Layers" now shows its title bar and a working
+scrollbar even with Bed Conform added on top, and the launcher-row
+ampersand labels ("Mirror & Link", "Lights & Preview") render as single
+`&` correctly.

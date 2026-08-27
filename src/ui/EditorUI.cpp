@@ -95,6 +95,25 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
     // reachable, movable, and closable independently, per real request
     // ("the other tool should be big buttons that can be pressed and the
     // window will appear... everything is dockable").
+    //
+    // Each gets an explicit FIRST-USE-EVER position/size (only applied
+    // the very first time that window ever opens, or once
+    // imgui.ini/manual placement takes over, it never fights the user
+    // again). Without this, several of these windows have enough stacked
+    // content (Object & Layers combines six sections) to auto-size TALLER
+    // than the screen, which pushed their own title bar off the TOP of
+    // the visible area -- reported from real use as "the upper side are
+    // hidden." A bounded height also means ImGui's normal vertical
+    // scrollbar kicks in for whatever doesn't fit, instead of the window
+    // just growing past the screen edge with nothing to scroll.
+    const float kWindowTop = ImGui::GetFrameHeight() + 82.0f; // menu bar + toolbar (drawToolbar's own height)
+    const float kWindowMaxHeight = ImGui::GetIO().DisplaySize.y - kWindowTop - 40.0f; // leave room for the status bar
+    auto placeWindow = [&](float x, float w, float h) {
+        ImGui::SetNextWindowPos(ImVec2(x, kWindowTop), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(w, std::min(h, kWindowMaxHeight)), ImGuiCond_FirstUseEver);
+    };
+
+    placeWindow(12.0f, 380.0f, 620.0f);
     if (windowObjectLayersOpen_ && ImGui::Begin("Object & Layers", &windowObjectLayersOpen_)) {
         drawObjectListPanel(scene, undoStack, sceneDirty);
         if (active) {
@@ -103,46 +122,49 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
             drawTransformPanel(scene, *active, undoStack, sceneDirty);
             drawLayerTablePanel(scene, *active, undoStack, sceneDirty, selectionDirty);
             drawSelectionGroupPanel(scene, *active, undoStack, sceneDirty, selectionDirty);
+            drawBedConformPanel(scene, *active, bedHeightmap, bedSettings, undoStack, sceneDirty);
         } else {
             ImGui::TextDisabled("No object loaded. File > Open to load a .src file.");
         }
     }
     if (windowObjectLayersOpen_) ImGui::End();
 
+    placeWindow(12.0f, 380.0f, 620.0f);
     if (windowBedOpen_ && ImGui::Begin("Bed", &windowBedOpen_)) {
         drawBedPanel(bedSettings, lightingSettings, bedHeightmap, active, bedDirty);
     }
     if (windowBedOpen_) ImGui::End();
 
+    placeWindow(410.0f, 380.0f, 420.0f);
     if (windowAdvancedSpeedOpen_ && ImGui::Begin("Advanced Speed", &windowAdvancedSpeedOpen_)) {
         if (active) drawSpeedPanel(scene, *active, undoStack, sceneDirty);
         else ImGui::TextDisabled("No object loaded.");
     }
     if (windowAdvancedSpeedOpen_) ImGui::End();
 
+    placeWindow(410.0f, 380.0f, 420.0f);
     if (windowMirrorLinkOpen_ && ImGui::Begin("Mirror & Link", &windowMirrorLinkOpen_)) {
         drawMultiPartPanel(scene, undoStack, sceneDirty);
     }
     if (windowMirrorLinkOpen_) ImGui::End();
 
+    placeWindow(410.0f, 380.0f, 560.0f);
     if (windowGeometryOpen_ && ImGui::Begin("Geometry", &windowGeometryOpen_)) {
         drawViewPanel(camera, renderSettings, sceneDirty);
         ImGui::Separator();
         drawColorModePanel(colorMode, sceneDirty);
-        if (active) {
-            ImGui::Separator();
-            drawBedConformPanel(scene, *active, bedHeightmap, bedSettings, undoStack, sceneDirty);
-        }
         ImGui::Separator();
         drawStatsPanel(scene, renderSettings.mode, renderedPrimitiveCount);
     }
     if (windowGeometryOpen_) ImGui::End();
 
+    placeWindow(410.0f, 380.0f, 420.0f);
     if (windowLightsPreviewOpen_ && ImGui::Begin("Lights & Preview", &windowLightsPreviewOpen_)) {
         drawLightingPanel(lightingSettings);
     }
     if (windowLightsPreviewOpen_) ImGui::End();
 
+    placeWindow(808.0f, 440.0f, 600.0f);
     if (windowAnimationOpen_ && ImGui::Begin("Animation", &windowAnimationOpen_)) {
         drawAnimationPanel();
     }
@@ -1272,22 +1294,12 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
         return;
     }
 
-    // A stale isolation set from a DIFFERENT object would apply to
-    // whatever layer numbers happen to coincide in this one -- reset
-    // rather than carry it across an active-object switch.
-    if (isolatedLayersObjectId_ != object.id) {
-        isolatedLayers_.clear();
-        isolatedLayersObjectId_ = object.id;
-    }
-
     ImGui::TextWrapped("Click a row to select that layer's print paths "
                         "(Shift = range-select from the last clicked layer, Ctrl = subtract).");
-    ImGui::TextWrapped("Iso isolates a layer -- click more to see several at once, click again to remove one.");
 
-    if (ImGui::BeginTable("layers", 9, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
+    if (ImGui::BeginTable("layers", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY,
                            ImVec2(0, 200))) {
         ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthFixed, 50.0f);
-        ImGui::TableSetupColumn("Iso", ImGuiTableColumnFlags_WidthFixed, 40.0f);
         ImGui::TableSetupColumn("Layer");
         ImGui::TableSetupColumn("Z");
         ImGui::TableSetupColumn("Start");
@@ -1306,47 +1318,6 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
             if (ImGui::Checkbox("##layerVisible", &layerVisible)) {
                 undoStack.snapshotBeforeChange(scene);
                 setLayerHidden(object, layer.layer, !layerVisible);
-                // Keep the Iso button's highlight (and "Show all layers"'
-                // enabled state) truthful even when visibility was toggled
-                // via this checkbox instead of Iso -- isolatedLayers_ means
-                // "currently isolated/shown while isolating," so it must
-                // track whichever control actually changed it.
-                if (!isolatedLayers_.empty()) {
-                    if (layerVisible) isolatedLayers_.insert(layer.layer);
-                    else isolatedLayers_.erase(layer.layer);
-                }
-                dirty = true;
-            }
-
-            ImGui::TableNextColumn();
-            bool isIsolated = isolatedLayers_.count(layer.layer) > 0;
-            if (isIsolated) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.55f, 0.85f, 1.0f));
-            bool isoClicked = ImGui::SmallButton("Iso");
-            if (isIsolated) ImGui::PopStyleColor();
-            if (isoClicked) {
-                undoStack.snapshotBeforeChange(scene);
-                if (isIsolated) {
-                    // Un-isolating this one: if it was the LAST isolated
-                    // layer, exit isolation mode entirely (show
-                    // everything) instead of leaving nothing visible.
-                    isolatedLayers_.erase(layer.layer);
-                    if (isolatedLayers_.empty()) showAllPaths(object);
-                    else setLayerHidden(object, layer.layer, true);
-                } else {
-                    bool enteringIsolation = isolatedLayers_.empty();
-                    isolatedLayers_.insert(layer.layer);
-                    if (enteringIsolation) {
-                        // First layer isolated this round: hide every
-                        // OTHER layer, show only this one.
-                        for (const auto& other : object.layers) {
-                            setLayerHidden(object, other.layer, other.layer != layer.layer);
-                        }
-                    } else {
-                        // Already isolating others -- just add this one
-                        // to what's visible, leave the rest as they are.
-                        setLayerHidden(object, layer.layer, false);
-                    }
-                }
                 dirty = true;
             }
 
@@ -1469,18 +1440,15 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::BeginDisabled(object.hiddenPaths.empty() && isolatedLayers_.empty());
+    ImGui::BeginDisabled(object.hiddenPaths.empty());
     if (ImGui::SmallButton("Show all layers")) {
         undoStack.snapshotBeforeChange(scene);
-        isolatedLayers_.clear();
         showAllPaths(object);
         dirty = true;
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (!isolatedLayers_.empty()) {
-        ImGui::TextDisabled("Isolating %zu layer(s).", isolatedLayers_.size());
-    } else if (!object.hiddenPaths.empty()) {
+    if (!object.hiddenPaths.empty()) {
         ImGui::TextDisabled("%zu path(s) hidden.", object.hiddenPaths.size());
     } else {
         ImGui::TextDisabled("Nothing hidden.");
@@ -1570,6 +1538,16 @@ void EditorUI::drawLayerTablePanel(Scene& scene, SceneObject& object, UndoStack&
     if (ImGui::SmallButton("Hide selected")) {
         undoStack.snapshotBeforeChange(scene);
         hideSelectedPaths(object);
+        dirty = true;
+    }
+    ImGui::SameLine();
+    // Replaces the earlier per-layer "Iso" button in the layer table --
+    // one general isolate-by-selection action instead of a layer-only
+    // one, works off whatever's currently selected (a layer-table click,
+    // a marquee, a group, anything).
+    if (ImGui::SmallButton("Hide unselected")) {
+        undoStack.snapshotBeforeChange(scene);
+        hideUnselectedPaths(object);
         dirty = true;
     }
     ImGui::EndDisabled();
