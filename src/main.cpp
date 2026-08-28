@@ -45,6 +45,7 @@
 #include "io/ProjectIO.h"
 #include "io/FileIO.h"
 #include "model/BedHeightmap.h"
+#include "model/PrintCalibrationGrid.h"
 #include "model/Scene.h"
 #include "parser/SrcParser.h"
 #include "parser/GcodeParser.h"
@@ -289,10 +290,12 @@ int main() {
     BedSettings bedSettings;
     LightingSettings lightingSettings;
     BedHeightmap bedHeightmap;
+    PrintCalibrationGrid printCalibrationGrid;
 
     grid.rebuild(bedSettings);
     bedHeightmap.resize(bedHeightmap.cols, bedHeightmap.rows); // allocates elevationsMm to match the default cols/rows
     bedHeightmapRenderer.rebuild(bedSettings, bedHeightmap);
+    printCalibrationGrid.resize(printCalibrationGrid.cols, printCalibrationGrid.rows);
 
     {
         // Try the sample next to the .exe first (matches how it's packaged
@@ -807,7 +810,7 @@ int main() {
         bool sceneDirty = false;
         bool selectionDirty = false;
         bool bedDirty = false;
-        editorUi.draw(scene, colorMode, camera, renderSettings, bedSettings, lightingSettings, bedHeightmap, undoStack,
+        editorUi.draw(scene, colorMode, camera, renderSettings, bedSettings, lightingSettings, bedHeightmap, printCalibrationGrid, undoStack,
                       renderedPrimitiveCount, sceneDirty, selectionDirty, bedDirty, gizmoInteractionMode);
 
         if (editorUi.moveToolRequested()) {

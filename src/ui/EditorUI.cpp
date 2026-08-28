@@ -6,6 +6,7 @@
 #include "editor/MirrorObject.h"
 #include "editor/ObjectLinking.h"
 #include "editor/PathSplit.h"
+#include "editor/PrintCalibration.h"
 #include "editor/RotatePaths.h"
 #include "editor/Selection.h"
 #include "editor/SpeedEditing.h"
@@ -52,6 +53,7 @@ void EditorUI::sectionLabel(const char* text) {
 
 void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSettings& renderSettings,
                      BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& bedHeightmap,
+                     PrintCalibrationGrid& printCalibrationGrid,
                      UndoStack& undoStack, size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty,
                      GizmoInteractionMode gizmoMode) {
     drawMenuBar(scene, undoStack, sceneDirty);
@@ -123,6 +125,7 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
             drawLayerTablePanel(scene, *active, undoStack, sceneDirty, selectionDirty);
             drawSelectionGroupPanel(scene, *active, undoStack, sceneDirty, selectionDirty);
             drawBedConformPanel(scene, *active, bedHeightmap, bedSettings, undoStack, sceneDirty);
+            drawPrintCalibrationPanel(scene, *active, printCalibrationGrid, bedSettings, undoStack, sceneDirty);
         } else {
             ImGui::TextDisabled("No object loaded. File > Open to load a .src file.");
         }
@@ -131,7 +134,7 @@ void EditorUI::draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSe
 
     placeWindow(12.0f, 380.0f, 620.0f);
     if (windowBedOpen_ && ImGui::Begin("Bed", &windowBedOpen_)) {
-        drawBedPanel(bedSettings, lightingSettings, bedHeightmap, active, bedDirty);
+        drawBedPanel(bedSettings, lightingSettings, bedHeightmap, printCalibrationGrid, active, bedDirty);
     }
     if (windowBedOpen_) ImGui::End();
 
@@ -366,6 +369,43 @@ void EditorUI::drawExportDialog(Scene& scene) {
     if (exportCheckOutcomes_.size() != checks.size()) exportCheckOutcomes_.assign(checks.size(), CheckOutcome{});
 
     ImGui::Text("Exporting: %s", active->name.c_str());
+
+    // Export only ever writes ONE object -- the active one. Every check
+    // below (structure, speeds) only ever looks at that object's own SRC
+    // text, so "all checks passed" says nothing about whether some OTHER
+    // visible object in the scene was meant to be part of this print and
+    // just isn't going out at all. Reported from real use: two separate
+    // objects, one correctly placed and one floating unlinked -- exporting
+    // the correct one alone passed every check while the second silently
+    // never made it into any file. Hidden objects (e.g. the originals a
+    // Mirror & Link merge leaves behind on purpose) don't count -- only
+    // objects the user still considers part of the scene.
+    std::vector<std::string> otherVisibleNames;
+    for (const auto& object : scene.objects) {
+        if (object.id == active->id || !object.visible) continue;
+        otherVisibleNames.push_back(object.name);
+    }
+    if (!otherVisibleNames.empty()) {
+        std::string joined;
+        for (size_t i = 0; i < otherVisibleNames.size(); ++i) {
+            if (i > 0) joined += ", ";
+            joined += otherVisibleNames[i];
+        }
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.85f, 0.55f, 0.15f, 1.0f));
+        ImGui::BeginChild("##otherObjectsWarning", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+        ImGui::TextColored(ImVec4(1.0f, 0.70f, 0.30f, 1.0f), "%zu other object(s) NOT in this export",
+                            otherVisibleNames.size());
+        ImGui::TextWrapped("Only \"%s\" is being saved. These are still visible in the scene but will NOT "
+                            "be in this file: %s. Each object always exports to its own separate SRC file -- "
+                            "there is currently no way to combine two different objects into one robot "
+                            "program (Link->next only draws a preview travel; baking it adds a bridging "
+                            "move, not the other object's actual prints). If these need to run together, "
+                            "export each one and load/run them as separate programs on the robot.",
+                            active->name.c_str(), joined.c_str());
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+    }
+
     ImGui::Separator();
 
     sectionLabel("Options");
@@ -719,7 +759,7 @@ void EditorUI::drawLightingPanel(LightingSettings& lighting) {
 }
 
 void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHeightmap& heightmap,
-                             SceneObject* activeObject, bool& bedDirty) {
+                             PrintCalibrationGrid& calibrationGrid, SceneObject* activeObject, bool& bedDirty) {
     (void)lighting; // lighting controls now live in their own "Lights & Preview" window (drawLightingPanel)
     sectionLabel("Bed size");
     if (ImGui::InputFloat("Width (mm)", &bed.widthMm, 10.0f, 100.0f, "%.0f")) { bed.widthMm = std::max(bed.widthMm, 10.0f); bedDirty = true; }
@@ -924,6 +964,66 @@ void EditorUI::drawBedPanel(BedSettings& bed, LightingSettings& lighting, BedHei
         ImGui::EndChild();
     } else {
         ImGui::TextDisabled("No grid yet -- click \"Resize grid to bed\".");
+    }
+
+    // Print calibration grid: measured PRINTED RESULT (bead width),
+    // entered post-print with calipers -- NOT a probed elevation like the
+    // heightmap above. Compared against a golden target width, the error
+    // drives editor/PrintCalibration.h's Z/speed correction (see the Print
+    // Calibration panel under Object & Layers). Real-use context: a
+    // calibration grid printed to check bead-width consistency across the
+    // bed, so the next print's gcode can be corrected automatically
+    // instead of the operator eyeballing a global speed/Z fudge factor.
+    ImGui::Spacing();
+    ImGui::Spacing();
+    sectionLabel("Print Calibration (measured bead width)");
+    ImGui::TextWrapped("Enter the MEASURED bead width (mm) from a printed calibration grid at each vertex, "
+                        "post-print, with calipers -- not a probed bed elevation. Compared against the "
+                        "golden width below, this drives the Print Calibration panel's Z/speed correction.");
+
+    if (ImGui::InputDouble("Golden width (mm)", &calibrationGrid.goldenWidthMm, 0.1, 1.0, "%.2f")) {
+        bedDirty = true;
+    }
+
+    int calCols = calibrationGrid.cols;
+    int calRows = calibrationGrid.rows;
+    bool calColsChanged = ImGui::InputInt("Columns##cal", &calCols);
+    bool calRowsChanged = ImGui::InputInt("Rows##cal", &calRows);
+    if (calColsChanged || calRowsChanged) {
+        calibrationGrid.resize(std::max(calCols, 2), std::max(calRows, 2));
+        bedDirty = true;
+    }
+
+    if (ImGui::Button("Reset all to golden")) {
+        std::fill(calibrationGrid.measuredWidthMm.begin(), calibrationGrid.measuredWidthMm.end(),
+                   static_cast<float>(calibrationGrid.goldenWidthMm));
+        bedDirty = true;
+    }
+
+    if (calibrationGrid.cols >= 2 && calibrationGrid.rows >= 2) {
+        ImGui::Text("%d x %d grid (%d points)", calibrationGrid.cols, calibrationGrid.rows,
+                    calibrationGrid.cols * calibrationGrid.rows);
+        ImGui::TextDisabled("Same row/column orientation as the heightmap grid above: row 0 is the -Y edge.");
+
+        ImGui::BeginChild("printCalGrid", ImVec2(0, 220), true, ImGuiWindowFlags_HorizontalScrollbar);
+        if (ImGui::BeginTable("printCalTable", calibrationGrid.cols, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
+            for (int row = 0; row < calibrationGrid.rows; ++row) {
+                ImGui::TableNextRow();
+                for (int col = 0; col < calibrationGrid.cols; ++col) {
+                    ImGui::TableNextColumn();
+                    ImGui::PushID(row * calibrationGrid.cols + col);
+                    ImGui::SetNextItemWidth(56.0f);
+                    if (ImGui::DragFloat("##v", &calibrationGrid.at(col, row), 0.02f, 0.0f, 50.0f, "%.2f")) {
+                        bedDirty = true;
+                    }
+                    ImGui::PopID();
+                }
+            }
+            ImGui::EndTable();
+        }
+        ImGui::EndChild();
+    } else {
+        ImGui::TextDisabled("No grid yet.");
     }
 }
 
@@ -1834,6 +1934,90 @@ void EditorUI::drawBedConformPanel(Scene& scene, SceneObject& object, const BedH
         if (ImGui::Button("Bake into object")) {
             undoStack.snapshotBeforeChange(scene);
             bakeBedConform(object);
+            dirty = true;
+        }
+        ImGui::TextDisabled("Bake keeps the current effect permanently and stops tracking it as adjustable.");
+    }
+}
+
+void EditorUI::drawPrintCalibrationPanel(Scene& scene, SceneObject& object, const PrintCalibrationGrid& grid,
+                                          const BedSettings& bed, UndoStack& undoStack, bool& dirty) {
+    if (boldFont_) ImGui::PushFont(boldFont_);
+    bool open = ImGui::CollapsingHeader("Print Calibration");
+    if (boldFont_) ImGui::PopFont();
+    if (!open) return;
+
+    if (grid.cols < 2 || grid.rows < 2) {
+        ImGui::TextDisabled("No print calibration data yet -- enter measured bead widths in the Bed panel first.");
+        return;
+    }
+
+    ImGui::TextWrapped("Shifts each print path's Z (and optionally speed) based on the measured bead-width "
+                        "error at its position (measured - golden) -- a WIDER-than-golden spot means the "
+                        "nozzle ran too close (raise Z / speed up to thin it); a NARROWER spot means too far.");
+
+    ImGui::InputInt("Affected layers##cal", &printCalAffectedLayers_);
+    printCalAffectedLayers_ = std::max(printCalAffectedLayers_, 1);
+    ImGui::TextDisabled("Layer 1 gets full effect, tapering to none by layer (affected+1).");
+
+    ImGui::Checkbox("Adjust Z##cal", &printCalAdjustZ_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Adjust speed##cal", &printCalAdjustSpeed_);
+
+    ImGui::BeginDisabled(!printCalAdjustZ_);
+    ImGui::DragFloat("Z gain per mm error", &printCalZGainPerMmError_, 0.01f, 0.0f, 5.0f, "%.2f");
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(!printCalAdjustSpeed_);
+    ImGui::DragFloat("Speed gain per mm error", &printCalSpeedGainPerMmError_, 0.01f, 0.0f, 1.0f, "%.2f");
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("Starting guesses, not measured constants -- refine after a corrected reprint's "
+                         "residual error is known (see the calibration write-up).");
+
+    ImGui::BeginDisabled(!printCalAdjustZ_ && !printCalAdjustSpeed_);
+    if (ImGui::Button(object.printCalibration.has_value() ? "Re-apply print calibration" : "Apply print calibration")) {
+        undoStack.snapshotBeforeChange(scene);
+        if (object.printCalibration.has_value()) removePrintCalibration(object);
+        PrintCalibrationOptions options;
+        options.affectedLayers = printCalAffectedLayers_;
+        options.adjustZ = printCalAdjustZ_;
+        options.adjustSpeed = printCalAdjustSpeed_;
+        options.zGainPerMmError = printCalZGainPerMmError_;
+        options.speedGainPerMmError = printCalSpeedGainPerMmError_;
+        applyPrintCalibrationRecorded(object, grid, bed, options);
+        dirty = true;
+    }
+    ImGui::EndDisabled();
+
+    // Same re-visitable "adjustment layer" UX as Bed Conform, including
+    // real-time preview: dragging "Effect strength" calls
+    // setPrintCalibrationScale() every frame the value changes, which
+    // writes straight into path.to.z/path.speedOverride -- the same
+    // sceneDirty->geometry-rebuild path every other live edit in this app
+    // already goes through, so the 3D view updates as the slider moves,
+    // not just after releasing it.
+    if (object.printCalibration.has_value()) {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.45f, 0.75f, 0.95f, 1.0f), "Print calibration layer active (%zu path(s))",
+                            object.printCalibration->perPath.size());
+
+        float scale = static_cast<float>(object.printCalibration->scale);
+        if (ImGui::DragFloat("Effect strength##cal", &scale, 0.01f, 0.0f, 3.0f, "%.2fx")) {
+            undoStack.snapshotBeforeChange(scene);
+            setPrintCalibrationScale(object, static_cast<double>(scale));
+            dirty = true;
+        }
+        ImGui::TextDisabled("1.00x = as applied. 0 removes the effect without deleting the layer.");
+
+        if (ImGui::Button("Delete##cal")) {
+            undoStack.snapshotBeforeChange(scene);
+            removePrintCalibration(object);
+            dirty = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Bake into object##cal")) {
+            undoStack.snapshotBeforeChange(scene);
+            bakePrintCalibration(object);
             dirty = true;
         }
         ImGui::TextDisabled("Bake keeps the current effect permanently and stops tracking it as adjustable.");

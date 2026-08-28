@@ -4,6 +4,7 @@
 #include "editor/Gizmo.h"
 #include "editor/UndoStack.h"
 #include "model/BedHeightmap.h"
+#include "model/PrintCalibrationGrid.h"
 #include <set>
 #include <string>
 #include "model/Scene.h"
@@ -46,6 +47,7 @@ public:
     // through moveToolRequested()/rotateToolRequested() below instead.
     void draw(Scene& scene, ColorMode& colorMode, Camera& camera, RenderSettings& renderSettings,
               BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& bedHeightmap,
+              PrintCalibrationGrid& printCalibrationGrid,
               UndoStack& undoStack, size_t renderedPrimitiveCount, bool& sceneDirty, bool& selectionDirty, bool& bedDirty,
               GizmoInteractionMode gizmoMode);
 
@@ -173,7 +175,7 @@ private:
     void drawAnimationPanel();
     void drawViewPanel(Camera& camera, RenderSettings& renderSettings, bool& dirty);
     void drawBedPanel(BedSettings& bedSettings, LightingSettings& lightingSettings, BedHeightmap& heightmap,
-                       SceneObject* activeObject, bool& bedDirty);
+                       PrintCalibrationGrid& calibrationGrid, SceneObject* activeObject, bool& bedDirty);
     void drawLightingPanel(LightingSettings& lightingSettings);
     void drawObjectListPanel(Scene& scene, UndoStack& undoStack, bool& dirty);
     void drawMultiPartPanel(Scene& scene, UndoStack& undoStack, bool& dirty);
@@ -184,6 +186,8 @@ private:
     void drawSpeedPanel(Scene& scene, SceneObject& object, UndoStack& undoStack, bool& dirty);
     void drawBedConformPanel(Scene& scene, SceneObject& object, const BedHeightmap& heightmap,
                               const BedSettings& bed, UndoStack& undoStack, bool& dirty);
+    void drawPrintCalibrationPanel(Scene& scene, SceneObject& object, const PrintCalibrationGrid& grid,
+                                    const BedSettings& bed, UndoStack& undoStack, bool& dirty);
     // The "check" and "fix" the user asked for after seeing an interleaved
     // export that had lost its whole safety header and shutdown footer --
     // and a heads-up about what's coming next: a plain sliced import has
@@ -309,6 +313,15 @@ private:
     bool bedConformAdjustZ_ = true;
     bool bedConformAdjustSpeed_ = true;
     float bedConformSpeedGainPerMm_ = 0.05f;
+
+    // Print Calibration input state -- see editor/PrintCalibration.h's
+    // PrintCalibrationOptions, same reasoning as the Bed Conform fields
+    // above.
+    int printCalAffectedLayers_ = 1;
+    bool printCalAdjustZ_ = true;
+    bool printCalAdjustSpeed_ = true;
+    float printCalZGainPerMmError_ = 1.0f;
+    float printCalSpeedGainPerMmError_ = 0.05f;
 
     // Heightmap click-to-paint tool state -- read by main.cpp's click
     // handler (via the getters below) to decide whether a viewport click

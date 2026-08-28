@@ -75,3 +75,31 @@ struct MirrorInterleaveOptions {
 // doesn't exist, has no layers, or fewer than 2 parts result.
 std::optional<SceneObject> mirrorAndInterleave(Scene& scene, int sourceObjectId,
                                                 const MirrorInterleaveOptions& options);
+
+// Builds ONE merged, exportable SceneObject that prints 2+ DIFFERENT
+// existing objects SEQUENTIALLY -- object[0]'s entire body (every one of
+// its own layers, in its own original order, including its own internal
+// travels), then a synthesized transition, then object[1]'s entire body,
+// and so on. This is the real counterpart to editor/ObjectLinking.h's
+// "Link->next" + bake action: a link only ever drew a preview and, once
+// baked, added a single bridging travel to the from-object WITHOUT
+// actually including the to-object's own paths in any exported file --
+// exporting the from-object alone (the only thing Export SRC ever writes)
+// silently left the to-object's geometry out entirely, even though every
+// structural/speed check passed. Reported from real use: two separate
+// imported objects, one correctly placed, the other never made it into
+// the robot's program at all.
+//
+// Unlike buildInterleavedObject (round-robin per layer, each object's own
+// internal travels deliberately dropped in favor of one flat cross-part
+// scheme), this keeps every object's body completely intact and simply
+// joins them end to end -- the natural shape for "finish part A, then
+// print part B," not "cool N copies of the same part together."
+//
+// Every path in the result has its coordinates baked into WORLD space,
+// same as buildInterleavedObject, and layer numbers are offset per object
+// so two objects that each have their own "layer 1" don't collide in the
+// merged layer table. Returns std::nullopt if fewer than 2 of the given
+// object ids exist and have at least one detected print path.
+std::optional<SceneObject> buildSequentialMergedObject(const Scene& scene, const std::vector<int>& objectIdsInOrder,
+                                                         const InterleaveOptions& options);

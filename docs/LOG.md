@@ -2916,3 +2916,65 @@ active mode highights in the theme's accent color exactly like the top
 toolbar's Move/Rotate/Geometry buttons. Full clean Release rebuild and
 `parser_smoke_test` (Debug + Release) pass after reverting the temporary
 verification-only changes.
+
+## Print Calibration: bead-width-driven Z/speed correction
+
+Real-use context: a printed calibration grid, measured post-print with
+calipers for bead width at every vertex, compared against a golden target
+(gcode designed for 3mm high x 7mm wide) -- most points come out close,
+some run wide/narrow, and the operator wants THAT deviation to
+automatically correct future prints' Z and/or speed, instead of guessing
+a global fudge factor.
+
+**New model types**, deliberately separate from the existing bed-elevation
+ones despite nearly identical grid mechanics -- a heightmap is measured
+BEFORE printing with a probe; this is measured AFTER printing with
+calipers, and answers a different question:
+- `model/PrintCalibrationGrid.h/.cpp` -- cols x rows grid of measured bead
+  width (mm) + a `goldenWidthMm` target, same `at()`/`resize()` shape as
+  `model/BedHeightmap.h`.
+- `model/PrintCalibrationRecord.h` -- the same non-destructive "adjustment
+  layer" pattern as `model/BedConformRecord.h` (pre-calibration baseline +
+  a scale-1.0 delta per path, so re-scaling never drifts). New
+  `SceneObject::printCalibration` field, alongside the existing
+  `bedConform`.
+
+**`editor/PrintCalibration.h/.cpp`:** `sampleWidthError()` bilinear-
+interpolates `measured - golden` across the grid, same algorithm as
+`sampleBedElevation()`. `applyPrintCalibrationRecorded()` /
+`setPrintCalibrationScale()` / `removePrintCalibration()` /
+`bakePrintCalibration()` mirror `editor/BedConform.h`'s four functions
+exactly, with one deliberate difference: the SIGN conventions are
+physically opposite. A bead measured WIDER than golden implies the
+nozzle ran too close (over-squished, wide and short) -- so a positive
+error RAISES Z (not lowers it, like a high bed spot would) and SPEEDS UP
+(not slows down, like BedConform's elevation-based gain) to thin the
+bead back down. Both gains (`zGainPerMmError`, `speedGainPerMmError`)
+are explicitly documented as physically-reasoned STARTING guesses, not
+measured constants -- the real values are meant to be refined by
+comparing a correction's predicted vs. actual residual error after a
+reprint.
+
+**UI:** a "Print Calibration" grid-entry section in the Bed panel
+(mirroring the heightmap grid table exactly -- golden width field,
+columns/rows, per-point `DragFloat` table), and a "Print Calibration"
+panel under Object & Layers (mirroring Bed Conform's panel exactly --
+affected layers, Z/speed toggles + gain sliders, Apply/Re-apply,
+Effect-strength rescale slider, Delete, Bake). Real-time preview comes
+for free from the existing pattern: rescaling writes straight into
+`path.to.z`/`path.speedOverride`, which the app already rebuilds
+geometry from on every `dirty` frame -- no separate live-preview code
+needed.
+
+**13 new tests**, mirroring BedConform's coverage: bilinear sampling of
+the error grid, apply with an explicit sign-convention check (a +2mm
+error path gets Z RAISED by 2 and speed INCREASED, not decreased --
+directly asserting the opposite-of-BedConform sign), taper past
+`affectedLayers`, and scale/remove round-tripping without drift.
+
+**Verified:** `parser_smoke_test` (Debug + Release) passes all 13 new
+checks plus the existing 500+. Full clean Release rebuild succeeds.
+Self-captured screenshots confirm the Bed panel's grid-entry table
+renders correctly (verified via a temporary reorder, reverted after).
+NOT yet verified: an actual reprint using an applied calibration --
+that's the real test, planned for the next physical print.

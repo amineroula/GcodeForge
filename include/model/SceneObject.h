@@ -4,6 +4,7 @@
 #include "model/Layer.h"
 #include "model/LayerAction.h"
 #include "model/Path.h"
+#include "model/PrintCalibrationRecord.h"
 #include "model/SelectionGroup.h"
 #include "model/StartPoint.h"
 #include "model/Transform.h"
@@ -59,6 +60,13 @@ struct SceneObject {
     // active (either never applied, removed, or already baked into the
     // paths permanently).
     std::optional<BedConformRecord> bedConform;
+
+    // The currently-active, adjustable print calibration "layer" (if any)
+    // -- see model/PrintCalibrationRecord.h and editor/PrintCalibration.h.
+    // Same non-destructive pattern as bedConform above, computed from
+    // measured PRINTED RESULT data (bead width) instead of probed bed
+    // elevation.
+    std::optional<PrintCalibrationRecord> printCalibration;
 
     // Operator-entered notes, written into the exported .src as a tagged
     // comment block (editor/SrcExporter.h) and read back out of it on

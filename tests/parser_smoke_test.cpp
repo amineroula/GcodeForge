@@ -14,6 +14,7 @@
 #include "editor/Gizmo.h"
 #include "editor/SrcExporter.h"
 #include "editor/BedConform.h"
+#include "editor/PrintCalibration.h"
 #include "editor/LayerZOffset.h"
 #include "render/PathColorizer.h"
 #include "editor/ConnectedDrag.h"
@@ -1256,6 +1257,135 @@ void testBedConformBakeAndReapply() {
               "BedConformBake: the new record's pre-conform baseline is the BAKED state, not the original pre-bake state");
     checkNear(f.object.paths[0].to.z, bakedZ + 5.0,
               "BedConformBake: re-applying after a bake shifts AGAIN on top of the now-permanent baked Z");
+}
+
+// editor/PrintCalibration.h -- same bilinear-sample/taper/apply/rescale
+// machinery as BedConform above, but driven by measured PRINTED bead
+// width against a golden target instead of probed bed elevation, with
+// the OPPOSITE speed-sign convention (a too-wide bead needs to run
+// FASTER to thin back down, not slower).
+void testPrintCalibrationSampling() {
+    BedSettings bed;
+    bed.widthMm = 1000.0f;
+    bed.depthMm = 1000.0f;
+
+    PrintCalibrationGrid grid;
+    grid.resize(2, 2);
+    grid.goldenWidthMm = 7.0;
+    grid.at(0, 0) = 7.0f;  // error 0, local (0,0) -> world (-500,-500)
+    grid.at(1, 0) = 9.0f;  // error +2, local (1000,0) -> world (500,-500)
+    grid.at(0, 1) = 7.0f;  // error 0
+    grid.at(1, 1) = 9.0f;  // error +2
+
+    checkNear(sampleWidthError(grid, bed, -500.0, -500.0), 0.0, "PrintCalibration: sample at a corner matches its exact error (golden)");
+    checkNear(sampleWidthError(grid, bed, 500.0, 500.0), 2.0, "PrintCalibration: sample at a corner matches its exact error (+2)");
+    checkNear(sampleWidthError(grid, bed, 0.0, 0.0), 1.0, "PrintCalibration: sample at the center is the bilinear average of the error");
+}
+
+// One layer-1 path spanning local X -500 (golden, error 0) to X 500
+// (measured 9mm, error +2) -- checks the SIGN conventions specifically:
+// a too-WIDE bead raises Z (not lowers it) and speeds UP (not down),
+// the opposite sign from BedConform's elevation-based speed gain.
+void testPrintCalibrationApplySignConventions() {
+    BedSettings bed;
+    bed.widthMm = 1000.0f;
+    bed.depthMm = 1000.0f;
+
+    PrintCalibrationGrid grid;
+    grid.resize(2, 2);
+    grid.goldenWidthMm = 7.0;
+    grid.at(0, 0) = 7.0f;
+    grid.at(1, 0) = 9.0f;
+    grid.at(0, 1) = 7.0f;
+    grid.at(1, 1) = 9.0f;
+
+    SceneObject object;
+    object.name = "Test";
+    Path p1;
+    p1.number = 1;
+    p1.type = PathType::Print;
+    p1.layer = 1;
+    p1.motion = "LIN";
+    p1.speed = 0.05;
+    p1.from = glm::dvec3(-500.0, 0.0, 0.0);
+    p1.to = glm::dvec3(500.0, 0.0, 0.0); // error here is +2 (measured 9 vs golden 7)
+    Path p2;
+    p2.number = 2;
+    p2.type = PathType::Print;
+    p2.layer = 2; // beyond affectedLayers=1 -- must get zero effect
+    p2.motion = "LIN";
+    p2.speed = 0.05;
+    p2.from = p1.to;
+    p2.to = glm::dvec3(500.0, 100.0, 0.0);
+    object.paths = {p1, p2};
+
+    PrintCalibrationOptions options;
+    options.affectedLayers = 1;
+    options.adjustZ = true;
+    options.adjustSpeed = true;
+    options.zGainPerMmError = 1.0;
+    options.speedGainPerMmError = 0.1;
+    applyPrintCalibrationRecorded(object, grid, bed, options);
+
+    checkNear(object.paths[0].from.z, 0.0, "PrintCalibration: FROM at the golden edge (error 0) gets no Z shift");
+    checkNear(object.paths[0].to.z, 2.0, "PrintCalibration: TO at the +2 error edge is RAISED by +2 (too-wide -> raise nozzle)");
+
+    check(object.paths[0].speedOverride.has_value(), "PrintCalibration: layer-1 path got a speed override");
+    if (object.paths[0].speedOverride.has_value()) {
+        checkNear(*object.paths[0].speedOverride, 0.05 * (1.0 + 1.0 * 0.1 * 2.0),
+                   "PrintCalibration: too-wide (+error) SPEEDS UP -- opposite sign from BedConform's elevation gain");
+    }
+
+    checkNear(object.paths[1].to.z, 0.0, "PrintCalibration: a layer beyond affectedLayers gets zero Z shift (taper reached 0)");
+    check(!object.paths[1].speedOverride.has_value(), "PrintCalibration: a layer beyond affectedLayers gets no speed override");
+}
+
+void testPrintCalibrationScaleAndRemove() {
+    BedSettings bed;
+    bed.widthMm = 1000.0f;
+    bed.depthMm = 1000.0f;
+    PrintCalibrationGrid grid;
+    grid.resize(2, 2);
+    grid.goldenWidthMm = 7.0;
+    grid.at(0, 0) = 9.0f;
+    grid.at(1, 0) = 9.0f;
+    grid.at(0, 1) = 9.0f;
+    grid.at(1, 1) = 9.0f; // uniform +2 error everywhere
+
+    SceneObject object;
+    object.name = "Test";
+    Path p1;
+    p1.number = 1;
+    p1.type = PathType::Print;
+    p1.layer = 1;
+    p1.motion = "LIN";
+    p1.speed = 0.05;
+    p1.from = glm::dvec3(0.0, 0.0, 1.0);
+    p1.to = glm::dvec3(100.0, 0.0, 1.0);
+    object.paths = {p1};
+    double preZ = object.paths[0].to.z;
+    double preSpeed = object.paths[0].effectiveSpeed();
+
+    PrintCalibrationOptions options;
+    options.affectedLayers = 1;
+    options.adjustZ = true;
+    options.adjustSpeed = false;
+    options.zGainPerMmError = 1.0;
+    applyPrintCalibrationRecorded(object, grid, bed, options);
+    check(object.printCalibration.has_value(), "PrintCalibrationRecord: applying stores an active record");
+    checkNear(object.paths[0].to.z, preZ + 2.0, "PrintCalibrationRecord: scale 1.0 shifts Z by the full +2 error");
+
+    setPrintCalibrationScale(object, 2.0);
+    checkNear(object.paths[0].to.z, preZ + 4.0,
+              "PrintCalibrationRecord: scale 2.0 doubles the shift, recomputed from the stored baseline (not compounded)");
+
+    for (int i = 0; i < 3; ++i) setPrintCalibrationScale(object, 1.0);
+    checkNear(object.paths[0].to.z, preZ + 2.0, "PrintCalibrationRecord: repeated re-scaling back to 1.0 is exact, no drift");
+
+    removePrintCalibration(object);
+    check(!object.printCalibration.has_value(), "PrintCalibrationRecord: Delete clears the active record");
+    checkNear(object.paths[0].to.z, preZ, "PrintCalibrationRecord: Delete reverts Z to the exact pre-calibration baseline");
+    checkNear(object.paths[0].effectiveSpeed(), preSpeed, "PrintCalibrationRecord: Delete reverts speed to the pre-calibration baseline");
 }
 
 // 5 layers, one print path each, Z = layer number (so "did layer N's Z
@@ -3019,6 +3149,9 @@ int main() {
     testBedConformApply();
     testBedConformScaleDeleteBake();
     testBedConformBakeAndReapply();
+    testPrintCalibrationSampling();
+    testPrintCalibrationApplySignConventions();
+    testPrintCalibrationScaleAndRemove();
     testLayerZOffsetSingleLayer();
     testLayerZOffsetCascadeAll();
     testLayerZOffsetCascadeCount();
